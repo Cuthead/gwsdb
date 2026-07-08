@@ -1,0 +1,81 @@
+{{define "home.tmpl"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<title>首页 - GWS Database</title>
+</head>
+<body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
+<center>
+<table border="0" cellpadding="4" cellspacing="0" width="760">
+<tr bgcolor="#000080">
+<td><font color="#FFFFFF" face="Arial,Helvetica,sans-serif" size="+1"><b>GWS Database</b></font></td>
+</tr>
+<tr bgcolor="#DDDDDD">
+<td>
+<font face="Arial,Helvetica,sans-serif" size="-1">
+<a href="/">首页</a> |
+<a href="/query">查询 IP</a>
+</font>
+</td>
+</tr>
+<tr>
+<td>
+<font face="Arial,Helvetica,sans-serif" size="-1">
+
+<p>下表列出已追踪到的 Google Web Server (GWS) IP 地址及其可达状态。</p>
+
+<p>
+{{if .FilterUp}}<b>只看可用</b>{{else}}<a href="/?status=up">只看可用</a>{{end}}
+&nbsp;|&nbsp;
+{{if .FilterUp}}<a href="/?status=all">全部（含历史）</a>{{else}}<b>全部（含历史）</b>{{end}}
+&nbsp;&nbsp;共 {{.Count}} 条{{if .Truncated}}（仅显示最近 {{.Count}} 条）{{end}}
+</p>
+
+{{if .IPs}}
+<table border="1" cellpadding="4" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE">
+<td><b>IP 地址</b></td>
+<td><b>状态</b></td>
+<td><b>首次发现</b></td>
+<td><b>最近可达</b></td>
+<td><b>最近 RTT</b></td>
+<td></td>
+</tr>
+{{range .IPs}}
+<tr>
+<td><tt>{{.IP}}</tt></td>
+<td>{{if eq .Status "可达"}}<font color="#008000">✓ 可达</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ 不可达</font>{{else}}-{{end}}</td>
+<td>{{.FirstSeen}}</td>
+<td>{{.LastSeen}}</td>
+<td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td>
+<td><a href="/query?ip={{.IP}}">详情</a></td>
+</tr>
+{{end}}
+</table>
+{{else}}
+<p><i>暂无数据。请先运行扫描并导入结果。</i></p>
+{{end}}
+
+<hr>
+<table border="0" cellpadding="2" cellspacing="0">
+<tr><td colspan="2"><b>统计</b></td></tr>
+<tr><td>已知 IP 总数</td><td>{{.Stats.TotalKnownIPs}}</td></tr>
+<tr><td>扫描总次数</td><td>{{.Stats.TotalScans}}</td></tr>
+<tr><td>最近一次扫描</td><td>{{.LastScanAt}}{{if .ScanMode}} ({{.ScanMode}}){{end}}</td></tr>
+</table>
+
+</font>
+</td>
+</tr>
+<tr bgcolor="#DDDDDD">
+<td align="center">
+<font face="Arial,Helvetica,sans-serif" size="-2" color="#666666">
+GWS Database &mdash; 追踪 Google Web Server IP 在中国的可达性
+</font>
+</td>
+</tr>
+</table>
+</center>
+</body>
+</html>
+{{end}}

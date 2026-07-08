@@ -1,0 +1,79 @@
+package store
+
+import "time"
+
+// Scan represents one execution of the gscan_quic scanner for a given scan mode.
+type Scan struct {
+	ID               int64
+	ScanMode         string
+	ServerName       string
+	VerifyCommonName string
+	HTTPPath         string
+	HTTPVerifyHosts  string
+	ValidStatusCode  int
+	InputFile        string
+	OutputFile       string
+	Level            int
+	ConfigJSON       string
+	LogText          string
+	StartedAt        time.Time
+	FinishedAt       time.Time
+	ScannedCount     int
+	FoundCount       int
+}
+
+// ScanResult is a single IP found reachable during a Scan.
+type ScanResult struct {
+	IP    string
+	RTTMs int // 0 if unknown
+	Rank  int // 1-based position in the sorted output file, 0 if unknown
+}
+
+// IPStatus is the rolling reachability record for one IP across all scans.
+type IPStatus struct {
+	IP            string
+	IsIPv6        bool
+	ScanMode      string
+	FirstSeen     time.Time
+	LastSeen      time.Time // last time this IP was confirmed reachable
+	LastScanID    int64
+	LastRTTMs     int
+	TimesSeen     int
+	LastCheckedAt time.Time // last time this IP was tested at all (pass or fail)
+	LastCheckOK   bool
+	HasCheck      bool // whether LastCheckedAt/LastCheckOK are populated
+}
+
+// IPCheck is a single pass/fail observation of one IP during one scan --
+// the raw material for per-IP availability history. Unlike ScanResult (which
+// only exists for successful hits), IPCheck also records attempts that were
+// tested and failed, so absence can be told apart from "wasn't tested".
+type IPCheck struct {
+	IP        string
+	OK        bool
+	RTTMs     int
+	Reason    string // e.g. "dial", "handshake", "cn", "status", "ping"; empty for successes
+	Detail    string // e.g. "sni=g.cn host=www.google.com.hk got_code=403"; empty if unavailable
+	CheckedAt time.Time
+
+	// Request context in effect for this specific check, from the scan it
+	// belongs to -- config can change between scans, so this is joined
+	// per-row rather than assumed to match the current config.
+	ScanMode         string
+	ServerName       string
+	HTTPPath         string
+	HTTPVerifyHosts  string
+	VerifyCommonName string
+	ValidStatusCode  int
+}
+
+// PTRCacheEntry is a cached reverse-DNS + geo decode result for one IP.
+type PTRCacheEntry struct {
+	IP          string
+	PTRHostname string
+	AirportCode string
+	GeoCity     string
+	GeoCountry  string
+	LookupOK    bool
+	CheckedAt   time.Time
+}
