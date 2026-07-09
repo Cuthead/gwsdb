@@ -1,8 +1,8 @@
 {{define "query.tmpl"}}<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>查询 - GWS Database</title>
+<title>Query - GWS Database</title>
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
 <center>
@@ -13,8 +13,8 @@
 <tr bgcolor="#DDDDDD">
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
-<a href="/">首页</a> |
-<a href="/query">查询 IP</a>
+<a href="/">Home</a> |
+<a href="/query">Query IP</a>
 </font>
 </td>
 </tr>
@@ -22,14 +22,14 @@
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
 
-<p>输入一个 Google ASN 内的 IP 地址，查询其 PTR 记录并推算地理位置。</p>
+<p>Enter an IP address within a Google ASN to look up its PTR record and estimate its geographic location.</p>
 
 <form method="GET" action="/query">
 <table border="0" cellpadding="4" cellspacing="0">
 <tr>
-<td>IP 地址</td>
+<td>IP Address</td>
 <td><input type="text" name="ip" size="24" value="{{.Query}}"></td>
-<td><input type="submit" value="查询"></td>
+<td><input type="submit" value="Query"></td>
 </tr>
 </table>
 </form>
@@ -40,47 +40,47 @@
 <p><font color="#CC0000">{{.Error}}</font></p>
 {{else}}
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="2"><b>查询结果: {{.Query}}</b></td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="2"><b>Query Result: {{.Query}}</b></td></tr>
 <tr>
-<td width="30%">PTR 记录</td>
-<td><tt>{{if .PTRHostname}}{{.PTRHostname}}{{else}}<i>(无 PTR 记录)</i>{{end}}</tt></td>
+<td width="30%">PTR Record</td>
+<td><tt>{{if .PTRHostname}}{{.PTRHostname}}{{else}}<i>(no PTR record)</i>{{end}}</tt></td>
 </tr>
 {{if .Matched}}
 <tr>
-<td>机场代码</td>
+<td>Airport Code</td>
 <td><tt>{{.AirportCode}}</tt></td>
 </tr>
 <tr>
-<td>推算位置</td>
-<td>{{if .City}}{{.City}}, {{.Country}}{{else}}<i>未收录该机场代码，无法推算</i>{{end}}</td>
+<td>Estimated Location</td>
+<td>{{if .City}}{{.City}}, {{.Country}}{{else}}<i>Airport code not in database, cannot estimate</i>{{end}}</td>
 </tr>
 {{else if .PTRHostname}}
 <tr>
-<td>推算位置</td>
-<td><i>该 PTR 不符合已知的 1e100.net 命名规则，无法解析</i></td>
+<td>Estimated Location</td>
+<td><i>This PTR does not match the known 1e100.net naming convention, cannot parse</i></td>
 </tr>
 {{end}}
 {{if .HasHistory}}
-<tr bgcolor="#EEEEEE"><td colspan="2"><b>可达性概况</b></td></tr>
-<tr><td>当前状态</td><td>{{if eq .Status "可达"}}<font color="#008000">✓ 可达</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ 不可达</font>{{else}}-{{end}}</td></tr>
-<tr><td>首次发现</td><td>{{.FirstSeen}}</td></tr>
-<tr><td>最近可达</td><td>{{.LastSeen}}</td></tr>
-<tr><td>累计发现次数</td><td>{{.TimesSeen}}</td></tr>
-<tr><td>最近 RTT</td><td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="2"><b>Reachability Overview</b></td></tr>
+<tr><td>Current Status</td><td>{{if eq .Status "可达"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td></tr>
+<tr><td>First Seen</td><td>{{.FirstSeen}}</td></tr>
+<tr><td>Last Reachable</td><td>{{.LastSeen}}</td></tr>
+<tr><td>Total Times Seen</td><td>{{.TimesSeen}}</td></tr>
+<tr><td>Last RTT</td><td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td></tr>
 {{else}}
-<tr><td colspan="2"><i>该 IP 不在已知扫描结果中（可能未扫描过，或从未发现可达）</i></td></tr>
+<tr><td colspan="2"><i>This IP is not in the known scan results (it may not have been scanned, or was never found reachable)</i></td></tr>
 {{end}}
 </table>
 
 {{if .Checks}}
 <p></p>
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="5"><b>历史可用性记录</b>（最近 {{len .Checks}} 次检查，含当时发出的探测请求）</td></tr>
-<tr bgcolor="#EEEEEE"><td><b>时间</b></td><td><b>结果</b></td><td><b>原因</b></td><td><b>探测请求</b></td><td><b>RTT</b></td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="5"><b>Check History</b> (last {{len .Checks}} checks, including the probe request sent at the time)</td></tr>
+<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>Probe Request</b></td><td><b>RTT</b></td></tr>
 {{range .Checks}}
 <tr>
 <td>{{.Time}}</td>
-<td>{{if .OK}}<font color="#008000">✓ 可达</font>{{else}}<font color="#CC0000">✗ 不可达</font>{{end}}</td>
+<td>{{if .OK}}<font color="#008000">✓ Reachable</font>{{else}}<font color="#CC0000">✗ Unreachable</font>{{end}}</td>
 <td>{{if .ReasonLabel}}{{.ReasonLabel}}{{else}}-{{end}}</td>
 <td><font size="-1">{{if .Probe}}{{.Probe}}<br>{{end}}{{if .Detail}}<tt>{{.Detail}}</tt>{{end}}</font></td>
 <td>{{if .RTT}}{{.RTT}} ms{{else}}-{{end}}</td>
@@ -93,7 +93,7 @@
 
 <hr>
 <p><font size="-2" color="#666666">
-地理位置推算依据 <a href="https://github.com/lennylxx/ipv6-hosts/wiki/1e100.net">1e100.net PTR 命名规则</a>（社区文档，非官方，仅供参考）。
+Location estimates are based on the <a href="https://github.com/lennylxx/ipv6-hosts/wiki/1e100.net">1e100.net PTR naming convention</a> (a community-maintained, unofficial document, for reference only).
 </font></p>
 
 </font>
@@ -102,7 +102,7 @@
 <tr bgcolor="#DDDDDD">
 <td align="center">
 <font face="Arial,Helvetica,sans-serif" size="-2" color="#666666">
-GWS Database &mdash; 追踪 Google Web Server IP 在中国的可达性
+GWS Database &mdash; Tracking Google Web Server IP reachability in China
 </font>
 </td>
 </tr>

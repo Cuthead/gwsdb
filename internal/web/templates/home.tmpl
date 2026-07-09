@@ -1,8 +1,8 @@
 {{define "home.tmpl"}}<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>首页 - GWS Database</title>
+<title>Home - GWS Database</title>
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
 <center>
@@ -13,8 +13,8 @@
 <tr bgcolor="#DDDDDD">
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
-<a href="/">首页</a> |
-<a href="/query">查询 IP</a>
+<a href="/">Home</a> |
+<a href="/query">Query IP</a>
 </font>
 </td>
 </tr>
@@ -22,39 +22,39 @@
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
 
-<p>下表列出已追踪到的 Google Web Server (GWS) IP 地址及其可达状态。</p>
+<p>The table below lists tracked Google Web Server (GWS) IP addresses and their reachability status.</p>
 
 <p>
-{{if .FilterUp}}<b>只看可用</b>{{else}}<a href="/?status=up">只看可用</a>{{end}}
+{{if .FilterUp}}<b>Reachable only</b>{{else}}<a href="/?status=up">Reachable only</a>{{end}}
 &nbsp;|&nbsp;
-{{if .FilterUp}}<a href="/?status=all">全部（含历史）</a>{{else}}<b>全部（含历史）</b>{{end}}
-&nbsp;&nbsp;共 {{.Count}} 条{{if .Truncated}}（仅显示最近 {{.Count}} 条）{{end}}
+{{if .FilterUp}}<a href="/?status=all">All (including history)</a>{{else}}<b>All (including history)</b>{{end}}
+&nbsp;&nbsp;{{.Count}} total{{if .Truncated}} (showing only the most recent {{.Count}}){{end}}
 </p>
 
 <form method="get" action="/">
 {{if not .FilterUp}}<input type="hidden" name="status" value="all">{{end}}
-<input type="text" name="q" value="{{.Search}}" placeholder="搜索 IP 或 PTR" size="30">
-<input type="submit" value="搜索">
-{{if .Search}}&nbsp;<a href="/?{{if not .FilterUp}}status=all{{end}}">清除</a>{{end}}
+<input type="text" name="q" value="{{.Search}}" placeholder="Search IP or PTR" size="30">
+<input type="submit" value="Search">
+{{if .Search}}&nbsp;<a href="/?{{if not .FilterUp}}status=all{{end}}">Clear</a>{{end}}
 </form>
 
 {{if .IPs}}
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE">
-<td><b><a href="{{(index .Sort "ip").URL}}">IP 地址</a> {{(index .Sort "ip").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "ip").URL}}">IP Address</a> {{(index .Sort "ip").Arrow}}</b></td>
 <td><b><a href="{{(index .Sort "ptr").URL}}">PTR</a> {{(index .Sort "ptr").Arrow}}</b></td>
-<td><b>国家</b></td>
-<td><b><a href="{{(index .Sort "status").URL}}">状态</a> {{(index .Sort "status").Arrow}}</b></td>
-<td><b><a href="{{(index .Sort "first_seen").URL}}">首次发现</a> {{(index .Sort "first_seen").Arrow}}</b></td>
-<td><b><a href="{{(index .Sort "last_seen").URL}}">最近可达</a> {{(index .Sort "last_seen").Arrow}}</b></td>
-<td><b><a href="{{(index .Sort "rtt").URL}}">最近 RTT</a> {{(index .Sort "rtt").Arrow}}</b></td>
+<td><b>Country</b></td>
+<td><b><a href="{{(index .Sort "status").URL}}">Status</a> {{(index .Sort "status").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "first_seen").URL}}">First Seen</a> {{(index .Sort "first_seen").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "last_seen").URL}}">Last Reachable</a> {{(index .Sort "last_seen").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "rtt").URL}}">Last RTT</a> {{(index .Sort "rtt").Arrow}}</b></td>
 </tr>
 {{range .IPs}}
 <tr>
 <td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
 <td>{{if .PTR}}<tt>{{.PTR}}</tt>{{else}}-{{end}}</td>
 <td>{{if .CountryCode}}<img src="https://bgp.he.net/images/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" width="16" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
-<td>{{if eq .Status "可达"}}<font color="#008000">✓ 可达</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ 不可达</font>{{else}}-{{end}}</td>
+<td>{{if eq .Status "可达"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td>
 <td>{{.FirstSeen}}</td>
 <td>{{.LastSeen}}</td>
 <td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td>
@@ -62,15 +62,15 @@
 {{end}}
 </table>
 {{else}}
-<p><i>暂无数据。请先运行扫描并导入结果。</i></p>
+<p><i>No data yet. Please run a scan and import the results first.</i></p>
 {{end}}
 
 <hr>
 <table border="0" cellpadding="2" cellspacing="0">
-<tr><td colspan="2"><b>统计</b></td></tr>
-<tr><td>已知 IP 总数</td><td>{{.Stats.TotalKnownIPs}}</td></tr>
-<tr><td>扫描总次数</td><td>{{.Stats.TotalScans}}</td></tr>
-<tr><td>最近一次扫描</td><td>{{.LastScanAt}}{{if .ScanMode}} ({{.ScanMode}}){{end}}</td></tr>
+<tr><td colspan="2"><b>Statistics</b></td></tr>
+<tr><td>Total Known IPs</td><td>{{.Stats.TotalKnownIPs}}</td></tr>
+<tr><td>Total Scans</td><td>{{.Stats.TotalScans}}</td></tr>
+<tr><td>Last Scan</td><td>{{.LastScanAt}}{{if .ScanMode}} ({{.ScanMode}}){{end}}</td></tr>
 </table>
 
 </font>
@@ -79,7 +79,7 @@
 <tr bgcolor="#DDDDDD">
 <td align="center">
 <font face="Arial,Helvetica,sans-serif" size="-2" color="#666666">
-GWS Database &mdash; 追踪 Google Web Server IP 在中国的可达性
+GWS Database &mdash; Tracking Google Web Server IP reachability in China
 </font>
 </td>
 </tr>

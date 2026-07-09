@@ -221,18 +221,18 @@ type checkRow struct {
 	Time        string
 	OK          bool
 	RTT         int
-	ReasonLabel string // Chinese label for Reason, "" for successes
+	ReasonLabel string // human-readable label for Reason, "" for successes
 	Detail      string // e.g. "sni=g.cn host=www.google.com.hk got_code=403"
 	Probe       string // the scan's request parameters in effect at check time
 }
 
-// reasonLabels translates gscan_quic's REASON tags into short Chinese labels.
+// reasonLabels translates gscan_quic's REASON tags into short human-readable labels.
 var reasonLabels = map[string]string{
-	"dial":      "连接失败",
-	"handshake": "TLS 握手失败",
-	"cn":        "证书 CN 不匹配",
-	"status":    "HTTP 状态码不符",
-	"ping":      "Ping 失败",
+	"dial":      "Connection failed",
+	"handshake": "TLS handshake failed",
+	"cn":        "Certificate CN mismatch",
+	"status":    "HTTP status code mismatch",
+	"ping":      "Ping failed",
 }
 
 func reasonLabel(reason string) string {
