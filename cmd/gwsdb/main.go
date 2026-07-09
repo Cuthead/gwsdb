@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
 	"github.com/cuthead/gwsdb/internal/store"
@@ -61,6 +62,8 @@ func runServe(args []string) {
 	if err != nil {
 		log.Fatalf("build web server: %v", err)
 	}
+
+	go srv.StartPTRRefresher(15 * time.Second)
 
 	log.Printf("gwsdb serving on %s (db=%s)", *addr, *dbPath)
 	if err := http.ListenAndServe(*addr, srv.Handler()); err != nil {

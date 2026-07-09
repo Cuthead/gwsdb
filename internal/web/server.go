@@ -277,6 +277,43 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "query.tmpl", data)
 }
 
+// resolveAndCachePTR does a live PTR lookup for ip and upserts the result
+// into ptr_cache, regardless of what's already cached. Shared by the
+// on-demand /query lookup (cache miss) and the background refresher.
+func (s *Server) resolveAndCachePTR(ip string) (hostname string, ok bool) {
+	hostname, ok = resolver.LookupPTR(ip, ptrTimeout)
+	loc := geo.Decode(hostname)
+	entry := store.PTRCacheEntry{
+		IP:          ip,
+		PTRHostname: hostname,
+		AirportCode: loc.AirportCode,
+		GeoCity:     loc.City,
+		GeoCountry:  loc.Country,
+		LookupOK:    ok,
+		CheckedAt:   time.Now().UTC(),
+	}
+	if err := s.st.SavePTR(entry); err != nil {
+		log.Printf("ptr: SavePTR(%s): %v", ip, err)
+	}
+	return hostname, ok
+}
+
+// StartPTRRefresher resolves one missing/stale ptr_cache entry per interval
+// tick, so ip_status IPs accumulate PTR records in the background instead of
+// only on a user's /query click. Intended to run in its own goroutine for
+// the lifetime of the server.
+func (s *Server) StartPTRRefresher(interval time.Duration) {
+	for {
+		ip, err := s.st.NextIPForPTRRefresh(ptrCacheTTL)
+		if err != nil {
+			log.Printf("ptr-refresh: NextIPForPTRRefresh: %v", err)
+		} else if ip != "" {
+			s.resolveAndCachePTR(ip)
+		}
+		time.Sleep(interval)
+	}
+}
+
 func (s *Server) lookup(ip string, data *queryData) {
 	var hostname string
 	var ok bool
@@ -284,20 +321,7 @@ func (s *Server) lookup(ip string, data *queryData) {
 	if cached, err := s.st.GetPTR(ip, ptrCacheTTL); err == nil && cached != nil {
 		hostname, ok = cached.PTRHostname, cached.LookupOK
 	} else {
-		hostname, ok = resolver.LookupPTR(ip, ptrTimeout)
-		loc := geo.Decode(hostname)
-		entry := store.PTRCacheEntry{
-			IP:          ip,
-			PTRHostname: hostname,
-			AirportCode: loc.AirportCode,
-			GeoCity:     loc.City,
-			GeoCountry:  loc.Country,
-			LookupOK:    ok,
-			CheckedAt:   time.Now().UTC(),
-		}
-		if err := s.st.SavePTR(entry); err != nil {
-			log.Printf("query: SavePTR(%s): %v", ip, err)
-		}
+		hostname, ok = s.resolveAndCachePTR(ip)
 	}
 
 	if ok {

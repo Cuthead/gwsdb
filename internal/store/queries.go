@@ -290,6 +290,24 @@ func (s *Store) SavePTR(e PTRCacheEntry) error {
 	return err
 }
 
+// NextIPForPTRRefresh returns one IP from ip_status whose ptr_cache entry is
+// missing or older than maxAge, preferring never-checked IPs first, then the
+// stalest. Returns "" if every known IP has a fresh cache entry.
+func (s *Store) NextIPForPTRRefresh(maxAge time.Duration) (string, error) {
+	var ip string
+	err := s.db.QueryRow(`
+		SELECT i.ip
+		FROM ip_status i
+		LEFT JOIN ptr_cache p ON p.ip = i.ip
+		WHERE p.ip IS NULL OR p.checked_at < ?
+		ORDER BY (p.checked_at IS NULL) DESC, p.checked_at ASC
+		LIMIT 1`, time.Now().UTC().Add(-maxAge)).Scan(&ip)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return ip, err
+}
+
 // RecentScans returns the most recent scans across all modes, newest first.
 func (s *Store) RecentScans(limit int) ([]Scan, error) {
 	rows, err := s.db.Query(`
