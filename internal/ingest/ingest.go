@@ -107,7 +107,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		foundCount = len(results)
 	}
 
-	configJSON, err := store.MarshalConfig(cfg)
+	configJSON, err := store.MarshalConfig(sub)
 	if err != nil {
 		return 0, fmt.Errorf("marshal config: %w", err)
 	}
