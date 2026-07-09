@@ -145,6 +145,68 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 	return scanID, nil
 }
 
+// SaveRecheck records the outcome of a single report-triggered (or CLI)
+// recheck probe: an ip_checks row with no owning scan (scan_id NULL) plus the
+// same ip_status bookkeeping SaveScan does per IP. Rechecks deliberately do
+// not create a scans row -- the scans table only records real scanner runs
+// ingested via the CLI. Failure semantics match SaveScan: an IP never seen
+// reachable gets its ip_status/history untouched, so probing arbitrary
+// reported IPs can't grow permanent state.
+func (s *Store) SaveRecheck(c IPCheck) error {
+	checkedAt := c.CheckedAt
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if c.OK {
+		if _, err := tx.Exec(`
+			INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
+			VALUES (NULL, ?, 1, ?, NULL, NULL, ?)`,
+			c.IP, nullInt(c.RTTMs), checkedAt); err != nil {
+			return fmt.Errorf("insert ip_check %s: %w", c.IP, err)
+		}
+		isIPv6 := strings.Contains(c.IP, ":")
+		if _, err := tx.Exec(`
+			INSERT INTO ip_status (ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
+			VALUES (?, ?, ?, ?, ?, NULL, ?, 1, ?, 1)
+			ON CONFLICT(ip) DO UPDATE SET
+				last_seen       = excluded.last_seen,
+				last_rtt_ms     = excluded.last_rtt_ms,
+				times_seen      = times_seen + 1,
+				last_checked_at = excluded.last_checked_at,
+				last_check_ok   = 1`,
+			c.IP, boolToInt(isIPv6), c.ScanMode, checkedAt, checkedAt, nullInt(c.RTTMs), checkedAt); err != nil {
+			return fmt.Errorf("upsert ip_status %s: %w", c.IP, err)
+		}
+		return tx.Commit()
+	}
+
+	res, err := tx.Exec(`
+		UPDATE ip_status SET last_checked_at = ?, last_check_ok = 0 WHERE ip = ?`, checkedAt, c.IP)
+	if err != nil {
+		return fmt.Errorf("mark failed %s: %w", c.IP, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected > 0 {
+		if _, err := tx.Exec(`
+			INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
+			VALUES (NULL, ?, 0, NULL, ?, ?, ?)`,
+			c.IP, nullString(c.Reason), nullString(c.Detail), checkedAt); err != nil {
+			return fmt.Errorf("insert ip_check %s: %w", c.IP, err)
+		}
+	}
+	return tx.Commit()
+}
+
 // DeleteScan removes a scan and its checks. ip_status rows pointing
 // at it via last_scan_id are unlinked (set to NULL) rather than recomputed --
 // their last_seen/times_seen/last_rtt_ms aggregates are left as-is.
@@ -477,10 +539,10 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	rows, err := s.db.Query(`
 		SELECT
-			c.ip, c.ok, c.rtt_ms, c.reason, c.detail, c.checked_at,
+			c.ip, c.ok, c.rtt_ms, c.reason, c.detail, c.checked_at, c.scan_id,
 			s.scan_mode, s.server_name, s.http_path, s.http_method, s.http_verify_hosts, s.verify_common_name, s.valid_status_code
 		FROM ip_checks c
-		JOIN scans s ON s.id = c.scan_id
+		LEFT JOIN scans s ON s.id = c.scan_id
 		WHERE c.ip = ?
 		ORDER BY c.checked_at DESC LIMIT ?`, ip, limit)
 	if err != nil {
@@ -492,11 +554,11 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	for rows.Next() {
 		var c IPCheck
 		var ok int
-		var rtt, validStatusCode sql.NullInt64
-		var reason, detail, httpMethod sql.NullString
+		var rtt, validStatusCode, scanID sql.NullInt64
+		var reason, detail, scanMode, serverName, httpPath, httpMethod, httpVerifyHosts, verifyCN sql.NullString
 		if err := rows.Scan(
-			&c.IP, &ok, &rtt, &reason, &detail, &c.CheckedAt,
-			&c.ScanMode, &c.ServerName, &c.HTTPPath, &httpMethod, &c.HTTPVerifyHosts, &c.VerifyCommonName, &validStatusCode,
+			&c.IP, &ok, &rtt, &reason, &detail, &c.CheckedAt, &scanID,
+			&scanMode, &serverName, &httpPath, &httpMethod, &httpVerifyHosts, &verifyCN, &validStatusCode,
 		); err != nil {
 			return nil, err
 		}
@@ -504,7 +566,13 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 		c.RTTMs = int(rtt.Int64)
 		c.Reason = reason.String
 		c.Detail = detail.String
+		c.Recheck = !scanID.Valid
+		c.ScanMode = scanMode.String
+		c.ServerName = serverName.String
+		c.HTTPPath = httpPath.String
 		c.HTTPMethod = httpMethod.String
+		c.HTTPVerifyHosts = httpVerifyHosts.String
+		c.VerifyCommonName = verifyCN.String
 		c.ValidStatusCode = int(validStatusCode.Int64)
 		out = append(out, c)
 	}

@@ -16,9 +16,11 @@ import (
 const DefaultScanMode = "SNI"
 
 // RunAndSave re-tests ip using the config of the most recent scanMode scan on
-// file, then records the outcome exactly as a one-IP scan would: a new scans
-// row plus matching ip_checks/ip_status updates via SaveScan. Shared by the
-// recheck_queue background worker and the "gwsdb recheck" CLI command.
+// file, then records the outcome via SaveRecheck: an ip_checks history row
+// (with no owning scan) plus the ip_status update. No scans row is created --
+// the scans table only records real scanner runs ingested via the CLI.
+// Shared by the recheck_queue background worker and the "gwsdb recheck" CLI
+// command.
 //
 // The returned error is only for infrastructure failures (no scan config on
 // file, corrupt config JSON, DB write failure) -- a failed probe is a normal
@@ -42,37 +44,17 @@ func RunAndSave(st *store.Store, ip, scanMode string, probeTimeout time.Duration
 	defer cancel()
 	result := CheckSNI(ctx, ip, &cfg)
 
-	now := time.Now().UTC()
-	scan := &store.Scan{
-		ScanMode:         scanMode,
-		ServerName:       strings.Join(cfg.ServerName, ","),
-		VerifyCommonName: cfg.VerifyCommonName,
-		HTTPPath:         cfg.HTTPPath,
-		HTTPMethod:       cfg.HTTPMethod,
-		HTTPVerifyHosts:  strings.Join(cfg.HTTPVerifyHosts, ","),
-		ValidStatusCode:  cfg.ValidStatusCode,
-		ConfigJSON:       configJSON,
-		Level:            cfg.Level,
-		StartedAt:        now,
-		FinishedAt:       now,
-		ScannedCount:     1,
-	}
-	var results []store.ScanResult
-	if result.OK {
-		scan.FoundCount = 1
-		results = []store.ScanResult{{IP: ip, RTTMs: result.RTTMs}}
-	}
-	checks := []store.IPCheck{{
+	check := store.IPCheck{
 		IP:        ip,
 		OK:        result.OK,
 		RTTMs:     result.RTTMs,
 		Reason:    result.Reason,
 		Detail:    result.Detail,
-		CheckedAt: now,
-	}}
-
-	if _, err := st.SaveScan(scan, results, checks); err != nil {
-		return Result{}, fmt.Errorf("SaveScan: %w", err)
+		CheckedAt: time.Now().UTC(),
+		ScanMode:  scanMode,
+	}
+	if err := st.SaveRecheck(check); err != nil {
+		return Result{}, fmt.Errorf("SaveRecheck: %w", err)
 	}
 	return result, nil
 }

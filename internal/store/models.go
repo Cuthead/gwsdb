@@ -57,10 +57,12 @@ type IPCheck struct {
 	Reason    string // e.g. "dial", "handshake", "cn", "status", "ping"; empty for successes
 	Detail    string // e.g. "sni=g.cn host=www.google.com.hk got_code=403"; empty if unavailable
 	CheckedAt time.Time
+	Recheck   bool // true for report-triggered/CLI rechecks, which have no owning scan
 
 	// Request context in effect for this specific check, from the scan it
 	// belongs to -- config can change between scans, so this is joined
-	// per-row rather than assumed to match the current config.
+	// per-row rather than assumed to match the current config. All empty
+	// when Recheck is true.
 	ScanMode         string
 	ServerName       string
 	HTTPPath         string

@@ -304,6 +304,11 @@ func reasonLabel(reason string) string {
 // a failure reason can be read alongside exactly what was sent/expected.
 func describeProbe(c store.IPCheck) string {
 	var parts []string
+	if c.Recheck {
+		// Recheck rows have no owning scan, so no per-row request context;
+		// they run with the latest scan's config at the time.
+		parts = append(parts, "recheck")
+	}
 	if c.ScanMode != "" {
 		parts = append(parts, c.ScanMode)
 	}

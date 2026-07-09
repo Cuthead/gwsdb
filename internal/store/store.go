@@ -47,7 +47,7 @@ CREATE INDEX IF NOT EXISTS idx_ip_status_last_seen ON ip_status(last_seen);
 
 CREATE TABLE IF NOT EXISTS ip_checks (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	scan_id    INTEGER NOT NULL REFERENCES scans(id),
+	scan_id    INTEGER REFERENCES scans(id), -- NULL for report-triggered rechecks (no owning scan)
 	ip         TEXT NOT NULL,
 	ok         INTEGER NOT NULL,
 	rtt_ms     INTEGER,
@@ -161,7 +161,81 @@ func migrate(db *sql.DB) error {
 	if err := mergeScanResultsIntoChecks(db); err != nil {
 		return err
 	}
+	if err := makeIPChecksScanIDNullable(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// makeIPChecksScanIDNullable rebuilds ip_checks on databases created when
+// scan_id was still NOT NULL. Rechecks triggered by community reports record
+// their outcome as an ip_checks row with no owning scan, so the column must
+// accept NULL. SQLite can't drop a NOT NULL constraint in place, hence the
+// create/copy/rename dance. Runs after addColumnsIfMissing so reason/detail
+// are guaranteed to exist.
+func makeIPChecksScanIDNullable(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(ip_checks)`)
+	if err != nil {
+		return err
+	}
+	scanIDNotNull := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "scan_id" && notnull != 0 {
+			scanIDNotNull = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if !scanIDNotNull {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		CREATE TABLE ip_checks_new (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			scan_id    INTEGER REFERENCES scans(id),
+			ip         TEXT NOT NULL,
+			ok         INTEGER NOT NULL,
+			rtt_ms     INTEGER,
+			reason     TEXT,
+			detail     TEXT,
+			checked_at DATETIME NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("create ip_checks_new: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO ip_checks_new (id, scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
+		SELECT id, scan_id, ip, ok, rtt_ms, reason, detail, checked_at FROM ip_checks`); err != nil {
+		return fmt.Errorf("copy ip_checks: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE ip_checks`); err != nil {
+		return fmt.Errorf("drop old ip_checks: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE ip_checks_new RENAME TO ip_checks`); err != nil {
+		return fmt.Errorf("rename ip_checks_new: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_ip_checks_ip ON ip_checks(ip, checked_at)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_ip_checks_scan_id ON ip_checks(scan_id)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // mergeScanResultsIntoChecks folds the legacy scan_results table into
