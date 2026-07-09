@@ -59,10 +59,16 @@ type IPCheck struct {
 	CheckedAt time.Time
 	Recheck   bool // true for report-triggered/CLI rechecks, which have no owning scan
 
+	// ConfigScanID is the scan whose config a recheck probe ran with (rechecks
+	// reuse the latest scan's config). 0 for regular scan checks -- their
+	// config is the owning scan's -- and for rechecks whose source scan was
+	// since deleted.
+	ConfigScanID int64
+
 	// Request context in effect for this specific check, from the scan it
-	// belongs to -- config can change between scans, so this is joined
-	// per-row rather than assumed to match the current config. All empty
-	// when Recheck is true.
+	// belongs to (or, for rechecks, the ConfigScanID scan) -- config can
+	// change between scans, so this is joined per-row rather than assumed to
+	// match the current config.
 	ScanMode         string
 	ServerName       string
 	HTTPPath         string

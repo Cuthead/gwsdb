@@ -28,9 +28,9 @@ const DefaultScanMode = "SNI"
 func RunAndSave(st *store.Store, ip, scanMode string, probeTimeout time.Duration) (Result, error) {
 	scanMode = strings.ToUpper(scanMode)
 
-	configJSON, err := st.LatestScanConfigJSON(scanMode)
+	configScanID, configJSON, err := st.LatestScanConfig(scanMode)
 	if err != nil {
-		return Result{}, fmt.Errorf("LatestScanConfigJSON: %w", err)
+		return Result{}, fmt.Errorf("LatestScanConfig: %w", err)
 	}
 	if configJSON == "" {
 		return Result{}, fmt.Errorf("no %s scan on file yet", scanMode)
@@ -45,13 +45,14 @@ func RunAndSave(st *store.Store, ip, scanMode string, probeTimeout time.Duration
 	result := CheckSNI(ctx, ip, &cfg)
 
 	check := store.IPCheck{
-		IP:        ip,
-		OK:        result.OK,
-		RTTMs:     result.RTTMs,
-		Reason:    result.Reason,
-		Detail:    result.Detail,
-		CheckedAt: time.Now().UTC(),
-		ScanMode:  scanMode,
+		IP:           ip,
+		OK:           result.OK,
+		RTTMs:        result.RTTMs,
+		Reason:       result.Reason,
+		Detail:       result.Detail,
+		CheckedAt:    time.Now().UTC(),
+		ScanMode:     scanMode,
+		ConfigScanID: configScanID,
 	}
 	if err := st.SaveRecheck(check); err != nil {
 		return Result{}, fmt.Errorf("SaveRecheck: %w", err)

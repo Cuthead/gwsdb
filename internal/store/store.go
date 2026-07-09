@@ -46,14 +46,15 @@ CREATE TABLE IF NOT EXISTS ip_status (
 CREATE INDEX IF NOT EXISTS idx_ip_status_last_seen ON ip_status(last_seen);
 
 CREATE TABLE IF NOT EXISTS ip_checks (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	scan_id    INTEGER REFERENCES scans(id), -- NULL for report-triggered rechecks (no owning scan)
-	ip         TEXT NOT NULL,
-	ok         INTEGER NOT NULL,
-	rtt_ms     INTEGER,
-	reason     TEXT, -- e.g. dial/handshake/cn/status/ping; NULL for successes
-	detail     TEXT, -- e.g. "sni=g.cn host=www.google.com.hk got_code=403"
-	checked_at DATETIME NOT NULL
+	id             INTEGER PRIMARY KEY AUTOINCREMENT,
+	scan_id        INTEGER REFERENCES scans(id), -- NULL for report-triggered rechecks (no owning scan)
+	config_scan_id INTEGER REFERENCES scans(id), -- for rechecks: the scan whose config the probe ran with
+	ip             TEXT NOT NULL,
+	ok             INTEGER NOT NULL,
+	rtt_ms         INTEGER,
+	reason         TEXT, -- e.g. dial/handshake/cn/status/ping; NULL for successes
+	detail         TEXT, -- e.g. "sni=g.cn host=www.google.com.hk got_code=403"
+	checked_at     DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ip_checks_ip ON ip_checks(ip, checked_at);
 CREATE INDEX IF NOT EXISTS idx_ip_checks_scan_id ON ip_checks(scan_id);
@@ -143,8 +144,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := addColumnsIfMissing(db, "ip_checks", map[string]string{
-		"reason": `ALTER TABLE ip_checks ADD COLUMN reason TEXT`,
-		"detail": `ALTER TABLE ip_checks ADD COLUMN detail TEXT`,
+		"reason":         `ALTER TABLE ip_checks ADD COLUMN reason TEXT`,
+		"detail":         `ALTER TABLE ip_checks ADD COLUMN detail TEXT`,
+		"config_scan_id": `ALTER TABLE ip_checks ADD COLUMN config_scan_id INTEGER REFERENCES scans(id)`,
 	}); err != nil {
 		return err
 	}
@@ -207,20 +209,21 @@ func makeIPChecksScanIDNullable(db *sql.DB) error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`
 		CREATE TABLE ip_checks_new (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			scan_id    INTEGER REFERENCES scans(id),
-			ip         TEXT NOT NULL,
-			ok         INTEGER NOT NULL,
-			rtt_ms     INTEGER,
-			reason     TEXT,
-			detail     TEXT,
-			checked_at DATETIME NOT NULL
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			scan_id        INTEGER REFERENCES scans(id),
+			config_scan_id INTEGER REFERENCES scans(id),
+			ip             TEXT NOT NULL,
+			ok             INTEGER NOT NULL,
+			rtt_ms         INTEGER,
+			reason         TEXT,
+			detail         TEXT,
+			checked_at     DATETIME NOT NULL
 		)`); err != nil {
 		return fmt.Errorf("create ip_checks_new: %w", err)
 	}
 	if _, err := tx.Exec(`
-		INSERT INTO ip_checks_new (id, scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
-		SELECT id, scan_id, ip, ok, rtt_ms, reason, detail, checked_at FROM ip_checks`); err != nil {
+		INSERT INTO ip_checks_new (id, scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
+		SELECT id, scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at FROM ip_checks`); err != nil {
 		return fmt.Errorf("copy ip_checks: %w", err)
 	}
 	if _, err := tx.Exec(`DROP TABLE ip_checks`); err != nil {

@@ -146,8 +146,9 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 }
 
 // SaveRecheck records the outcome of a single report-triggered (or CLI)
-// recheck probe: an ip_checks row with no owning scan (scan_id NULL) plus the
-// same ip_status bookkeeping SaveScan does per IP. Rechecks deliberately do
+// recheck probe: an ip_checks row with no owning scan (scan_id NULL, with
+// config_scan_id pointing at the scan whose config the probe ran with) plus
+// the same ip_status bookkeeping SaveScan does per IP. Rechecks deliberately do
 // not create a scans row -- the scans table only records real scanner runs
 // ingested via the CLI. Failure semantics match SaveScan: an IP never seen
 // reachable gets its ip_status/history untouched, so probing arbitrary
@@ -164,11 +165,13 @@ func (s *Store) SaveRecheck(c IPCheck) error {
 	}
 	defer tx.Rollback()
 
+	configScanID := nullInt64(c.ConfigScanID)
+
 	if c.OK {
 		if _, err := tx.Exec(`
-			INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
-			VALUES (NULL, ?, 1, ?, NULL, NULL, ?)`,
-			c.IP, nullInt(c.RTTMs), checkedAt); err != nil {
+			INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
+			VALUES (NULL, ?, ?, 1, ?, NULL, NULL, ?)`,
+			configScanID, c.IP, nullInt(c.RTTMs), checkedAt); err != nil {
 			return fmt.Errorf("insert ip_check %s: %w", c.IP, err)
 		}
 		isIPv6 := strings.Contains(c.IP, ":")
@@ -198,9 +201,9 @@ func (s *Store) SaveRecheck(c IPCheck) error {
 	}
 	if affected > 0 {
 		if _, err := tx.Exec(`
-			INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
-			VALUES (NULL, ?, 0, NULL, ?, ?, ?)`,
-			c.IP, nullString(c.Reason), nullString(c.Detail), checkedAt); err != nil {
+			INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
+			VALUES (NULL, ?, ?, 0, NULL, ?, ?, ?)`,
+			configScanID, c.IP, nullString(c.Reason), nullString(c.Detail), checkedAt); err != nil {
 			return fmt.Errorf("insert ip_check %s: %w", c.IP, err)
 		}
 	}
@@ -219,6 +222,11 @@ func (s *Store) DeleteScan(id int64) error {
 
 	if _, err := tx.Exec(`DELETE FROM ip_checks WHERE scan_id = ?`, id); err != nil {
 		return fmt.Errorf("delete ip_checks: %w", err)
+	}
+	// Recheck rows referencing this scan's config survive; they just lose
+	// their probe-request context.
+	if _, err := tx.Exec(`UPDATE ip_checks SET config_scan_id = NULL WHERE config_scan_id = ?`, id); err != nil {
+		return fmt.Errorf("clear ip_checks.config_scan_id: %w", err)
 	}
 	if _, err := tx.Exec(`UPDATE ip_status SET last_scan_id = NULL WHERE last_scan_id = ?`, id); err != nil {
 		return fmt.Errorf("clear ip_status.last_scan_id: %w", err)
@@ -539,10 +547,10 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	rows, err := s.db.Query(`
 		SELECT
-			c.ip, c.ok, c.rtt_ms, c.reason, c.detail, c.checked_at, c.scan_id,
+			c.ip, c.ok, c.rtt_ms, c.reason, c.detail, c.checked_at, c.scan_id, c.config_scan_id,
 			s.scan_mode, s.server_name, s.http_path, s.http_method, s.http_verify_hosts, s.verify_common_name, s.valid_status_code
 		FROM ip_checks c
-		LEFT JOIN scans s ON s.id = c.scan_id
+		LEFT JOIN scans s ON s.id = COALESCE(c.scan_id, c.config_scan_id)
 		WHERE c.ip = ?
 		ORDER BY c.checked_at DESC LIMIT ?`, ip, limit)
 	if err != nil {
@@ -554,10 +562,10 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	for rows.Next() {
 		var c IPCheck
 		var ok int
-		var rtt, validStatusCode, scanID sql.NullInt64
+		var rtt, validStatusCode, scanID, configScanID sql.NullInt64
 		var reason, detail, scanMode, serverName, httpPath, httpMethod, httpVerifyHosts, verifyCN sql.NullString
 		if err := rows.Scan(
-			&c.IP, &ok, &rtt, &reason, &detail, &c.CheckedAt, &scanID,
+			&c.IP, &ok, &rtt, &reason, &detail, &c.CheckedAt, &scanID, &configScanID,
 			&scanMode, &serverName, &httpPath, &httpMethod, &httpVerifyHosts, &verifyCN, &validStatusCode,
 		); err != nil {
 			return nil, err
@@ -567,6 +575,7 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 		c.Reason = reason.String
 		c.Detail = detail.String
 		c.Recheck = !scanID.Valid
+		c.ConfigScanID = configScanID.Int64
 		c.ScanMode = scanMode.String
 		c.ServerName = serverName.String
 		c.HTTPPath = httpPath.String
@@ -720,22 +729,30 @@ func (s *Store) PruneRecheckQueue(olderThan time.Duration) (int64, error) {
 	return res.RowsAffected()
 }
 
-// LatestScanConfigJSON returns the config_json of the most recent scan for
-// scanMode, or "" if none exists yet.
-func (s *Store) LatestScanConfigJSON(scanMode string) (string, error) {
+// LatestScanConfig returns the id and config_json of the most recent scan
+// for scanMode, or (0, "") if none exists yet.
+func (s *Store) LatestScanConfig(scanMode string) (int64, string, error) {
+	var id int64
 	var configJSON sql.NullString
 	err := s.db.QueryRow(`
-		SELECT config_json FROM scans WHERE scan_mode = ? ORDER BY started_at DESC, id DESC LIMIT 1`, scanMode).Scan(&configJSON)
+		SELECT id, config_json FROM scans WHERE scan_mode = ? ORDER BY started_at DESC, id DESC LIMIT 1`, scanMode).Scan(&id, &configJSON)
 	if err == sql.ErrNoRows {
-		return "", nil
+		return 0, "", nil
 	}
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
-	return configJSON.String, nil
+	return id, configJSON.String, nil
 }
 
 func nullInt(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func nullInt64(v int64) any {
 	if v == 0 {
 		return nil
 	}
