@@ -490,6 +490,10 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid ip", http.StatusBadRequest)
 		return
 	}
+	if info, ok := s.lookupASN(ip); !ok || !isGoogleASN(info) {
+		http.Error(w, "this IP does not belong to a Google ASN", http.StatusBadRequest)
+		return
+	}
 
 	var verdict bool
 	switch r.FormValue("verdict") {
