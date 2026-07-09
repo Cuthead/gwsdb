@@ -11,10 +11,12 @@
 		var status = document.getElementById('statusInput').value;
 		var rows = document.getElementById('ipTableBody').rows;
 		var shown = 0;
+		var familyTotal = 0;
 		for (var i = 0; i < rows.length; i++) {
 			var r = rows[i];
 			var isIPv6 = r.dataset.ip.indexOf(':') !== -1;
 			var familyMatch = family === '6' ? isIPv6 : !isIPv6;
+			if (familyMatch) familyTotal++;
 			var statusMatch = status === 'all' || r.dataset.status === 'Reachable';
 			var hay = (r.dataset.ip + ' ' + r.dataset.ptr).toLowerCase();
 			var match = familyMatch && statusMatch && hay.indexOf(q) !== -1;
@@ -22,6 +24,7 @@
 			if (match) shown++;
 		}
 		document.getElementById('visibleCount').textContent = shown;
+		document.getElementById('familyCount').textContent = familyTotal;
 	}
 
 	function sort(col, defaultDesc) {
