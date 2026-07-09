@@ -22,6 +22,14 @@ import (
 //go:embed templates/*.tmpl
 var templateFS embed.FS
 
+// staticFS holds the stylesheet, the home page's script, and the country
+// flag GIFs. Flags are served from here rather than hotlinked off a third
+// party, so a visitor's browser never discloses their address or referrer to
+// anyone but this origin.
+//
+//go:embed static
+var staticFS embed.FS
+
 const repoURL = "https://github.com/cuthead/gwsdb"
 
 // buildRevision, buildCommitURL, and buildDate are read once from the Go
@@ -96,7 +104,53 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/query", s.handleQuery)
 	mux.HandleFunc("/report", s.handleReport)
 	mux.HandleFunc("/scans", s.handleScans)
-	return mux
+	mux.Handle("/static/", staticHandler())
+	return securityHeaders(mux)
+}
+
+// contentSecurityPolicy locks the pages down to their own origin. Everything
+// the templates need is served from /static/, so there is no 'unsafe-inline'
+// here -- which is why the stylesheet and home.js are separate files rather
+// than inline <style>/<script> blocks with inline event handlers.
+const contentSecurityPolicy = "default-src 'none'; " +
+	"img-src 'self'; style-src 'self'; script-src 'self'; " +
+	"form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+// securityHeaders sets the response headers that apply to every route.
+// Referrer-Policy is same-origin rather than no-referrer so that a Referer
+// still arrives on the /report POST (leaving that as a usable CSRF signal)
+// while outbound links to GitHub disclose nothing.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "same-origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// staticHandler serves the embedded assets. A flag GIF's contents never
+// change for a given country code, so it can be cached indefinitely; the
+// stylesheet and script are cached for an hour instead, so a redeploy is
+// picked up without needing a cache-busting query string.
+func staticHandler() http.Handler {
+	files := http.FileServer(http.FS(staticFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// http.FileServer renders an index for a directory path; nothing
+		// under /static/ should be browsable.
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/static/flags/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+		}
+		files.ServeHTTP(w, r)
+	})
 }
 
 // clientIP extracts the real client address, preferring Cloudflare's
@@ -460,6 +514,9 @@ func (s *Server) lookupASN(ip string) (asn.Info, bool) {
 	if !ok {
 		return info, ok
 	}
+	if !isGoogleASN(info) {
+		return info, ok
+	}
 	entry := store.ASNCacheEntry{
 		IP:        ip,
 		ASN:       info.ASN,
@@ -475,12 +532,26 @@ func (s *Server) lookupASN(ip string) (asn.Info, bool) {
 	return info, ok
 }
 
+func sameOrigin(r *http.Request) bool {
+	for _, h := range []string{"Origin", "Referer"} {
+		if v := r.Header.Get(h); v != "" {
+			u, err := url.Parse(v)
+			return err == nil && u.Host != "" && u.Host == r.Host
+		}
+	}
+	return false
+}
+
 // handleReport records a community "usable"/"unusable" report against an IP,
 // attributing it to the submitter's announced prefix and AS rather than
 // their raw address.
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}
 	if err := r.ParseForm(); err != nil {

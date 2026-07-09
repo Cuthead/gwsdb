@@ -4,14 +4,7 @@
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Home - GWS Database</title>
-<style>
-body { margin: 0; }
-.gwsdb-wrap { width: 760px; max-width: 100%; }
-@media (max-width: 780px) {
-	input#searchInput { width: 60%; box-sizing: border-box; }
-	.gwsdb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-}
-</style>
+<link rel="stylesheet" href="/static/gwsdb.css">
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
 <center>
@@ -39,15 +32,15 @@ body { margin: 0; }
 </p>
 
 <p>
-<input type="text" id="searchInput" placeholder="Search IP or PTR" size="30" onkeyup="gwsdbFilter()">
-<input type="button" value="Clear" onclick="document.getElementById('searchInput').value='';gwsdbFilter()">
+<input type="text" id="searchInput" placeholder="Search IP or PTR" size="30">
+<input type="button" id="clearButton" value="Clear">
 &nbsp;&nbsp;
-<select id="familyInput" onchange="gwsdbFilter()">
+<select id="familyInput">
 <option value="4">IPv4</option>
 <option value="6">IPv6</option>
 </select>
 &nbsp;&nbsp;
-<select id="statusInput" onchange="gwsdbFilter()">
+<select id="statusInput">
 <option value="up">Reachable only</option>
 <option value="all">All (including history)</option>
 </select>
@@ -57,20 +50,20 @@ body { margin: 0; }
 <div class="gwsdb-scroll">
 <table border="1" cellpadding="4" cellspacing="0" width="100%" id="ipTable">
 <tr bgcolor="#EEEEEE">
-<td><b><a href="#" onclick="return gwsdbSort('ip', false)">IP Address</a> <span class="arrow" data-col="ip"></span></b></td>
-<td><b><a href="#" onclick="return gwsdbSort('ptr', false)">PTR</a> <span class="arrow" data-col="ptr"></span></b></td>
-<td><b><a href="#" onclick="return gwsdbSort('country', false)">Country</a> <span class="arrow" data-col="country"></span></b></td>
-<td><b><a href="#" onclick="return gwsdbSort('status', true)">Status</a> <span class="arrow" data-col="status"></span></b></td>
-<td><b><a href="#" onclick="return gwsdbSort('firstSeen', true)">First Seen</a> <span class="arrow" data-col="firstSeen"></span></b></td>
-<td><b><a href="#" onclick="return gwsdbSort('lastSeen', true)">Last Reachable</a> <span class="arrow" data-col="lastSeen"></span></b></td>
-<td><b><a href="#" onclick="return gwsdbSort('rtt', true)">Last RTT</a> <span class="arrow" data-col="rtt"></span></b></td>
+<td><b><a href="#" data-sort="ip" data-sort-desc="0">IP Address</a> <span class="arrow" data-col="ip"></span></b></td>
+<td><b><a href="#" data-sort="ptr" data-sort-desc="0">PTR</a> <span class="arrow" data-col="ptr"></span></b></td>
+<td><b><a href="#" data-sort="country" data-sort-desc="0">Country</a> <span class="arrow" data-col="country"></span></b></td>
+<td><b><a href="#" data-sort="status" data-sort-desc="1">Status</a> <span class="arrow" data-col="status"></span></b></td>
+<td><b><a href="#" data-sort="firstSeen" data-sort-desc="1">First Seen</a> <span class="arrow" data-col="firstSeen"></span></b></td>
+<td><b><a href="#" data-sort="lastSeen" data-sort-desc="1">Last Reachable</a> <span class="arrow" data-col="lastSeen"></span></b></td>
+<td><b><a href="#" data-sort="rtt" data-sort-desc="1">Last RTT</a> <span class="arrow" data-col="rtt"></span></b></td>
 </tr>
 <tbody id="ipTableBody">
 {{range .IPs}}
 <tr data-ip="{{.IP}}" data-ptr="{{.PTR}}" data-country="{{.Country}}" data-status="{{.Status}}" data-first-seen="{{.FirstSeen}}" data-last-seen="{{.LastSeen}}" data-rtt="{{.LastRTTMs}}">
 <td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
 <td>{{if .PTR}}<tt>{{.PTR}}</tt>{{else}}-{{end}}</td>
-<td>{{if .CountryCode}}<img src="https://bgp.he.net/images/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" width="16" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
+<td>{{if .CountryCode}}<img src="/static/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
 <td>{{if eq .Status "Reachable"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td>
 <td>{{.FirstSeen}}</td>
 <td>{{.LastSeen}}</td>
@@ -80,64 +73,7 @@ body { margin: 0; }
 </tbody>
 </table>
 </div>
-<script>
-var gwsdbSortState = {col: null, desc: false};
-var gwsdbStatusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
-
-function gwsdbFilter() {
-	var q = document.getElementById('searchInput').value.trim().toLowerCase();
-	var family = document.getElementById('familyInput').value;
-	var status = document.getElementById('statusInput').value;
-	var rows = document.getElementById('ipTableBody').rows;
-	var shown = 0;
-	for (var i = 0; i < rows.length; i++) {
-		var r = rows[i];
-		var isIPv6 = r.dataset.ip.indexOf(':') !== -1;
-		var familyMatch = family === '6' ? isIPv6 : !isIPv6;
-		var statusMatch = status === 'all' || r.dataset.status === 'Reachable';
-		var hay = (r.dataset.ip + ' ' + r.dataset.ptr).toLowerCase();
-		var match = familyMatch && statusMatch && hay.indexOf(q) !== -1;
-		r.style.display = match ? '' : 'none';
-		if (match) shown++;
-	}
-	document.getElementById('visibleCount').textContent = shown;
-}
-
-function gwsdbSort(col, defaultDesc) {
-	var desc = gwsdbSortState.col === col ? !gwsdbSortState.desc : defaultDesc;
-	gwsdbSortState = {col: col, desc: desc};
-
-	var tbody = document.getElementById('ipTableBody');
-	var rows = Array.prototype.slice.call(tbody.rows);
-	rows.sort(function(a, b) {
-		var av, bv;
-		if (col === 'rtt') {
-			av = parseInt(a.dataset.rtt, 10) || 0;
-			bv = parseInt(b.dataset.rtt, 10) || 0;
-			return desc ? bv - av : av - bv;
-		}
-		if (col === 'status') {
-			av = gwsdbStatusRank[a.dataset.status] || 0;
-			bv = gwsdbStatusRank[b.dataset.status] || 0;
-			return desc ? bv - av : av - bv;
-		}
-		av = (a.dataset[col] || '').toLowerCase();
-		bv = (b.dataset[col] || '').toLowerCase();
-		if (av < bv) return desc ? 1 : -1;
-		if (av > bv) return desc ? -1 : 1;
-		return 0;
-	});
-	rows.forEach(function(r) { tbody.appendChild(r); });
-
-	var arrows = document.getElementsByClassName('arrow');
-	for (var i = 0; i < arrows.length; i++) {
-		arrows[i].textContent = arrows[i].dataset.col === col ? (desc ? '▼' : '▲') : '';
-	}
-	return false;
-}
-
-gwsdbFilter();
-</script>
+<script src="/static/home.js"></script>
 {{else}}
 <p><i>No data yet. Please run a scan and import the results first.</i></p>
 {{end}}
