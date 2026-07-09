@@ -23,6 +23,9 @@ type Options struct {
 	LogPath    string // path to captured stdout log, optional
 	ScanMode   string // override scan mode; defaults to config's ScanMode
 	OutputPath string // override output file path; defaults to config's OutputFile for the mode
+	LogOnly    bool   // ignore the output file even if present; derive hits from LogPath only.
+	// Needed when a later scan overwrote the output file at the same path,
+	// leaving LogPath as the only surviving record of this run.
 }
 
 var logLineTS = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s`)
@@ -58,24 +61,26 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		sub.HTTPMethod = "HEAD"
 	}
 
+	if opts.LogOnly && opts.LogPath == "" {
+		return 0, fmt.Errorf("log-only ingest requires a log path")
+	}
+
 	outputPath := opts.OutputPath
 	if outputPath == "" {
 		outputPath = sub.OutputFile
 	}
-	if outputPath == "" {
-		return 0, fmt.Errorf("no output file for mode %q", mode)
+	if opts.LogOnly {
+		outputPath = ""
 	}
-	if !filepath.IsAbs(outputPath) {
+	if outputPath == "" && opts.LogPath == "" {
+		return 0, fmt.Errorf("no output file for mode %q and no log path given", mode)
+	}
+	if outputPath != "" && !filepath.IsAbs(outputPath) {
 		scanDir := opts.ScanDir
 		if scanDir == "" {
 			scanDir = filepath.Dir(opts.ConfigPath)
 		}
 		outputPath = filepath.Join(scanDir, outputPath)
-	}
-
-	ips, err := readOutputIPs(outputPath, sub.OutputSeparator)
-	if err != nil {
-		return 0, fmt.Errorf("read output file: %w", err)
 	}
 
 	sum := logSummary{RTTByIP: map[string]int{}}
@@ -90,6 +95,21 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		if cfg.LogLevel < 5 {
 			log.Printf("warning: config LogLevel=%d (<5) -- failed attempts won't be logged, so ip_checks history will be incomplete; set \"LogLevel\": 5 in the scan config", cfg.LogLevel)
 		}
+	}
+
+	var ips []string
+	if outputPath != "" {
+		ips, err = readOutputIPs(outputPath, sub.OutputSeparator)
+		if err != nil {
+			if !os.IsNotExist(err) || opts.LogPath == "" {
+				return 0, fmt.Errorf("read output file: %w", err)
+			}
+			log.Printf("output file %s not found, falling back to log-derived hit list", outputPath)
+			outputPath = ""
+			ips = foundIPsFromLog(sum.Checks)
+		}
+	} else {
+		ips = foundIPsFromLog(sum.Checks)
 	}
 
 	results := make([]store.ScanResult, 0, len(ips))
@@ -129,6 +149,21 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	}
 
 	return st.SaveScan(scan, results, sum.Checks)
+}
+
+// foundIPsFromLog derives an ordered, deduplicated hit list from parsed log
+// checks, for use when no output file is available.
+func foundIPsFromLog(checks []store.IPCheck) []string {
+	seen := make(map[string]bool, len(checks))
+	out := make([]string, 0, len(checks))
+	for _, c := range checks {
+		if !c.OK || seen[c.IP] {
+			continue
+		}
+		seen[c.IP] = true
+		out = append(out, c.IP)
+	}
+	return out
 }
 
 // readOutputIPs parses a gscan_quic output file. Handles both the plain

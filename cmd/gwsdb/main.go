@@ -76,6 +76,7 @@ func runIngest(args []string) {
 	logPath := fs.String("log", "", "path to the captured gscan_quic stdout log (optional)")
 	mode := fs.String("mode", "", "scan mode to ingest (SNI/QUIC/TLS/PING); defaults to the config's ScanMode")
 	output := fs.String("output", "", "override path to the scan output IP list; defaults to the config's OutputFile")
+	logOnly := fs.Bool("log-only", false, "ignore the output file even if present; derive hits from -log only (use when a later scan overwrote the output file at this path)")
 	fs.Parse(args)
 
 	if *configPath == "" {
@@ -96,6 +97,7 @@ func runIngest(args []string) {
 		LogPath:    *logPath,
 		ScanMode:   *mode,
 		OutputPath: *output,
+		LogOnly:    *logOnly,
 	})
 	if err != nil {
 		log.Fatalf("ingest: %v", err)
