@@ -35,6 +35,11 @@
 <p>
 <input type="text" id="searchInput" placeholder="Search IP or PTR" size="30" onkeyup="gwsdbFilter()">
 <input type="button" value="Clear" onclick="document.getElementById('searchInput').value='';gwsdbFilter()">
+&nbsp;&nbsp;
+<select id="familyInput" onchange="gwsdbFilter()">
+<option value="4">IPv4</option>
+<option value="6">IPv6</option>
+</select>
 </p>
 
 {{if .IPs}}
@@ -68,12 +73,15 @@ var gwsdbStatusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
 
 function gwsdbFilter() {
 	var q = document.getElementById('searchInput').value.trim().toLowerCase();
+	var family = document.getElementById('familyInput').value;
 	var rows = document.getElementById('ipTableBody').rows;
 	var shown = 0;
 	for (var i = 0; i < rows.length; i++) {
 		var r = rows[i];
+		var isIPv6 = r.dataset.ip.indexOf(':') !== -1;
+		var familyMatch = family === '6' ? isIPv6 : !isIPv6;
 		var hay = (r.dataset.ip + ' ' + r.dataset.ptr).toLowerCase();
-		var match = hay.indexOf(q) !== -1;
+		var match = familyMatch && hay.indexOf(q) !== -1;
 		r.style.display = match ? '' : 'none';
 		if (match) shown++;
 	}
@@ -112,6 +120,8 @@ function gwsdbSort(col, defaultDesc) {
 	}
 	return false;
 }
+
+gwsdbFilter();
 </script>
 {{else}}
 <p><i>No data yet. Please run a scan and import the results first.</i></p>
