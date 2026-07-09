@@ -330,16 +330,30 @@ func (s *Store) ListScans(limit int) ([]Scan, error) {
 	var out []Scan
 	for rows.Next() {
 		var sc Scan
+		var serverName, verifyCN, httpPath, httpMethod, httpHosts, inputFile, outputFile, configJSON sql.NullString
+		var validStatusCode, level, scannedCount, foundCount sql.NullInt64
 		var started, finished sql.NullTime
 		if err := rows.Scan(
-			&sc.ID, &sc.ScanMode, &sc.ServerName, &sc.VerifyCommonName, &sc.HTTPPath, &sc.HTTPMethod, &sc.HTTPVerifyHosts,
-			&sc.ValidStatusCode, &sc.InputFile, &sc.OutputFile, &sc.Level, &sc.ConfigJSON,
-			&started, &finished, &sc.ScannedCount, &sc.FoundCount,
+			&sc.ID, &sc.ScanMode, &serverName, &verifyCN, &httpPath, &httpMethod, &httpHosts,
+			&validStatusCode, &inputFile, &outputFile, &level, &configJSON,
+			&started, &finished, &scannedCount, &foundCount,
 		); err != nil {
 			return nil, err
 		}
+		sc.ServerName = serverName.String
+		sc.VerifyCommonName = verifyCN.String
+		sc.HTTPPath = httpPath.String
+		sc.HTTPMethod = httpMethod.String
+		sc.HTTPVerifyHosts = httpHosts.String
+		sc.ValidStatusCode = int(validStatusCode.Int64)
+		sc.InputFile = inputFile.String
+		sc.OutputFile = outputFile.String
+		sc.Level = int(level.Int64)
+		sc.ConfigJSON = configJSON.String
 		sc.StartedAt = started.Time
 		sc.FinishedAt = finished.Time
+		sc.ScannedCount = int(scannedCount.Int64)
+		sc.FoundCount = int(foundCount.Int64)
 		out = append(out, sc)
 	}
 	return out, rows.Err()
