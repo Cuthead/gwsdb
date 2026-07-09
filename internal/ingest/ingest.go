@@ -51,6 +51,11 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	if sub == nil {
 		return 0, fmt.Errorf("unknown scan mode %q", mode)
 	}
+	if strings.EqualFold(mode, "sni") && sub.HTTPMethod == "" {
+		// gscan_quic's testSni (sni.go) is the only mode that actually reads
+		// HTTPMethod; it defaults to HEAD there too (gscan.go's loadConfig).
+		sub.HTTPMethod = "HEAD"
+	}
 
 	outputPath := opts.OutputPath
 	if outputPath == "" {
@@ -107,6 +112,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		ServerName:       strings.Join(sub.ServerName, ","),
 		VerifyCommonName: sub.VerifyCommonName,
 		HTTPPath:         sub.HTTPPath,
+		HTTPMethod:       sub.HTTPMethod,
 		HTTPVerifyHosts:  strings.Join(sub.HTTPVerifyHosts, ","),
 		ValidStatusCode:  sub.ValidStatusCode,
 		InputFile:        sub.InputFile,

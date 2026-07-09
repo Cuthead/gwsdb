@@ -160,6 +160,9 @@ func describeProbe(c store.IPCheck) string {
 	if c.ScanMode != "" {
 		parts = append(parts, c.ScanMode)
 	}
+	if c.HTTPMethod != "" {
+		parts = append(parts, "method="+c.HTTPMethod)
+	}
 	if c.HTTPPath != "" {
 		parts = append(parts, "path="+c.HTTPPath)
 	}

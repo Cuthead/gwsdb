@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS scans (
 	server_name        TEXT,
 	verify_common_name TEXT,
 	http_path          TEXT,
+	http_method        TEXT,
 	http_verify_hosts  TEXT,
 	valid_status_code  INTEGER,
 	input_file         TEXT,
@@ -115,6 +116,11 @@ func migrate(db *sql.DB) error {
 	if err := addColumnsIfMissing(db, "ip_checks", map[string]string{
 		"reason": `ALTER TABLE ip_checks ADD COLUMN reason TEXT`,
 		"detail": `ALTER TABLE ip_checks ADD COLUMN detail TEXT`,
+	}); err != nil {
+		return err
+	}
+	if err := addColumnsIfMissing(db, "scans", map[string]string{
+		"http_method": `ALTER TABLE scans ADD COLUMN http_method TEXT`,
 	}); err != nil {
 		return err
 	}

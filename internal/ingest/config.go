@@ -8,6 +8,7 @@ type ScanConfig struct {
 	HTTPVerifyHosts  []string
 	VerifyCommonName string
 	HTTPPath         string
+	HTTPMethod       string
 	ValidStatusCode  int
 	HandshakeTimeout int
 	ScanMinRTT       int

@@ -24,11 +24,11 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 
 	res, err := tx.Exec(`
 		INSERT INTO scans (
-			scan_mode, server_name, verify_common_name, http_path, http_verify_hosts,
+			scan_mode, server_name, verify_common_name, http_path, http_method, http_verify_hosts,
 			valid_status_code, input_file, output_file, level, config_json, log_text,
 			started_at, finished_at, scanned_count, found_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		scan.ScanMode, scan.ServerName, scan.VerifyCommonName, scan.HTTPPath, scan.HTTPVerifyHosts,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		scan.ScanMode, scan.ServerName, scan.VerifyCommonName, scan.HTTPPath, scan.HTTPMethod, scan.HTTPVerifyHosts,
 		scan.ValidStatusCode, scan.InputFile, scan.OutputFile, scan.Level, scan.ConfigJSON, scan.LogText,
 		nullTime(scan.StartedAt), nullTime(scan.FinishedAt), scan.ScannedCount, scan.FoundCount,
 	)
@@ -326,7 +326,7 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	rows, err := s.db.Query(`
 		SELECT
 			c.ip, c.ok, c.rtt_ms, c.reason, c.detail, c.checked_at,
-			s.scan_mode, s.server_name, s.http_path, s.http_verify_hosts, s.verify_common_name, s.valid_status_code
+			s.scan_mode, s.server_name, s.http_path, s.http_method, s.http_verify_hosts, s.verify_common_name, s.valid_status_code
 		FROM ip_checks c
 		JOIN scans s ON s.id = c.scan_id
 		WHERE c.ip = ?
@@ -341,10 +341,10 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 		var c IPCheck
 		var ok int
 		var rtt, validStatusCode sql.NullInt64
-		var reason, detail sql.NullString
+		var reason, detail, httpMethod sql.NullString
 		if err := rows.Scan(
 			&c.IP, &ok, &rtt, &reason, &detail, &c.CheckedAt,
-			&c.ScanMode, &c.ServerName, &c.HTTPPath, &c.HTTPVerifyHosts, &c.VerifyCommonName, &validStatusCode,
+			&c.ScanMode, &c.ServerName, &c.HTTPPath, &httpMethod, &c.HTTPVerifyHosts, &c.VerifyCommonName, &validStatusCode,
 		); err != nil {
 			return nil, err
 		}
@@ -352,6 +352,7 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 		c.RTTMs = int(rtt.Int64)
 		c.Reason = reason.String
 		c.Detail = detail.String
+		c.HTTPMethod = httpMethod.String
 		c.ValidStatusCode = int(validStatusCode.Int64)
 		out = append(out, c)
 	}

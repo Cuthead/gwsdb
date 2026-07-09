@@ -9,6 +9,7 @@ type Scan struct {
 	ServerName       string
 	VerifyCommonName string
 	HTTPPath         string
+	HTTPMethod       string
 	HTTPVerifyHosts  string
 	ValidStatusCode  int
 	InputFile        string
@@ -62,6 +63,7 @@ type IPCheck struct {
 	ScanMode         string
 	ServerName       string
 	HTTPPath         string
+	HTTPMethod       string
 	HTTPVerifyHosts  string
 	VerifyCommonName string
 	ValidStatusCode  int
