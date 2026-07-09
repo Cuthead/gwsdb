@@ -60,6 +60,7 @@ const maxIPsListed = 500
 
 type ipRow struct {
 	IP        string
+	PTR       string // cached PTR hostname, "" if never looked up
 	Status    string // "可达" / "不可达" / "-" (never explicitly re-checked)
 	FirstSeen string
 	LastSeen  string
@@ -111,6 +112,18 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	data.Count = len(data.IPs)
 	data.Truncated = len(known) == maxIPsListed
+
+	ips := make([]string, len(data.IPs))
+	for i, row := range data.IPs {
+		ips[i] = row.IP
+	}
+	if ptrs, err := s.st.GetPTRBatch(ips); err != nil {
+		log.Printf("home: GetPTRBatch: %v", err)
+	} else {
+		for i, row := range data.IPs {
+			data.IPs[i].PTR = ptrs[row.IP]
+		}
+	}
 
 	if sc, err := s.st.LatestScan(""); err == nil && sc != nil {
 		data.ScanMode = sc.ScanMode

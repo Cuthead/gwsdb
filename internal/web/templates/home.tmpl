@@ -35,6 +35,7 @@
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE">
 <td><b>IP 地址</b></td>
+<td><b>PTR</b></td>
 <td><b>状态</b></td>
 <td><b>首次发现</b></td>
 <td><b>最近可达</b></td>
@@ -43,6 +44,7 @@
 {{range .IPs}}
 <tr>
 <td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
+<td>{{if .PTR}}<tt>{{.PTR}}</tt>{{else}}-{{end}}</td>
 <td>{{if eq .Status "可达"}}<font color="#008000">✓ 可达</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ 不可达</font>{{else}}-{{end}}</td>
 <td>{{.FirstSeen}}</td>
 <td>{{.LastSeen}}</td>

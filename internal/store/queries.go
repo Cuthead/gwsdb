@@ -241,6 +241,40 @@ func (s *Store) GetPTR(ip string, maxAge time.Duration) (*PTRCacheEntry, error) 
 	return e, nil
 }
 
+// GetPTRBatch returns cached PTR hostnames for ips, keyed by IP. Entries with
+// no cache row, a failed lookup, or LookupOK=false are simply omitted --
+// callers should treat a missing key as "unknown", not as an error.
+func (s *Store) GetPTRBatch(ips []string) (map[string]string, error) {
+	result := make(map[string]string, len(ips))
+	if len(ips) == 0 {
+		return result, nil
+	}
+
+	placeholders := make([]string, len(ips))
+	args := make([]any, len(ips))
+	for i, ip := range ips {
+		placeholders[i] = "?"
+		args[i] = ip
+	}
+
+	rows, err := s.db.Query(fmt.Sprintf(`
+		SELECT ip, ptr_hostname FROM ptr_cache
+		WHERE lookup_ok = 1 AND ip IN (%s)`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ip, hostname string
+		if err := rows.Scan(&ip, &hostname); err != nil {
+			return nil, err
+		}
+		result[ip] = hostname
+	}
+	return result, rows.Err()
+}
+
 // SavePTR upserts a PTR/geo lookup result into the cache.
 func (s *Store) SavePTR(e PTRCacheEntry) error {
 	_, err := s.db.Exec(`
