@@ -20,4 +20,4 @@ trap 'sudo pkill -TERM gscan_quic 2>/dev/null; wait; rm -f "$LOG_FILE"; exit 130
 wait || true
 trap - INT TERM
 
-"$GWSDB_BIN" ingest -db "$DB_PATH" -config "$CONFIG_FILE" -log "$LOG_FILE"
+"$GWSDB_BIN" ingest -db "$DB_PATH" -config "$CONFIG_FILE" -scanner-dir "$SCANNER_DIR" -log "$LOG_FILE"

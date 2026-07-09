@@ -39,7 +39,7 @@ func usage() {
 
 Usage:
   gwsdb serve  -db PATH [-addr :8080]
-  gwsdb ingest -db PATH -config PATH [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]`)
+  gwsdb ingest -db PATH -config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]`)
 }
 
 func runServe(args []string) {
@@ -69,6 +69,7 @@ func runIngest(args []string) {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
 	configPath := fs.String("config", "", "path to the gscan_quic config.json/config.user.json used for the scan")
+	scanDir := fs.String("scanner-dir", "", "dir gscan_quic ran in; base for relative OutputFile paths (defaults to -config's dir)")
 	logPath := fs.String("log", "", "path to the captured gscan_quic stdout log (optional)")
 	mode := fs.String("mode", "", "scan mode to ingest (SNI/QUIC/TLS/PING); defaults to the config's ScanMode")
 	output := fs.String("output", "", "override path to the scan output IP list; defaults to the config's OutputFile")
@@ -88,6 +89,7 @@ func runIngest(args []string) {
 
 	scanID, err := ingest.Run(st, ingest.Options{
 		ConfigPath: *configPath,
+		ScanDir:    *scanDir,
 		LogPath:    *logPath,
 		ScanMode:   *mode,
 		OutputPath: *output,

@@ -19,6 +19,7 @@ import (
 // Options controls one ingest run.
 type Options struct {
 	ConfigPath string // path to config.json / config.user.json used for the scan
+	ScanDir    string // dir gscan_quic ran in; base for relative OutputFile paths. Defaults to ConfigPath's dir
 	LogPath    string // path to captured stdout log, optional
 	ScanMode   string // override scan mode; defaults to config's ScanMode
 	OutputPath string // override output file path; defaults to config's OutputFile for the mode
@@ -60,12 +61,16 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	outputPath := opts.OutputPath
 	if outputPath == "" {
 		outputPath = sub.OutputFile
-		if outputPath != "" && !filepath.IsAbs(outputPath) {
-			outputPath = filepath.Join(filepath.Dir(opts.ConfigPath), outputPath)
-		}
 	}
 	if outputPath == "" {
 		return 0, fmt.Errorf("no output file for mode %q", mode)
+	}
+	if !filepath.IsAbs(outputPath) {
+		scanDir := opts.ScanDir
+		if scanDir == "" {
+			scanDir = filepath.Dir(opts.ConfigPath)
+		}
+		outputPath = filepath.Join(scanDir, outputPath)
 	}
 
 	ips, err := readOutputIPs(outputPath, sub.OutputSeparator)
