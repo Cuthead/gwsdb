@@ -29,29 +29,28 @@
 {{if .FilterUp}}<b>Reachable only</b>{{else}}<a href="/?status=up">Reachable only</a>{{end}}
 &nbsp;|&nbsp;
 {{if .FilterUp}}<a href="/?status=all">All (including history)</a>{{else}}<b>All (including history)</b>{{end}}
-&nbsp;&nbsp;{{.Count}} total{{if .Truncated}} (showing only the most recent {{.Count}}){{end}}
+&nbsp;&nbsp;<span id="visibleCount">{{.Count}}</span> / {{.Count}} shown{{if .Truncated}} (most recent {{.Count}} only){{end}}
 </p>
 
-<form method="get" action="/">
-{{if not .FilterUp}}<input type="hidden" name="status" value="all">{{end}}
-<input type="text" name="q" value="{{.Search}}" placeholder="Search IP or PTR" size="30">
-<input type="submit" value="Search">
-{{if .Search}}&nbsp;<a href="/?{{if not .FilterUp}}status=all{{end}}">Clear</a>{{end}}
-</form>
+<p>
+<input type="text" id="searchInput" placeholder="Search IP or PTR" size="30" onkeyup="gwsdbFilter()">
+<input type="button" value="Clear" onclick="document.getElementById('searchInput').value='';gwsdbFilter()">
+</p>
 
 {{if .IPs}}
-<table border="1" cellpadding="4" cellspacing="0" width="100%">
+<table border="1" cellpadding="4" cellspacing="0" width="100%" id="ipTable">
 <tr bgcolor="#EEEEEE">
-<td><b><a href="{{(index .Sort "ip").URL}}">IP Address</a> {{(index .Sort "ip").Arrow}}</b></td>
-<td><b><a href="{{(index .Sort "ptr").URL}}">PTR</a> {{(index .Sort "ptr").Arrow}}</b></td>
-<td><b>Country</b></td>
-<td><b><a href="{{(index .Sort "status").URL}}">Status</a> {{(index .Sort "status").Arrow}}</b></td>
-<td><b><a href="{{(index .Sort "first_seen").URL}}">First Seen</a> {{(index .Sort "first_seen").Arrow}}</b></td>
-<td><b><a href="{{(index .Sort "last_seen").URL}}">Last Reachable</a> {{(index .Sort "last_seen").Arrow}}</b></td>
-<td><b><a href="{{(index .Sort "rtt").URL}}">Last RTT</a> {{(index .Sort "rtt").Arrow}}</b></td>
+<td><b><a href="#" onclick="return gwsdbSort('ip', false)">IP Address</a> <span class="arrow" data-col="ip"></span></b></td>
+<td><b><a href="#" onclick="return gwsdbSort('ptr', false)">PTR</a> <span class="arrow" data-col="ptr"></span></b></td>
+<td><b><a href="#" onclick="return gwsdbSort('country', false)">Country</a> <span class="arrow" data-col="country"></span></b></td>
+<td><b><a href="#" onclick="return gwsdbSort('status', true)">Status</a> <span class="arrow" data-col="status"></span></b></td>
+<td><b><a href="#" onclick="return gwsdbSort('firstSeen', true)">First Seen</a> <span class="arrow" data-col="firstSeen"></span></b></td>
+<td><b><a href="#" onclick="return gwsdbSort('lastSeen', true)">Last Reachable</a> <span class="arrow" data-col="lastSeen"></span></b></td>
+<td><b><a href="#" onclick="return gwsdbSort('rtt', true)">Last RTT</a> <span class="arrow" data-col="rtt"></span></b></td>
 </tr>
+<tbody id="ipTableBody">
 {{range .IPs}}
-<tr>
+<tr data-ip="{{.IP}}" data-ptr="{{.PTR}}" data-country="{{.Country}}" data-status="{{.Status}}" data-first-seen="{{.FirstSeen}}" data-last-seen="{{.LastSeen}}" data-rtt="{{.LastRTTMs}}">
 <td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
 <td>{{if .PTR}}<tt>{{.PTR}}</tt>{{else}}-{{end}}</td>
 <td>{{if .CountryCode}}<img src="https://bgp.he.net/images/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" width="16" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
@@ -61,7 +60,59 @@
 <td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td>
 </tr>
 {{end}}
+</tbody>
 </table>
+<script>
+var gwsdbSortState = {col: null, desc: false};
+var gwsdbStatusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
+
+function gwsdbFilter() {
+	var q = document.getElementById('searchInput').value.trim().toLowerCase();
+	var rows = document.getElementById('ipTableBody').rows;
+	var shown = 0;
+	for (var i = 0; i < rows.length; i++) {
+		var r = rows[i];
+		var hay = (r.dataset.ip + ' ' + r.dataset.ptr).toLowerCase();
+		var match = hay.indexOf(q) !== -1;
+		r.style.display = match ? '' : 'none';
+		if (match) shown++;
+	}
+	document.getElementById('visibleCount').textContent = shown;
+}
+
+function gwsdbSort(col, defaultDesc) {
+	var desc = gwsdbSortState.col === col ? !gwsdbSortState.desc : defaultDesc;
+	gwsdbSortState = {col: col, desc: desc};
+
+	var tbody = document.getElementById('ipTableBody');
+	var rows = Array.prototype.slice.call(tbody.rows);
+	rows.sort(function(a, b) {
+		var av, bv;
+		if (col === 'rtt') {
+			av = parseInt(a.dataset.rtt, 10) || 0;
+			bv = parseInt(b.dataset.rtt, 10) || 0;
+			return desc ? bv - av : av - bv;
+		}
+		if (col === 'status') {
+			av = gwsdbStatusRank[a.dataset.status] || 0;
+			bv = gwsdbStatusRank[b.dataset.status] || 0;
+			return desc ? bv - av : av - bv;
+		}
+		av = (a.dataset[col] || '').toLowerCase();
+		bv = (b.dataset[col] || '').toLowerCase();
+		if (av < bv) return desc ? 1 : -1;
+		if (av > bv) return desc ? -1 : 1;
+		return 0;
+	});
+	rows.forEach(function(r) { tbody.appendChild(r); });
+
+	var arrows = document.getElementsByClassName('arrow');
+	for (var i = 0; i < arrows.length; i++) {
+		arrows[i].textContent = arrows[i].dataset.col === col ? (desc ? '▼' : '▲') : '';
+	}
+	return false;
+}
+</script>
 {{else}}
 <p><i>No data yet. Please run a scan and import the results first.</i></p>
 {{end}}

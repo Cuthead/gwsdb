@@ -101,61 +101,9 @@ type ipRow struct {
 	LastRTTMs   int
 }
 
-// sortColumnDefaultDesc lists the home page's sortable columns and which
-// direction "feels right" the first time each is clicked (e.g. newest/
-// highest first for dates and RTT, alphabetical for IP/PTR).
-var sortColumnDefaultDesc = map[string]bool{
-	"ip":         false,
-	"ptr":        false,
-	"status":     true,
-	"first_seen": true,
-	"last_seen":  true,
-	"rtt":        true,
-}
-
-// colSort is a precomputed header link for one sortable column: where
-// clicking it goes, and the arrow to show if it's the active sort.
-type colSort struct {
-	URL   string
-	Arrow string
-}
-
-// sortLink builds the header link for column col given the request's
-// current query params and the currently active sort. Clicking an inactive
-// column sorts by it in its default direction; clicking the active column
-// flips direction. All other params (q, status) are preserved.
-func sortLink(q url.Values, col string, activeCol string, activeDesc bool) colSort {
-	next := url.Values{}
-	for k, v := range q {
-		if k == "sort" || k == "dir" {
-			continue
-		}
-		next[k] = v
-	}
-
-	desc := sortColumnDefaultDesc[col]
-	arrow := ""
-	if col == activeCol {
-		arrow = "▲"
-		if activeDesc {
-			arrow = "▼"
-		}
-		desc = !activeDesc
-	}
-	next.Set("sort", col)
-	if desc {
-		next.Set("dir", "desc")
-	} else {
-		next.Set("dir", "asc")
-	}
-	return colSort{URL: "/?" + next.Encode(), Arrow: arrow}
-}
-
 type homeData struct {
 	Title      string
 	FilterUp   bool
-	Search     string
-	Sort       map[string]colSort
 	IPs        []ipRow
 	Count      int
 	Truncated  bool
@@ -170,35 +118,16 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := r.URL.Query()
-	onlyUp := q.Get("status") != "all"
-	search := strings.TrimSpace(q.Get("q"))
+	onlyUp := r.URL.Query().Get("status") != "all"
 
-	sortBy := q.Get("sort")
-	defaultDesc, validSort := sortColumnDefaultDesc[sortBy]
-	if !validSort {
-		sortBy = "last_seen"
-		defaultDesc = true
-	}
-	sortDesc := defaultDesc
-	switch q.Get("dir") {
-	case "asc":
-		sortDesc = false
-	case "desc":
-		sortDesc = true
-	}
+	data := homeData{Title: "Home", FilterUp: onlyUp}
 
-	data := homeData{Title: "Home", FilterUp: onlyUp, Search: search}
-	data.Sort = make(map[string]colSort, len(sortColumnDefaultDesc))
-	for col := range sortColumnDefaultDesc {
-		data.Sort[col] = sortLink(q, col, sortBy, sortDesc)
-	}
-
+	// Search and column sort are handled client-side in JS over this page's
+	// rows, so the list is always fetched in one fixed order (newest first).
 	known, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
 		OnlyUp:   onlyUp,
-		Search:   search,
-		SortBy:   sortBy,
-		SortDesc: sortDesc,
+		SortBy:   "last_seen",
+		SortDesc: true,
 		Limit:    maxIPsListed,
 	})
 	if err != nil {
