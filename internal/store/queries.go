@@ -549,14 +549,17 @@ func (s *Store) SaveASN(e ASNCacheEntry) error {
 	return err
 }
 
-// SaveReport records one community report for an IP.
-func (s *Store) SaveReport(rep IPReport) error {
-	_, err := s.db.Exec(`
+// SaveReport records one community report for an IP and returns its id.
+func (s *Store) SaveReport(rep IPReport) (int64, error) {
+	res, err := s.db.Exec(`
 		INSERT INTO ip_reports (ip, verdict, comment, reporter_ip, reporter_prefix, reporter_asn, reporter_as_name, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		rep.IP, boolToInt(rep.Verdict), nullString(rep.Comment), rep.ReporterIP,
 		nullString(rep.ReporterPrefix), nullInt(rep.ReporterASN), nullString(rep.ReporterASName), rep.CreatedAt)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 // ListReports returns the most recent reports for ip, newest first. The
@@ -582,6 +585,56 @@ func (s *Store) ListReports(ip string, limit int) ([]IPReport, error) {
 		out = append(out, rep)
 	}
 	return out, rows.Err()
+}
+
+// EnqueueRecheck schedules a re-scan of ip for report reportID. A no-op if
+// that report was already enqueued (UNIQUE(report_id)), so callers can call
+// it at most once per report without a separate existence check.
+func (s *Store) EnqueueRecheck(reportID int64, ip string, createdAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO recheck_queue (report_id, ip, created_at) VALUES (?, ?, ?)`,
+		reportID, ip, createdAt)
+	return err
+}
+
+// NextPendingRecheck returns the oldest not-yet-processed recheck_queue
+// entry, or nil if the queue is empty.
+func (s *Store) NextPendingRecheck() (*RecheckQueueItem, error) {
+	item := &RecheckQueueItem{}
+	err := s.db.QueryRow(`
+		SELECT id, report_id, ip, created_at FROM recheck_queue
+		WHERE processed_at IS NULL ORDER BY created_at ASC LIMIT 1`).Scan(
+		&item.ID, &item.ReportID, &item.IP, &item.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+// MarkRecheckProcessed records the outcome of a recheck attempt so it is not
+// picked up again.
+func (s *Store) MarkRecheckProcessed(id int64, ok bool, processedAt time.Time) error {
+	_, err := s.db.Exec(`UPDATE recheck_queue SET processed_at = ?, ok = ? WHERE id = ?`,
+		processedAt, boolToInt(ok), id)
+	return err
+}
+
+// LatestScanConfigJSON returns the config_json of the most recent scan for
+// scanMode, or "" if none exists yet.
+func (s *Store) LatestScanConfigJSON(scanMode string) (string, error) {
+	var configJSON sql.NullString
+	err := s.db.QueryRow(`
+		SELECT config_json FROM scans WHERE scan_mode = ? ORDER BY started_at DESC, id DESC LIMIT 1`, scanMode).Scan(&configJSON)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return configJSON.String, nil
 }
 
 func nullInt(v int) any {

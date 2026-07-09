@@ -64,6 +64,7 @@ func runServe(args []string) {
 	}
 
 	go srv.StartPTRRefresher(15 * time.Second)
+	go srv.StartRecheckWorker(15 * time.Second)
 
 	log.Printf("gwsdb serving on %s (db=%s)", *addr, *dbPath)
 	if err := http.ListenAndServe(*addr, srv.Handler()); err != nil {

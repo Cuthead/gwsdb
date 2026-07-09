@@ -101,6 +101,22 @@ CREATE TABLE IF NOT EXISTS ip_reports (
 	created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_ip_reports_ip ON ip_reports(ip, created_at);
+
+-- recheck_queue holds one pending re-scan per user report that disagreed
+-- with our last known status for that IP (and postdated it). A report is
+-- enqueued at most once -- UNIQUE(report_id) plus the fact that enqueueing
+-- only happens once, right after the report is saved, is what makes "one
+-- check per report" hold even though the worker may run long after.
+CREATE TABLE IF NOT EXISTS recheck_queue (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	report_id    INTEGER NOT NULL REFERENCES ip_reports(id),
+	ip           TEXT NOT NULL,
+	created_at   DATETIME NOT NULL,
+	processed_at DATETIME,
+	ok           INTEGER,
+	UNIQUE(report_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recheck_queue_pending ON recheck_queue(processed_at);
 `
 
 // Store wraps a SQLite database handle.

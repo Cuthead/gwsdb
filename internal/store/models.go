@@ -108,3 +108,13 @@ type IPReport struct {
 	ReporterASName string
 	CreatedAt      time.Time
 }
+
+// RecheckQueueItem is one pending (or processed) re-scan triggered by a user
+// report that disagreed with our last known status for its IP.
+type RecheckQueueItem struct {
+	ID          int64
+	ReportID    int64
+	IP          string
+	CreatedAt   time.Time
+	ProcessedAt time.Time // zero if still pending
+}

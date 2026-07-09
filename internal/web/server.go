@@ -231,11 +231,12 @@ type checkRow struct {
 
 // reasonLabels translates gscan_quic's REASON tags into short human-readable labels.
 var reasonLabels = map[string]string{
-	"dial":      "Connection failed",
-	"handshake": "TLS handshake failed",
-	"cn":        "Certificate CN mismatch",
-	"status":    "HTTP status code mismatch",
-	"ping":      "Ping failed",
+	"dial":        "Connection failed",
+	"handshake":   "TLS handshake failed",
+	"cn":          "Certificate CN mismatch",
+	"status":      "HTTP status code mismatch",
+	"ping":        "Ping failed",
+	"rtt_too_low": "RTT below configured minimum",
 }
 
 func reasonLabel(reason string) string {
@@ -536,25 +537,48 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.st.SaveReport(rep); err != nil {
+	reportID, err := s.st.SaveReport(rep)
+	if err != nil {
 		log.Printf("report: SaveReport: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	s.maybeEnqueueRecheck(reportID, rep)
 
 	http.Redirect(w, r, "/query?ip="+url.QueryEscape(ip), http.StatusSeeOther)
 }
 
+// maybeEnqueueRecheck schedules a re-scan of rep.IP if this report postdates
+// our last check of it and disagrees with what that check found. Evaluated
+// once, right here at report-submission time, so each report can trigger at
+// most one recheck regardless of how the underlying status changes later.
+func (s *Server) maybeEnqueueRecheck(reportID int64, rep store.IPReport) {
+	st, err := s.st.IPStatusFor(rep.IP)
+	if err != nil {
+		log.Printf("report: IPStatusFor(%s): %v", rep.IP, err)
+		return
+	}
+	if st == nil || !st.HasCheck {
+		return // no prior check on file to disagree with
+	}
+	if !rep.CreatedAt.After(st.LastCheckedAt) || rep.Verdict == st.LastCheckOK {
+		return
+	}
+	if err := s.st.EnqueueRecheck(reportID, rep.IP, rep.CreatedAt); err != nil {
+		log.Printf("report: EnqueueRecheck(%s): %v", rep.IP, err)
+	}
+}
+
 type scanRow struct {
-	ID           int64
-	ScanMode     string
-	StartedAt    string
-	FinishedAt   string
-	Duration     string
-	ScannedCount int
-	FoundCount   int
+	ID            int64
+	ScanMode      string
+	StartedAt     string
+	FinishedAt    string
+	Duration      string
+	ScannedCount  int
+	FoundCount    int
 	ConfigSummary string
-	ConfigJSON   string
+	ConfigJSON    string
 }
 
 // describeScanConfig summarizes a scan's request/target parameters into one
