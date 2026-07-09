@@ -95,7 +95,7 @@ type ipRow struct {
 	PTR         string // cached PTR hostname, "" if never looked up
 	Country     string // best-effort, decoded from PTR, "" if unknown
 	CountryCode string // ISO 3166-1 alpha-2, "" if unknown
-	Status      string // "可达" / "不可达" / "-" (never explicitly re-checked)
+	Status      string // "Reachable" / "Unreachable" / "-" (never explicitly re-checked)
 	FirstSeen   string
 	LastSeen    string
 	LastRTTMs   int
@@ -188,7 +188,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		sortDesc = true
 	}
 
-	data := homeData{Title: "首页", FilterUp: onlyUp, Search: search}
+	data := homeData{Title: "Home", FilterUp: onlyUp, Search: search}
 	data.Sort = make(map[string]colSort, len(sortColumnDefaultDesc))
 	for col := range sortColumnDefaultDesc {
 		data.Sort[col] = sortLink(q, col, sortBy, sortDesc)
@@ -223,9 +223,9 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		case !st.HasCheck:
 			row.Status = "-"
 		case st.LastCheckOK:
-			row.Status = "可达"
+			row.Status = "Reachable"
 		default:
-			row.Status = "不可达"
+			row.Status = "Unreachable"
 		}
 		data.IPs = append(data.IPs, row)
 	}
@@ -309,7 +309,7 @@ type queryData struct {
 	City        string
 	Country     string
 	HasHistory  bool
-	Status      string // "可达" / "不可达" / "-"
+	Status      string // "Reachable" / "Unreachable" / "-"
 	FirstSeen   string
 	LastSeen    string
 	TimesSeen   int
@@ -335,14 +335,14 @@ type reportRow struct {
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	ipParam := strings.TrimSpace(r.URL.Query().Get("ip"))
-	data := queryData{Title: "查询", Query: ipParam}
+	data := queryData{Title: "Query", Query: ipParam}
 
 	if ipParam != "" {
 		data.Submitted = true
 		if net.ParseIP(ipParam) == nil {
-			data.Error = "不是合法的 IP 地址"
+			data.Error = "Not a valid IP address"
 		} else if info, ok := s.lookupASN(ipParam); !ok || !isGoogleASN(info) {
-			data.Error = "该 IP 不属于 Google ASN"
+			data.Error = "This IP does not belong to a Google ASN"
 		} else {
 			s.lookup(ipParam, &data)
 		}
@@ -397,9 +397,9 @@ func (s *Server) lookup(ip string, data *queryData) {
 		case !st.HasCheck:
 			data.Status = "-"
 		case st.LastCheckOK:
-			data.Status = "可达"
+			data.Status = "Reachable"
 		default:
-			data.Status = "不可达"
+			data.Status = "Unreachable"
 		}
 	}
 
@@ -610,7 +610,7 @@ func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := scansData{Title: "扫描记录"}
+	data := scansData{Title: "Scan History"}
 	for _, sc := range scans {
 		row := scanRow{
 			ID:            sc.ID,
