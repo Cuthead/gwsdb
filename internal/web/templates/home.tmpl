@@ -35,10 +35,7 @@ body { margin: 0; }
 <p>The table below lists tracked Google Web Server (GWS) IP addresses and their reachability status.</p>
 
 <p>
-{{if .FilterUp}}<b>Reachable only</b>{{else}}<a href="/?status=up">Reachable only</a>{{end}}
-&nbsp;|&nbsp;
-{{if .FilterUp}}<a href="/?status=all">All (including history)</a>{{else}}<b>All (including history)</b>{{end}}
-&nbsp;&nbsp;<span id="visibleCount">{{.Count}}</span> / {{.Count}} shown{{if .Truncated}} (most recent {{.Count}} only){{end}}
+<span id="visibleCount">{{.Count}}</span> / {{.Count}} shown{{if .Truncated}} (most recent {{.Count}} only){{end}}
 </p>
 
 <p>
@@ -48,6 +45,11 @@ body { margin: 0; }
 <select id="familyInput" onchange="gwsdbFilter()">
 <option value="4">IPv4</option>
 <option value="6">IPv6</option>
+</select>
+&nbsp;&nbsp;
+<select id="statusInput" onchange="gwsdbFilter()">
+<option value="up">Reachable only</option>
+<option value="all">All (including history)</option>
 </select>
 </p>
 
@@ -85,14 +87,16 @@ var gwsdbStatusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
 function gwsdbFilter() {
 	var q = document.getElementById('searchInput').value.trim().toLowerCase();
 	var family = document.getElementById('familyInput').value;
+	var status = document.getElementById('statusInput').value;
 	var rows = document.getElementById('ipTableBody').rows;
 	var shown = 0;
 	for (var i = 0; i < rows.length; i++) {
 		var r = rows[i];
 		var isIPv6 = r.dataset.ip.indexOf(':') !== -1;
 		var familyMatch = family === '6' ? isIPv6 : !isIPv6;
+		var statusMatch = status === 'all' || r.dataset.status === 'Reachable';
 		var hay = (r.dataset.ip + ' ' + r.dataset.ptr).toLowerCase();
-		var match = familyMatch && hay.indexOf(q) !== -1;
+		var match = familyMatch && statusMatch && hay.indexOf(q) !== -1;
 		r.style.display = match ? '' : 'none';
 		if (match) shown++;
 	}

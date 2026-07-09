@@ -103,7 +103,6 @@ type ipRow struct {
 
 type homeData struct {
 	Title      string
-	FilterUp   bool
 	IPs        []ipRow
 	Count      int
 	Truncated  bool
@@ -118,14 +117,12 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	onlyUp := r.URL.Query().Get("status") != "all"
+	data := homeData{Title: "Home"}
 
-	data := homeData{Title: "Home", FilterUp: onlyUp}
-
-	// Search and column sort are handled client-side in JS over this page's
-	// rows, so the list is always fetched in one fixed order (newest first).
+	// Search, column sort, and the reachable-only filter are handled
+	// client-side in JS over this page's rows, so the list is always fetched
+	// in one fixed order (newest first) and unfiltered by status.
 	known, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
-		OnlyUp:   onlyUp,
 		SortBy:   "last_seen",
 		SortDesc: true,
 		Limit:    maxIPsListed,
