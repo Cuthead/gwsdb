@@ -314,6 +314,37 @@ func (s *Store) RecentScans(limit int) ([]Scan, error) {
 	return out, rows.Err()
 }
 
+// ListScans returns full scan records (including config fields), newest
+// first, up to limit rows.
+func (s *Store) ListScans(limit int) ([]Scan, error) {
+	rows, err := s.db.Query(`
+		SELECT id, scan_mode, server_name, verify_common_name, http_path, http_method, http_verify_hosts,
+			valid_status_code, input_file, output_file, level, config_json,
+			started_at, finished_at, scanned_count, found_count
+		FROM scans ORDER BY started_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Scan
+	for rows.Next() {
+		var sc Scan
+		var started, finished sql.NullTime
+		if err := rows.Scan(
+			&sc.ID, &sc.ScanMode, &sc.ServerName, &sc.VerifyCommonName, &sc.HTTPPath, &sc.HTTPMethod, &sc.HTTPVerifyHosts,
+			&sc.ValidStatusCode, &sc.InputFile, &sc.OutputFile, &sc.Level, &sc.ConfigJSON,
+			&started, &finished, &sc.ScannedCount, &sc.FoundCount,
+		); err != nil {
+			return nil, err
+		}
+		sc.StartedAt = started.Time
+		sc.FinishedAt = finished.Time
+		out = append(out, sc)
+	}
+	return out, rows.Err()
+}
+
 // listKnownIPsSortColumns whitelists the columns ListKnownIPs may sort by,
 // mapping the caller-facing key to the actual SQL expression -- SortBy is
 // caller-controlled (it comes from a query param), so it must never be

@@ -49,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/query", s.handleQuery)
 	mux.HandleFunc("/report", s.handleReport)
+	mux.HandleFunc("/scans", s.handleScans)
 	return mux
 }
 
@@ -85,6 +86,9 @@ func formatTime(t time.Time) string {
 // maxIPsListed caps how many rows the home page table renders. IPs are
 // ordered by last_seen DESC, so this simply hides the stalest tail.
 const maxIPsListed = 500
+
+// maxScansListed caps how many rows the scans page table renders.
+const maxScansListed = 500
 
 type ipRow struct {
 	IP          string
@@ -516,6 +520,90 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/query?ip="+url.QueryEscape(ip), http.StatusSeeOther)
+}
+
+type scanRow struct {
+	ID           int64
+	ScanMode     string
+	StartedAt    string
+	FinishedAt   string
+	Duration     string
+	ScannedCount int
+	FoundCount   int
+	ConfigSummary string
+	ConfigJSON   string
+}
+
+// describeScanConfig summarizes a scan's request/target parameters into one
+// compact line, mirroring describeProbe's label=value style.
+func describeScanConfig(sc store.Scan) string {
+	var parts []string
+	if sc.ServerName != "" {
+		parts = append(parts, "server="+sc.ServerName)
+	}
+	if sc.VerifyCommonName != "" {
+		parts = append(parts, "verify_cn="+sc.VerifyCommonName)
+	}
+	if sc.HTTPMethod != "" {
+		parts = append(parts, "method="+sc.HTTPMethod)
+	}
+	if sc.HTTPPath != "" {
+		parts = append(parts, "path="+sc.HTTPPath)
+	}
+	if sc.HTTPVerifyHosts != "" {
+		parts = append(parts, "host="+sc.HTTPVerifyHosts)
+	}
+	if sc.ValidStatusCode != 0 {
+		parts = append(parts, fmt.Sprintf("valid_code=%d", sc.ValidStatusCode))
+	}
+	if sc.Level != 0 {
+		parts = append(parts, fmt.Sprintf("level=%d", sc.Level))
+	}
+	if sc.InputFile != "" {
+		parts = append(parts, "input="+sc.InputFile)
+	}
+	if sc.OutputFile != "" {
+		parts = append(parts, "output="+sc.OutputFile)
+	}
+	return strings.Join(parts, " ")
+}
+
+type scansData struct {
+	Title     string
+	Scans     []scanRow
+	Count     int
+	Truncated bool
+}
+
+func (s *Server) handleScans(w http.ResponseWriter, r *http.Request) {
+	scans, err := s.st.ListScans(maxScansListed)
+	if err != nil {
+		log.Printf("scans: ListScans: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	data := scansData{Title: "扫描记录"}
+	for _, sc := range scans {
+		row := scanRow{
+			ID:            sc.ID,
+			ScanMode:      sc.ScanMode,
+			StartedAt:     formatTime(sc.StartedAt),
+			FinishedAt:    formatTime(sc.FinishedAt),
+			ScannedCount:  sc.ScannedCount,
+			FoundCount:    sc.FoundCount,
+			ConfigSummary: describeScanConfig(sc),
+			ConfigJSON:    sc.ConfigJSON,
+		}
+		if !sc.StartedAt.IsZero() && !sc.FinishedAt.IsZero() && sc.FinishedAt.After(sc.StartedAt) {
+			row.Duration = sc.FinishedAt.Sub(sc.StartedAt).Round(time.Second).String()
+		}
+		data.Scans = append(data.Scans, row)
+	}
+	data.Count = len(data.Scans)
+	data.Truncated = len(scans) == maxScansListed
+
+	s.render(w, "scans.tmpl", data)
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data any) {

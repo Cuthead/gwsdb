@@ -1,0 +1,79 @@
+{{define "scans.tmpl"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<title>Scans - GWS Database</title>
+</head>
+<body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
+<center>
+<table border="0" cellpadding="4" cellspacing="0" width="760">
+<tr bgcolor="#000080">
+<td><font color="#FFFFFF" face="Arial,Helvetica,sans-serif" size="+1"><b>GWS Database</b></font></td>
+</tr>
+<tr bgcolor="#DDDDDD">
+<td>
+<font face="Arial,Helvetica,sans-serif" size="-1">
+<a href="/">Home</a> |
+<a href="/query">Query IP</a> |
+<a href="/scans">Scans</a>
+</font>
+</td>
+</tr>
+<tr>
+<td>
+<font face="Arial,Helvetica,sans-serif" size="-1">
+
+<p>Every previously imported scan run, newest first, with its start/finish time and the request configuration in effect for that run.</p>
+
+<p>{{.Count}} total{{if .Truncated}} (showing only the most recent {{.Count}}){{end}}</p>
+
+{{if .Scans}}
+<table border="1" cellpadding="4" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE">
+<td><b>ID</b></td>
+<td><b>Mode</b></td>
+<td><b>Started</b></td>
+<td><b>Finished</b></td>
+<td><b>Duration</b></td>
+<td><b>Scanned</b></td>
+<td><b>Found</b></td>
+<td><b>Config</b></td>
+</tr>
+{{range .Scans}}
+<tr>
+<td>{{.ID}}</td>
+<td>{{.ScanMode}}</td>
+<td>{{.StartedAt}}</td>
+<td>{{.FinishedAt}}</td>
+<td>{{if .Duration}}{{.Duration}}{{else}}-{{end}}</td>
+<td>{{.ScannedCount}}</td>
+<td>{{.FoundCount}}</td>
+<td>
+<font size="-1">
+{{if .ConfigSummary}}{{.ConfigSummary}}<br>{{end}}
+{{if .ConfigJSON}}<tt>{{.ConfigJSON}}</tt>{{end}}
+{{if and (not .ConfigSummary) (not .ConfigJSON)}}-{{end}}
+</font>
+</td>
+</tr>
+{{end}}
+</table>
+{{else}}
+<p><i>No scans imported yet.</i></p>
+{{end}}
+
+</font>
+</td>
+</tr>
+<tr bgcolor="#DDDDDD">
+<td align="center">
+<font face="Arial,Helvetica,sans-serif" size="-2" color="#666666">
+GWS Database &mdash; Tracking Google Web Server IP reachability in China
+</font>
+</td>
+</tr>
+</table>
+</center>
+</body>
+</html>
+{{end}}
