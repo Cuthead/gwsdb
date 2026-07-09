@@ -340,6 +340,8 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		data.Submitted = true
 		if net.ParseIP(ipParam) == nil {
 			data.Error = "不是合法的 IP 地址"
+		} else if info, ok := s.lookupASN(ipParam); !ok || !isGoogleASN(info) {
+			data.Error = "该 IP 不属于 Google ASN"
 		} else {
 			s.lookup(ipParam, &data)
 		}
@@ -440,9 +442,19 @@ func (s *Server) lookup(ip string, data *queryData) {
 	}
 }
 
-// lookupReporterASN resolves ip's announced prefix and AS, checking the
-// asn_cache first so repeat reporters don't re-trigger a Cymru DNS round trip.
-func (s *Server) lookupReporterASN(ip string) (asn.Info, bool) {
+// googleASNNameSubstr is matched case-insensitively against Team Cymru's AS
+// name field (e.g. "GOOGLE, US", "GOOGLE-CLOUD-PLATFORM, US") to decide
+// whether an IP belongs to Google.
+const googleASNNameSubstr = "GOOGLE"
+
+// isGoogleASN reports whether info's AS name identifies it as Google's.
+func isGoogleASN(info asn.Info) bool {
+	return strings.Contains(strings.ToUpper(info.ASName), googleASNNameSubstr)
+}
+
+// lookupASN resolves ip's announced prefix and AS, checking the asn_cache
+// first so repeat lookups don't re-trigger a Cymru DNS round trip.
+func (s *Server) lookupASN(ip string) (asn.Info, bool) {
 	if cached, err := s.st.GetASN(ip, asnCacheTTL); err == nil && cached != nil {
 		return asn.Info{ASN: cached.ASN, ASName: cached.ASName, Prefix: cached.Prefix, Country: cached.Country}, cached.LookupOK
 	}
@@ -506,7 +518,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  time.Now().UTC(),
 	}
 	if reporterIP != "" {
-		if info, ok := s.lookupReporterASN(reporterIP); ok {
+		if info, ok := s.lookupASN(reporterIP); ok {
 			rep.ReporterPrefix = info.Prefix
 			rep.ReporterASN = info.ASN
 			rep.ReporterASName = info.ASName
