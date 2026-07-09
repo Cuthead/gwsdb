@@ -457,6 +457,9 @@ func (s *Server) lookupASN(ip string) (asn.Info, bool) {
 		return asn.Info{ASN: cached.ASN, ASName: cached.ASName, Prefix: cached.Prefix, Country: cached.Country}, cached.LookupOK
 	}
 	info, ok := asn.Lookup(ip, asnTimeout)
+	if !ok {
+		return info, ok
+	}
 	entry := store.ASNCacheEntry{
 		IP:        ip,
 		ASN:       info.ASN,
