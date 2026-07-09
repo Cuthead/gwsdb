@@ -22,6 +22,7 @@ var regionalCodes = map[string]place{
 var airportCodes = map[string]place{
 	// United States
 	"atl": {"Atlanta, GA", "United States"},
+	"auz": {"Aurora, IL", "United States"},
 	"bos": {"Boston, MA", "United States"},
 	"ord": {"Chicago, IL", "United States"},
 	"dfw": {"Dallas-Fort Worth, TX", "United States"},
@@ -49,8 +50,10 @@ var airportCodes = map[string]place{
 	"rfd": {"Rockford, IL", "United States"},
 	"mci": {"Kansas City, MO", "United States"},
 	"lhm": {"Council Bluffs, IA", "United States"},
+	"cbf": {"Council Bluffs, IA", "United States"},
 	"okc": {"Oklahoma City, OK", "United States"},
 	"clt": {"Charlotte, NC", "United States"},
+	"las": {"Las Vegas, NV", "United States"},
 
 	// Europe
 	"lhr": {"London", "United Kingdom"},

@@ -15,11 +15,15 @@ var pattern1 = regexp.MustCompile(`^([a-z]{3})(\d{2})s(\d{2})-in-(?:f(\d{1,3})|x
 // pattern 2: e.g. tf-in-x64.1e100.net (regional, 2-letter code)
 var pattern2 = regexp.MustCompile(`^([a-z]{2})-in-(?:f(\d{1,3})|x([0-9a-f]{2}))\.1e100\.net\.?$`)
 
+// pattern 3: e.g. lcauzi-in-f90.1e100.net / nchkga-ag-in-f25.1e100.net
+// [2-letter metro prefix][3-letter airport][1-3 letter server tag](-[cluster tag])?-in-[f<dec>|x<hex>]
+var pattern3 = regexp.MustCompile(`^([a-z]{2})([a-z]{3})([a-z]{1,3})(?:-([a-z0-9]+))?-in-(?:f(\d{1,3})|x([0-9a-f]{2}))\.1e100\.net\.?$`)
+
 // Location is the result of decoding a 1e100.net PTR hostname.
 type Location struct {
 	Hostname    string
 	AirportCode string // e.g. "dfw", "" if not decodable
-	Cluster     string // facility/cluster digits, if present (pattern 1 only)
+	Cluster     string // facility/cluster tag, if present (pattern 1 and 3 only)
 	ServerIndex string // per-server suffix (decimal or hex, as found in the hostname)
 	City        string // best-effort, "" if code unknown
 	Country     string // best-effort, "" if code unknown
@@ -57,6 +61,21 @@ func Decode(hostname string) Location {
 			loc.ServerIndex = "0x" + m[3]
 		}
 		if city, country, ok := lookupRegional(loc.AirportCode); ok {
+			loc.City, loc.Country = city, country
+		}
+		return loc
+	}
+
+	if m := pattern3.FindStringSubmatch(h); m != nil {
+		loc.Matched = true
+		loc.AirportCode = m[2]
+		loc.Cluster = m[4]
+		if m[5] != "" {
+			loc.ServerIndex = m[5]
+		} else {
+			loc.ServerIndex = "0x" + m[6]
+		}
+		if city, country, ok := lookupAirport(loc.AirportCode); ok {
 			loc.City, loc.Country = city, country
 		}
 		return loc
