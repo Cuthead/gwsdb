@@ -113,11 +113,10 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	}
 
 	results := make([]store.ScanResult, 0, len(ips))
-	for i, ip := range ips {
+	for _, ip := range ips {
 		results = append(results, store.ScanResult{
 			IP:    ip,
 			RTTMs: sum.RTTByIP[ip],
-			Rank:  i + 1,
 		})
 	}
 	foundCount := sum.FoundCount

@@ -10,12 +10,14 @@ import (
 )
 
 // SaveScan persists a completed scan, its successful results, and every
-// pass/fail check observed in its log. Results roll into the per-IP
-// ip_status registry (the "ever found reachable" pool); checks roll into
-// ip_checks (the availability history timeline) but, for failures, only for
-// IPs already in that pool -- a scan can probe thousands of never-seen-good
-// IPs and we don't want to keep permanent history for every one of them.
-// Everything happens in one transaction.
+// pass/fail check observed in its log. Both roll into ip_checks (the
+// availability history timeline): each result becomes an ok row (so
+// successes are recorded even when the log is incomplete), and log successes
+// are added only for IPs not already covered by a result. Results also roll
+// into the per-IP ip_status registry (the "ever found reachable" pool);
+// failure checks are kept only for IPs already in that pool -- a scan can
+// probe thousands of never-seen-good IPs and we don't want to keep permanent
+// history for every one of them. Everything happens in one transaction.
 func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -41,12 +43,12 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 		return 0, err
 	}
 
-	insertResult, err := tx.Prepare(`
-		INSERT OR IGNORE INTO scan_results (scan_id, ip, rtt_ms, rank) VALUES (?, ?, ?, ?)`)
+	insertCheck, err := tx.Prepare(`
+		INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
-	defer insertResult.Close()
+	defer insertCheck.Close()
 
 	upsertStatus, err := tx.Prepare(`
 		INSERT INTO ip_status (ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
@@ -75,26 +77,26 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 		}
 	}
 
+	// The output file may repeat an IP; the old scan_results table absorbed
+	// that with UNIQUE(scan_id, ip), ip_checks has no such constraint.
+	recorded := make(map[string]bool, len(results))
 	for _, r := range results {
-		if _, err := insertResult.Exec(scanID, r.IP, nullInt(r.RTTMs), nullInt(r.Rank)); err != nil {
-			return 0, fmt.Errorf("insert scan_result %s: %w", r.IP, err)
+		if recorded[r.IP] {
+			continue
 		}
+		recorded[r.IP] = true
 		ts, ok := seenAt[r.IP]
 		if !ok {
 			ts = now
+		}
+		if _, err := insertCheck.Exec(scanID, r.IP, 1, nullInt(r.RTTMs), nil, nil, ts); err != nil {
+			return 0, fmt.Errorf("insert ip_check %s: %w", r.IP, err)
 		}
 		isIPv6 := strings.Contains(r.IP, ":")
 		if _, err := upsertStatus.Exec(r.IP, boolToInt(isIPv6), scan.ScanMode, ts, ts, scanID, nullInt(r.RTTMs), ts); err != nil {
 			return 0, fmt.Errorf("upsert ip_status %s: %w", r.IP, err)
 		}
 	}
-
-	insertCheck, err := tx.Prepare(`
-		INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return 0, err
-	}
-	defer insertCheck.Close()
 
 	markFailed, err := tx.Prepare(`
 		UPDATE ip_status SET last_checked_at = ?, last_check_ok = 0 WHERE ip = ?`)
@@ -109,8 +111,12 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 			checkedAt = now
 		}
 		if c.OK {
-			// Already recorded via the results/upsertStatus loop above; still
-			// log the check itself for a complete timeline.
+			// Successes covered by a result row are already in ip_checks;
+			// only record log-only successes (e.g. output file truncated).
+			if recorded[c.IP] {
+				continue
+			}
+			recorded[c.IP] = true
 			if _, err := insertCheck.Exec(scanID, c.IP, 1, nullInt(c.RTTMs), nil, nil, checkedAt); err != nil {
 				return 0, fmt.Errorf("insert ip_check %s: %w", c.IP, err)
 			}
@@ -139,7 +145,7 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 	return scanID, nil
 }
 
-// DeleteScan removes a scan and its results/checks. ip_status rows pointing
+// DeleteScan removes a scan and its checks. ip_status rows pointing
 // at it via last_scan_id are unlinked (set to NULL) rather than recomputed --
 // their last_seen/times_seen/last_rtt_ms aggregates are left as-is.
 func (s *Store) DeleteScan(id int64) error {
@@ -151,9 +157,6 @@ func (s *Store) DeleteScan(id int64) error {
 
 	if _, err := tx.Exec(`DELETE FROM ip_checks WHERE scan_id = ?`, id); err != nil {
 		return fmt.Errorf("delete ip_checks: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM scan_results WHERE scan_id = ?`, id); err != nil {
-		return fmt.Errorf("delete scan_results: %w", err)
 	}
 	if _, err := tx.Exec(`UPDATE ip_status SET last_scan_id = NULL WHERE last_scan_id = ?`, id); err != nil {
 		return fmt.Errorf("clear ip_status.last_scan_id: %w", err)

@@ -23,11 +23,11 @@ type Scan struct {
 	FoundCount       int
 }
 
-// ScanResult is a single IP found reachable during a Scan.
+// ScanResult is a single IP found reachable during a Scan, taken from the
+// scanner's output file. Persisted as an ok row in ip_checks.
 type ScanResult struct {
 	IP    string
 	RTTMs int // 0 if unknown
-	Rank  int // 1-based position in the sorted output file, 0 if unknown
 }
 
 // IPStatus is the rolling reachability record for one IP across all scans.

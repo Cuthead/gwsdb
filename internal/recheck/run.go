@@ -60,7 +60,7 @@ func RunAndSave(st *store.Store, ip, scanMode string, probeTimeout time.Duration
 	var results []store.ScanResult
 	if result.OK {
 		scan.FoundCount = 1
-		results = []store.ScanResult{{IP: ip, RTTMs: result.RTTMs, Rank: 1}}
+		results = []store.ScanResult{{IP: ip, RTTMs: result.RTTMs}}
 	}
 	checks := []store.IPCheck{{
 		IP:        ip,

@@ -40,15 +40,14 @@ gwsdb delete-scan -db PATH -id N
 
 **internal/store** is the only package touching SQL. Key tables:
 - `scans` — one row per ingest run (config snapshot + counts).
-- `scan_results` — IPs found reachable in a given scan (only successes).
 - `ip_status` — rolling per-IP summary across all scans ("ever found reachable" pool). This is what the home page lists.
-- `ip_checks` — full pass/fail timeline, but *only* for IPs already in `ip_status`; a scan can probe thousands of never-seen IPs and failures for those aren't kept. This is why `SaveScan`'s failure path is a conditional `UPDATE ip_status ... WHERE ip = ?` before it decides whether to log the check at all.
+- `ip_checks` — full pass/fail timeline. Successes come from the scan's output-file results (plus log-only successes the output file missed); failures are kept *only* for IPs already in `ip_status` — a scan can probe thousands of never-seen IPs and failures for those aren't kept. This is why `SaveScan`'s failure path is a conditional `UPDATE ip_status ... WHERE ip = ?` before it decides whether to log the check at all. (A legacy `scan_results` table once held per-scan success snapshots; `mergeScanResultsIntoChecks` folded it into `ip_checks` and dropped it.)
 - `ptr_cache` / `asn_cache` — TTL'd caches for reverse-DNS and Team Cymru ASN lookups, to avoid re-querying on every page view.
 - `ip_reports` — community usable/unusable reports, keyed to reporter's ASN/prefix (not raw IP) for public display.
 
 New columns on existing tables go through `migrate()` in `internal/store/store.go` (idempotent `ALTER TABLE ... ADD COLUMN`, since `CREATE TABLE IF NOT EXISTS` doesn't touch existing tables) — follow that pattern rather than editing the `schema` constant for anything but new tables.
 
-**internal/ingest** parses two independent sources of truth for the same scan and reconciles them: the output IP file (`readOutputIPs`, handles both plain-separator and `gop` quoted-comma formats) for the authoritative hit list + rank, and the captured stdout log (`parseLog`, regex-driven) for per-IP RTT, pass/fail reasons, and timestamps. Either can be missing (`-log-only` / no output file) — see `Run()`'s fallback chain. The log only has failure detail if `gscan_quic` was run with `LogLevel: 5`.
+**internal/ingest** parses two independent sources of truth for the same scan and reconciles them: the output IP file (`readOutputIPs`, handles both plain-separator and `gop` quoted-comma formats) for the authoritative hit list, and the captured stdout log (`parseLog`, regex-driven) for per-IP RTT, pass/fail reasons, and timestamps. Either can be missing (`-log-only` / no output file) — see `Run()`'s fallback chain. The log only has failure detail if `gscan_quic` was run with `LogLevel: 5`.
 
 **internal/web** is intentionally framework-free, Web 1.0 (see the package doc comment — "deliberately Web 1.0, JS-free" for the backend; a couple of pages now layer small inline `<script>` blocks for client-side search/sort/filter, see `home.tmpl`, rather than reintroducing a JS framework). Templates are embedded via `//go:embed templates/*.tmpl` and parsed once at startup — no hot reload; restart the server after editing a `.tmpl`. Four routes: `/` (home, known-IP list), `/query` (single IP lookup + history + reports), `/report` (POST, two-step confirm before publishing a report), `/scans` (scan history).
 

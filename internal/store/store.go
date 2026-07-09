@@ -31,17 +31,6 @@ CREATE TABLE IF NOT EXISTS scans (
 	created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS scan_results (
-	id       INTEGER PRIMARY KEY AUTOINCREMENT,
-	scan_id  INTEGER NOT NULL REFERENCES scans(id),
-	ip       TEXT NOT NULL,
-	rtt_ms   INTEGER,
-	rank     INTEGER,
-	UNIQUE(scan_id, ip)
-);
-CREATE INDEX IF NOT EXISTS idx_scan_results_scan_id ON scan_results(scan_id);
-CREATE INDEX IF NOT EXISTS idx_scan_results_ip ON scan_results(ip);
-
 CREATE TABLE IF NOT EXISTS ip_status (
 	ip              TEXT PRIMARY KEY,
 	is_ipv6         INTEGER NOT NULL DEFAULT 0,
@@ -169,7 +158,47 @@ func migrate(db *sql.DB) error {
 	}); err != nil {
 		return err
 	}
+	if err := mergeScanResultsIntoChecks(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// mergeScanResultsIntoChecks folds the legacy scan_results table into
+// ip_checks and drops it. scan_results rows were per-scan success snapshots;
+// most predate complete log ingestion, so many have no matching ok row in
+// ip_checks. scan_results had no per-row timestamp -- backfilled rows borrow
+// the scan's finish time. The rank column is dropped: nothing ever read it.
+func mergeScanResultsIntoChecks(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'scan_results'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, checked_at)
+		SELECT sr.scan_id, sr.ip, 1, sr.rtt_ms,
+		       COALESCE(s.finished_at, s.started_at, s.created_at)
+		FROM scan_results sr
+		JOIN scans s ON s.id = sr.scan_id
+		WHERE NOT EXISTS (
+			SELECT 1 FROM ip_checks c
+			WHERE c.scan_id = sr.scan_id AND c.ip = sr.ip AND c.ok = 1
+		)`); err != nil {
+		return fmt.Errorf("backfill ip_checks from scan_results: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE scan_results`); err != nil {
+		return fmt.Errorf("drop scan_results: %w", err)
+	}
+	return tx.Commit()
 }
 
 func addColumnsIfMissing(db *sql.DB, table string, colDDL map[string]string) error {
