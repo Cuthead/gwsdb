@@ -2,11 +2,19 @@
 <html lang="en">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scans - GWS Database</title>
+<style>
+body { margin: 0; }
+.gwsdb-wrap { width: 760px; max-width: 100%; }
+@media (max-width: 780px) {
+	.gwsdb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+</style>
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
 <center>
-<table border="0" cellpadding="4" cellspacing="0" width="760">
+<table border="0" cellpadding="4" cellspacing="0" class="gwsdb-wrap">
 <tr bgcolor="#000080">
 <td><font color="#FFFFFF" face="Arial,Helvetica,sans-serif" size="+1"><b>GWS Database</b></font></td>
 </tr>
@@ -28,6 +36,7 @@
 <p>{{.Count}} total{{if .Truncated}} (showing only the most recent {{.Count}}){{end}}</p>
 
 {{if .Scans}}
+<div class="gwsdb-scroll">
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE">
 <td><b>ID</b></td>
@@ -58,6 +67,7 @@
 </tr>
 {{end}}
 </table>
+</div>
 {{else}}
 <p><i>No scans imported yet.</i></p>
 {{end}}

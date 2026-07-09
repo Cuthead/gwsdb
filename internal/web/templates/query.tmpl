@@ -2,11 +2,19 @@
 <html lang="en">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Query - GWS Database</title>
+<style>
+body { margin: 0; }
+.gwsdb-wrap { width: 760px; max-width: 100%; }
+@media (max-width: 780px) {
+	.gwsdb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+</style>
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
 <center>
-<table border="0" cellpadding="4" cellspacing="0" width="760">
+<table border="0" cellpadding="4" cellspacing="0" class="gwsdb-wrap">
 <tr bgcolor="#000080">
 <td><font color="#FFFFFF" face="Arial,Helvetica,sans-serif" size="+1"><b>GWS Database</b></font></td>
 </tr>
@@ -40,6 +48,7 @@
 {{if .Error}}
 <p><font color="#CC0000">{{.Error}}</font></p>
 {{else}}
+<div class="gwsdb-scroll">
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>Query Result: {{.Query}}</b></td></tr>
 <tr>
@@ -72,9 +81,11 @@
 <tr><td colspan="2"><i>This IP is not in the known scan results (it may not have been scanned, or was never found reachable)</i></td></tr>
 {{end}}
 </table>
+</div>
 
 {{if .Checks}}
 <p></p>
+<div class="gwsdb-scroll">
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE"><td colspan="5"><b>Check History</b> (last {{len .Checks}} checks, including the probe request sent at the time)</td></tr>
 <tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>Probe Request</b></td><td><b>RTT</b></td></tr>
@@ -88,9 +99,11 @@
 </tr>
 {{end}}
 </table>
+</div>
 {{end}}
 
 <p></p>
+<div class="gwsdb-scroll">
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>报告IP</b></td></tr>
 <tr>
@@ -104,9 +117,11 @@
 </td>
 </tr>
 </table>
+</div>
 
 {{if .Reports}}
 <p></p>
+<div class="gwsdb-scroll">
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE"><td colspan="5"><b>社区报告</b>（{{.UsableCount}} 可用 / {{.UnusableCount}} 不可用）</td></tr>
 <tr bgcolor="#EEEEEE"><td><b>时间</b></td><td><b>结论</b></td><td><b>前缀</b></td><td><b>AS</b></td><td><b>备注</b></td></tr>
@@ -120,6 +135,7 @@
 </tr>
 {{end}}
 </table>
+</div>
 {{end}}
 {{end}}
 {{end}}

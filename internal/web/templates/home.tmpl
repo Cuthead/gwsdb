@@ -2,11 +2,20 @@
 <html lang="en">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Home - GWS Database</title>
+<style>
+body { margin: 0; }
+.gwsdb-wrap { width: 760px; max-width: 100%; }
+@media (max-width: 780px) {
+	input#searchInput { width: 60%; box-sizing: border-box; }
+	.gwsdb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+</style>
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
 <center>
-<table border="0" cellpadding="4" cellspacing="0" width="760">
+<table border="0" cellpadding="4" cellspacing="0" class="gwsdb-wrap">
 <tr bgcolor="#000080">
 <td><font color="#FFFFFF" face="Arial,Helvetica,sans-serif" size="+1"><b>GWS Database</b></font></td>
 </tr>
@@ -43,6 +52,7 @@
 </p>
 
 {{if .IPs}}
+<div class="gwsdb-scroll">
 <table border="1" cellpadding="4" cellspacing="0" width="100%" id="ipTable">
 <tr bgcolor="#EEEEEE">
 <td><b><a href="#" onclick="return gwsdbSort('ip', false)">IP Address</a> <span class="arrow" data-col="ip"></span></b></td>
@@ -67,6 +77,7 @@
 {{end}}
 </tbody>
 </table>
+</div>
 <script>
 var gwsdbSortState = {col: null, desc: false};
 var gwsdbStatusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
