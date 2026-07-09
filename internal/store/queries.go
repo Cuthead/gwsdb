@@ -241,40 +241,6 @@ func (s *Store) GetPTR(ip string, maxAge time.Duration) (*PTRCacheEntry, error) 
 	return e, nil
 }
 
-// GetPTRBatch returns cached PTR hostnames for ips, keyed by IP. Entries with
-// no cache row, a failed lookup, or LookupOK=false are simply omitted --
-// callers should treat a missing key as "unknown", not as an error.
-func (s *Store) GetPTRBatch(ips []string) (map[string]string, error) {
-	result := make(map[string]string, len(ips))
-	if len(ips) == 0 {
-		return result, nil
-	}
-
-	placeholders := make([]string, len(ips))
-	args := make([]any, len(ips))
-	for i, ip := range ips {
-		placeholders[i] = "?"
-		args[i] = ip
-	}
-
-	rows, err := s.db.Query(fmt.Sprintf(`
-		SELECT ip, ptr_hostname FROM ptr_cache
-		WHERE lookup_ok = 1 AND ip IN (%s)`, strings.Join(placeholders, ",")), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var ip, hostname string
-		if err := rows.Scan(&ip, &hostname); err != nil {
-			return nil, err
-		}
-		result[ip] = hostname
-	}
-	return result, rows.Err()
-}
-
 // SavePTR upserts a PTR/geo lookup result into the cache.
 func (s *Store) SavePTR(e PTRCacheEntry) error {
 	_, err := s.db.Exec(`
@@ -315,19 +281,71 @@ func (s *Store) RecentScans(limit int) ([]Scan, error) {
 	return out, rows.Err()
 }
 
-// ListKnownIPs returns IPs from the tracked pool (ip_status), newest-checked
-// first. If onlyUp is true, only IPs whose most recent check succeeded (or
-// that have never failed a check) are returned.
-func (s *Store) ListKnownIPs(onlyUp bool, limit int) ([]IPStatus, error) {
-	q := `
-		SELECT ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok
-		FROM ip_status`
-	if onlyUp {
-		q += ` WHERE last_check_ok IS NULL OR last_check_ok = 1`
-	}
-	q += ` ORDER BY last_seen DESC LIMIT ?`
+// listKnownIPsSortColumns whitelists the columns ListKnownIPs may sort by,
+// mapping the caller-facing key to the actual SQL expression -- SortBy is
+// caller-controlled (it comes from a query param), so it must never be
+// interpolated into the query directly.
+var listKnownIPsSortColumns = map[string]string{
+	"ip":         "ip_status.ip",
+	"ptr":        "ptr_cache.ptr_hostname",
+	"status":     "last_check_ok",
+	"first_seen": "first_seen",
+	"last_seen":  "last_seen",
+	"rtt":        "last_rtt_ms",
+}
 
-	rows, err := s.db.Query(q, limit)
+// ListKnownIPsOptions controls filtering and ordering for ListKnownIPs.
+type ListKnownIPsOptions struct {
+	OnlyUp bool
+
+	// Search, if non-empty, restricts results to IPs whose address or
+	// cached PTR hostname contains it (case-insensitive).
+	Search string
+
+	// SortBy is one of the keys in listKnownIPsSortColumns; any other
+	// value (including "") falls back to "last_seen".
+	SortBy   string
+	SortDesc bool
+
+	Limit int
+}
+
+// ListKnownIPs returns IPs from the tracked pool (ip_status), along with
+// each IP's cached PTR hostname (empty if never resolved). If OnlyUp is
+// true, only IPs whose most recent check succeeded (or that have never
+// failed a check) are returned.
+func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
+	col, ok := listKnownIPsSortColumns[opts.SortBy]
+	if !ok {
+		col = "last_seen"
+	}
+	dir := "ASC"
+	if opts.SortDesc {
+		dir = "DESC"
+	}
+
+	q := `
+		SELECT ip_status.ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '')
+		FROM ip_status
+		LEFT JOIN ptr_cache ON ptr_cache.ip = ip_status.ip`
+
+	var where []string
+	var args []any
+	if opts.OnlyUp {
+		where = append(where, `(last_check_ok IS NULL OR last_check_ok = 1)`)
+	}
+	if opts.Search != "" {
+		where = append(where, `(ip_status.ip LIKE ? OR ptr_cache.ptr_hostname LIKE ?)`)
+		pattern := "%" + opts.Search + "%"
+		args = append(args, pattern, pattern)
+	}
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += fmt.Sprintf(" ORDER BY %s %s, last_seen DESC LIMIT ?", col, dir)
+	args = append(args, opts.Limit)
+
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +357,7 @@ func (s *Store) ListKnownIPs(onlyUp bool, limit int) ([]IPStatus, error) {
 		var isIPv6 int
 		var first, last, lastChecked sql.NullTime
 		var lastScanID, lastRTT, lastCheckOK sql.NullInt64
-		if err := rows.Scan(&st.IP, &isIPv6, &st.ScanMode, &first, &last, &lastScanID, &lastRTT, &st.TimesSeen, &lastChecked, &lastCheckOK); err != nil {
+		if err := rows.Scan(&st.IP, &isIPv6, &st.ScanMode, &first, &last, &lastScanID, &lastRTT, &st.TimesSeen, &lastChecked, &lastCheckOK, &st.PTRHostname); err != nil {
 			return nil, err
 		}
 		st.IsIPv6 = isIPv6 != 0

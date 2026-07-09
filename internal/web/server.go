@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -67,9 +68,61 @@ type ipRow struct {
 	LastRTTMs int
 }
 
+// sortColumnDefaultDesc lists the home page's sortable columns and which
+// direction "feels right" the first time each is clicked (e.g. newest/
+// highest first for dates and RTT, alphabetical for IP/PTR).
+var sortColumnDefaultDesc = map[string]bool{
+	"ip":         false,
+	"ptr":        false,
+	"status":     true,
+	"first_seen": true,
+	"last_seen":  true,
+	"rtt":        true,
+}
+
+// colSort is a precomputed header link for one sortable column: where
+// clicking it goes, and the arrow to show if it's the active sort.
+type colSort struct {
+	URL   string
+	Arrow string
+}
+
+// sortLink builds the header link for column col given the request's
+// current query params and the currently active sort. Clicking an inactive
+// column sorts by it in its default direction; clicking the active column
+// flips direction. All other params (q, status) are preserved.
+func sortLink(q url.Values, col string, activeCol string, activeDesc bool) colSort {
+	next := url.Values{}
+	for k, v := range q {
+		if k == "sort" || k == "dir" {
+			continue
+		}
+		next[k] = v
+	}
+
+	desc := sortColumnDefaultDesc[col]
+	arrow := ""
+	if col == activeCol {
+		arrow = "▲"
+		if activeDesc {
+			arrow = "▼"
+		}
+		desc = !activeDesc
+	}
+	next.Set("sort", col)
+	if desc {
+		next.Set("dir", "desc")
+	} else {
+		next.Set("dir", "asc")
+	}
+	return colSort{URL: "/?" + next.Encode(), Arrow: arrow}
+}
+
 type homeData struct {
 	Title      string
 	FilterUp   bool
+	Search     string
+	Sort       map[string]colSort
 	IPs        []ipRow
 	Count      int
 	Truncated  bool
@@ -84,10 +137,37 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	onlyUp := r.URL.Query().Get("status") != "all"
-	data := homeData{Title: "首页", FilterUp: onlyUp}
+	q := r.URL.Query()
+	onlyUp := q.Get("status") != "all"
+	search := strings.TrimSpace(q.Get("q"))
 
-	known, err := s.st.ListKnownIPs(onlyUp, maxIPsListed)
+	sortBy := q.Get("sort")
+	defaultDesc, validSort := sortColumnDefaultDesc[sortBy]
+	if !validSort {
+		sortBy = "last_seen"
+		defaultDesc = true
+	}
+	sortDesc := defaultDesc
+	switch q.Get("dir") {
+	case "asc":
+		sortDesc = false
+	case "desc":
+		sortDesc = true
+	}
+
+	data := homeData{Title: "首页", FilterUp: onlyUp, Search: search}
+	data.Sort = make(map[string]colSort, len(sortColumnDefaultDesc))
+	for col := range sortColumnDefaultDesc {
+		data.Sort[col] = sortLink(q, col, sortBy, sortDesc)
+	}
+
+	known, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
+		OnlyUp:   onlyUp,
+		Search:   search,
+		SortBy:   sortBy,
+		SortDesc: sortDesc,
+		Limit:    maxIPsListed,
+	})
 	if err != nil {
 		log.Printf("home: ListKnownIPs: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -96,6 +176,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	for _, st := range known {
 		row := ipRow{
 			IP:        st.IP,
+			PTR:       st.PTRHostname,
 			FirstSeen: formatTime(st.FirstSeen),
 			LastSeen:  formatTime(st.LastSeen),
 			LastRTTMs: st.LastRTTMs,
@@ -112,18 +193,6 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	data.Count = len(data.IPs)
 	data.Truncated = len(known) == maxIPsListed
-
-	ips := make([]string, len(data.IPs))
-	for i, row := range data.IPs {
-		ips[i] = row.IP
-	}
-	if ptrs, err := s.st.GetPTRBatch(ips); err != nil {
-		log.Printf("home: GetPTRBatch: %v", err)
-	} else {
-		for i, row := range data.IPs {
-			data.IPs[i].PTR = ptrs[row.IP]
-		}
-	}
 
 	if sc, err := s.st.LatestScan(""); err == nil && sc != nil {
 		data.ScanMode = sc.ScanMode

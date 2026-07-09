@@ -42,7 +42,8 @@ type IPStatus struct {
 	TimesSeen     int
 	LastCheckedAt time.Time // last time this IP was tested at all (pass or fail)
 	LastCheckOK   bool
-	HasCheck      bool // whether LastCheckedAt/LastCheckOK are populated
+	HasCheck      bool   // whether LastCheckedAt/LastCheckOK are populated
+	PTRHostname   string // cached PTR hostname, "" if never resolved; only populated by ListKnownIPs
 }
 
 // IPCheck is a single pass/fail observation of one IP during one scan --

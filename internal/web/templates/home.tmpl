@@ -31,15 +31,22 @@
 &nbsp;&nbsp;共 {{.Count}} 条{{if .Truncated}}（仅显示最近 {{.Count}} 条）{{end}}
 </p>
 
+<form method="get" action="/">
+{{if not .FilterUp}}<input type="hidden" name="status" value="all">{{end}}
+<input type="text" name="q" value="{{.Search}}" placeholder="搜索 IP 或 PTR" size="30">
+<input type="submit" value="搜索">
+{{if .Search}}&nbsp;<a href="/?{{if not .FilterUp}}status=all{{end}}">清除</a>{{end}}
+</form>
+
 {{if .IPs}}
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE">
-<td><b>IP 地址</b></td>
-<td><b>PTR</b></td>
-<td><b>状态</b></td>
-<td><b>首次发现</b></td>
-<td><b>最近可达</b></td>
-<td><b>最近 RTT</b></td>
+<td><b><a href="{{(index .Sort "ip").URL}}">IP 地址</a> {{(index .Sort "ip").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "ptr").URL}}">PTR</a> {{(index .Sort "ptr").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "status").URL}}">状态</a> {{(index .Sort "status").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "first_seen").URL}}">首次发现</a> {{(index .Sort "first_seen").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "last_seen").URL}}">最近可达</a> {{(index .Sort "last_seen").Arrow}}</b></td>
+<td><b><a href="{{(index .Sort "rtt").URL}}">最近 RTT</a> {{(index .Sort "rtt").Arrow}}</b></td>
 </tr>
 {{range .IPs}}
 <tr>
