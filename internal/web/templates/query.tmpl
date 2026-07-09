@@ -98,8 +98,8 @@
 <form method="POST" action="/report">
 <input type="hidden" name="ip" value="{{.Query}}">
 备注（可选）：<input type="text" name="comment" size="40" maxlength="500">
-<input type="submit" name="verdict" value="usable">
-<input type="submit" name="verdict" value="unusable">
+<button type="submit" name="verdict" value="usable">可用</button>
+<button type="submit" name="verdict" value="unusable">不可用</button>
 </form>
 </td>
 </tr>

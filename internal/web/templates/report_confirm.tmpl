@@ -40,7 +40,7 @@
 <input type="hidden" name="ip" value="{{.IP}}">
 <input type="hidden" name="comment" value="{{.Comment}}">
 <input type="hidden" name="confirm" value="1">
-<input type="submit" name="verdict" value="{{if .Verdict}}usable{{else}}unusable{{end}}">
+<button type="submit" name="verdict" value="{{if .Verdict}}usable{{else}}unusable{{end}}">{{if .Verdict}}确认提交为可用{{else}}确认提交为不可用{{end}}</button>
 </form>
 <p><a href="/query?ip={{.IP}}">取消</a></p>
 
