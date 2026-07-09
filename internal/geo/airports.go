@@ -475,6 +475,7 @@ var airportCodes = map[string]place{
 	"pdx": {"Portland, OR", "United States"},
 	"phx": {"Phoenix, AZ", "United States"},
 	"rfd": {"Rockford, IL", "United States"},
+	"rno": {"Reno, NV", "United States"},
 	"sea": {"Seattle, WA", "United States"},
 	"sfo": {"San Francisco, CA", "United States"},
 	"sjc": {"San Jose, CA", "United States"},
