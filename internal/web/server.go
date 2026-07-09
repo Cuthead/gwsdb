@@ -324,6 +324,7 @@ type queryData struct {
 // reportRow is one community report rendered on the query page. Only the
 // reporter's announced prefix and AS are shown -- never their raw IP.
 type reportRow struct {
+	IP             string
 	Time           string
 	Verdict        bool // true = usable
 	ReporterPrefix string
@@ -523,6 +524,20 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 			rep.ReporterASN = info.ASN
 			rep.ReporterASName = info.ASName
 		}
+	}
+
+	// Require an explicit confirm step so the reporter sees what's about to
+	// be published (their announced prefix/AS) before it's stored.
+	if r.FormValue("confirm") != "1" {
+		s.render(w, "report_confirm.tmpl", reportRow{
+			IP:             rep.IP,
+			Verdict:        rep.Verdict,
+			Comment:        rep.Comment,
+			ReporterPrefix: rep.ReporterPrefix,
+			ReporterASN:    rep.ReporterASN,
+			ReporterASName: rep.ReporterASName,
+		})
+		return
 	}
 
 	if err := s.st.SaveReport(rep); err != nil {

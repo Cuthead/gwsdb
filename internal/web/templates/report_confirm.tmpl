@@ -1,0 +1,61 @@
+{{define "report_confirm.tmpl"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<title>Confirm Report - GWS Database</title>
+</head>
+<body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
+<center>
+<table border="0" cellpadding="4" cellspacing="0" width="760">
+<tr bgcolor="#000080">
+<td><font color="#FFFFFF" face="Arial,Helvetica,sans-serif" size="+1"><b>GWS Database</b></font></td>
+</tr>
+<tr bgcolor="#DDDDDD">
+<td>
+<font face="Arial,Helvetica,sans-serif" size="-1">
+<a href="/">Home</a> |
+<a href="/query">Query IP</a> |
+<a href="/scans">Scans</a>
+</font>
+</td>
+</tr>
+<tr>
+<td>
+<font face="Arial,Helvetica,sans-serif" size="-1">
+
+<p><b>Confirm Report Submission</b></p>
+
+<table border="1" cellpadding="6" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE"><td colspan="2"><b>The following will be stored and shown publicly</b></td></tr>
+<tr><td width="30%">Target IP</td><td><tt>{{.IP}}</tt></td></tr>
+<tr><td>Verdict</td><td>{{if .Verdict}}<font color="#008000">✓ Usable</font>{{else}}<font color="#CC0000">✗ Unusable</font>{{end}}</td></tr>
+{{if .Comment}}<tr><td>Comment</td><td>{{.Comment}}</td></tr>{{end}}
+<tr><td>Your Prefix</td><td><tt>{{if .ReporterPrefix}}{{.ReporterPrefix}}{{else}}(unknown){{end}}</tt></td></tr>
+<tr><td>Your AS</td><td>{{if .ReporterASN}}AS{{.ReporterASN}}{{if .ReporterASName}} {{.ReporterASName}}{{end}}{{else}}(unknown){{end}}</td></tr>
+</table>
+
+<p><font color="#CC0000">Your raw IP address is not published, but the announced prefix and AS number derived from it will be visible to anyone viewing this IP's report history.</font></p>
+
+<form method="POST" action="/report">
+<input type="hidden" name="ip" value="{{.IP}}">
+<input type="hidden" name="comment" value="{{.Comment}}">
+<input type="hidden" name="confirm" value="1">
+<input type="submit" name="verdict" value="{{if .Verdict}}usable{{else}}unusable{{end}}">
+</form>
+<p><a href="/query?ip={{.IP}}">Cancel</a></p>
+
+</font>
+</td>
+</tr>
+<tr bgcolor="#DDDDDD">
+<td align="center">
+<font face="Arial,Helvetica,sans-serif" size="-2" color="#666666">
+GWS Database &mdash; Tracking Google Web Server IP reachability in China
+</font>
+</td>
+</tr>
+</table>
+</center>
+</body>
+</html>
+{{end}}
