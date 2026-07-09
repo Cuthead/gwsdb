@@ -60,12 +60,14 @@ func formatTime(t time.Time) string {
 const maxIPsListed = 500
 
 type ipRow struct {
-	IP        string
-	PTR       string // cached PTR hostname, "" if never looked up
-	Status    string // "可达" / "不可达" / "-" (never explicitly re-checked)
-	FirstSeen string
-	LastSeen  string
-	LastRTTMs int
+	IP          string
+	PTR         string // cached PTR hostname, "" if never looked up
+	Country     string // best-effort, decoded from PTR, "" if unknown
+	CountryCode string // ISO 3166-1 alpha-2, "" if unknown
+	Status      string // "可达" / "不可达" / "-" (never explicitly re-checked)
+	FirstSeen   string
+	LastSeen    string
+	LastRTTMs   int
 }
 
 // sortColumnDefaultDesc lists the home page's sortable columns and which
@@ -180,6 +182,11 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			FirstSeen: formatTime(st.FirstSeen),
 			LastSeen:  formatTime(st.LastSeen),
 			LastRTTMs: st.LastRTTMs,
+		}
+		if st.PTRHostname != "" {
+			loc := geo.Decode(st.PTRHostname)
+			row.Country = loc.Country
+			row.CountryCode = geo.CountryCode(loc.Country)
 		}
 		switch {
 		case !st.HasCheck:

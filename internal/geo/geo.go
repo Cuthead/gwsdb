@@ -99,3 +99,57 @@ func lookupRegional(code string) (city, country string, ok bool) {
 	}
 	return e.city, e.country, true
 }
+
+// countryCodes maps the country names used in airportCodes/regionalCodes to
+// their ISO 3166-1 alpha-2 code, for rendering flag icons (e.g. via
+// bgp.he.net/images/flags/<code>.gif).
+var countryCodes = map[string]string{
+	"Argentina":            "ar",
+	"Australia":            "au",
+	"Austria":              "at",
+	"Brazil":               "br",
+	"Chile":                "cl",
+	"China":                "cn",
+	"Colombia":             "co",
+	"Czechia":              "cz",
+	"Denmark":              "dk",
+	"Egypt":                "eg",
+	"Finland":              "fi",
+	"France":               "fr",
+	"Germany":              "de",
+	"Hong Kong":            "hk",
+	"India":                "in",
+	"Indonesia":            "id",
+	"Ireland":              "ie",
+	"Israel":               "il",
+	"Italy":                "it",
+	"Japan":                "jp",
+	"Malaysia":             "my",
+	"Mexico":               "mx",
+	"Netherlands":          "nl",
+	"New Zealand":          "nz",
+	"Norway":               "no",
+	"Peru":                 "pe",
+	"Philippines":          "ph",
+	"Poland":               "pl",
+	"Qatar":                "qa",
+	"Romania":              "ro",
+	"Singapore":            "sg",
+	"South Africa":         "za",
+	"South Korea":          "kr",
+	"Spain":                "es",
+	"Sweden":               "se",
+	"Switzerland":          "ch",
+	"Taiwan":               "tw",
+	"Thailand":             "th",
+	"United Arab Emirates": "ae",
+	"United Kingdom":       "gb",
+	"United States":        "us",
+}
+
+// CountryCode returns the ISO 3166-1 alpha-2 code for a country name as
+// produced by Decode's Country field (e.g. "United States" -> "us").
+// Returns "" if the name isn't recognized.
+func CountryCode(country string) string {
+	return countryCodes[country]
+}
