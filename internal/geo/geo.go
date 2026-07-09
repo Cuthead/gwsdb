@@ -19,6 +19,10 @@ var pattern2 = regexp.MustCompile(`^([a-z]{2})-in-(?:f(\d{1,3})|x([0-9a-f]{2}))\
 // [2-letter metro prefix][3-letter airport][1-3 letter server tag](-[cluster tag])?-in-[f<dec>|x<hex>]
 var pattern3 = regexp.MustCompile(`^([a-z]{2})([a-z]{3})([a-z]{1,3})(?:-([a-z0-9]+))?-in-(?:f(\d{1,3})|x([0-9a-f]{2}))\.1e100\.net\.?$`)
 
+// pattern 4: e.g. any-in-201d.1e100.net (anycast, no fixed airport)
+// any-in-[hex, bare, no f/x marker]
+var pattern4 = regexp.MustCompile(`^any-in-([0-9a-f]{2,6})\.1e100\.net\.?$`)
+
 // Location is the result of decoding a 1e100.net PTR hostname.
 type Location struct {
 	Hostname    string
@@ -78,6 +82,14 @@ func Decode(hostname string) Location {
 		if city, country, ok := lookupAirport(loc.AirportCode); ok {
 			loc.City, loc.Country = city, country
 		}
+		return loc
+	}
+
+	if m := pattern4.FindStringSubmatch(h); m != nil {
+		loc.Matched = true
+		loc.AirportCode = "any"
+		loc.ServerIndex = "0x" + m[1]
+		loc.City = "Anycast"
 		return loc
 	}
 
