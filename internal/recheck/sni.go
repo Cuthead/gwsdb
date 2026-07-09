@@ -79,7 +79,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(ip, "443"))
 		cancel()
 		if err != nil {
-			return Result{Reason: "dial", Detail: fmt.Sprintf("sni=%s error=%s", serverName, err.Error())}
+			return Result{Reason: "dial", Detail: fmt.Sprintf("sni=%s error=%s", serverName, ingest.SanitizeNetErr(err.Error()))}
 		}
 
 		tlscfg.ServerName = serverName
@@ -87,7 +87,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		tlsconn.SetDeadline(time.Now().Add(handshakeTimeout))
 		if err := tlsconn.Handshake(); err != nil {
 			tlsconn.Close()
-			return Result{Reason: "handshake", Detail: fmt.Sprintf("sni=%s error=%s", serverName, err.Error())}
+			return Result{Reason: "handshake", Detail: fmt.Sprintf("sni=%s error=%s", serverName, ingest.SanitizeNetErr(err.Error()))}
 		}
 
 		if cfg.Level > 1 {
@@ -113,7 +113,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			resp, err := httpconn.Do(req)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "status", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=%s", serverName, host, method, cfg.HTTPPath, err.Error())}
+				return Result{Reason: "status", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=%s", serverName, host, method, cfg.HTTPPath, ingest.SanitizeNetErr(err.Error()))}
 			}
 			if resp.StatusCode != cfg.ValidStatusCode {
 				tlsconn.Close()

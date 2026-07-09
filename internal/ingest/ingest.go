@@ -29,6 +29,7 @@ type Options struct {
 }
 
 var logLineTS = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s`)
+var netErrSrcAddrRE = regexp.MustCompile(`((?:read|write|dial)\s+(?:tcp|udp|ip[46]?)\s+)\S+->`)
 var foundRecordRE = regexp.MustCompile(`Found a record: IP=(\S+), RTT=(\S+)`)
 var failRecordRE = regexp.MustCompile(`Tested IP=(\S+) RESULT=fail(?: REASON=(\S+))?(?: DETAIL=(.*))?`)
 var summaryRE = regexp.MustCompile(`Scanned (\d+) IP in ([^,]+), found (\d+) records`)
@@ -150,6 +151,13 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	return st.SaveScan(scan, results, sum.Checks)
 }
 
+// SanitizeNetErr strips the local (source) address from Go net error strings
+// like "read ip4 192.168.1.110->74.125.207.126: i/o timeout". With IPv6 the
+// source is the machine's public address, which must not be stored or shown.
+func SanitizeNetErr(s string) string {
+	return netErrSrcAddrRE.ReplaceAllString(s, "$1")
+}
+
 // foundIPsFromLog derives an ordered, deduplicated hit list from parsed log
 // checks, for use when no output file is available.
 func foundIPsFromLog(checks []store.IPCheck) []string {
@@ -249,7 +257,7 @@ func parseLog(text string) logSummary {
 				IP:        m[1],
 				OK:        false,
 				Reason:    m[2],
-				Detail:    strings.TrimRight(m[3], "\r"),
+				Detail:    SanitizeNetErr(strings.TrimRight(m[3], "\r")),
 				CheckedAt: lineTime,
 			})
 			continue
