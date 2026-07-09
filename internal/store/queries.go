@@ -468,6 +468,10 @@ var listKnownIPsSortColumns = map[string]string{
 type ListKnownIPsOptions struct {
 	OnlyUp bool
 
+	// Family, if 4 or 6, restricts results to that IP address family;
+	// any other value (including 0) returns both.
+	Family int
+
 	// Search, if non-empty, restricts results to IPs whose address or
 	// cached PTR hostname contains it (case-insensitive).
 	Search string
@@ -503,6 +507,12 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 	var args []any
 	if opts.OnlyUp {
 		where = append(where, `(last_check_ok IS NULL OR last_check_ok = 1)`)
+	}
+	switch opts.Family {
+	case 4:
+		where = append(where, `is_ipv6 = 0`)
+	case 6:
+		where = append(where, `is_ipv6 = 1`)
 	}
 	if opts.Search != "" {
 		where = append(where, `(ip_status.ip LIKE ? OR ptr_cache.ptr_hostname LIKE ?)`)

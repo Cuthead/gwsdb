@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
@@ -183,8 +184,10 @@ func formatTime(t time.Time) string {
 	return t.Local().Format(timeLayout)
 }
 
-// maxIPsListed caps how many rows the home page table renders. IPs are
-// ordered by last_seen DESC, so this simply hides the stalest tail.
+// maxIPsListed caps how many rows the home page table renders per address
+// family. The IPv4/IPv6 filter is client-side over already-rendered rows,
+// so each family gets its own newest-first slice; a single shared cap
+// would let a burst of one family push the other out of the list.
 const maxIPsListed = 500
 
 // maxScansListed caps how many rows the scans page table renders.
@@ -206,6 +209,7 @@ type homeData struct {
 	IPs        []ipRow
 	Count      int
 	Truncated  bool
+	Limit      int // per-family row cap, shown in the truncation notice
 	ScanMode   string
 	Stats      store.Stats
 	LastScanAt string
@@ -217,21 +221,36 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := homeData{Title: "Home"}
+	data := homeData{Title: "Home", Limit: maxIPsListed}
 
 	// Search, column sort, and the reachable-only filter are handled
 	// client-side in JS over this page's rows, so the list is always fetched
-	// in one fixed order (newest first) and unfiltered by status.
-	known, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
-		SortBy:   "last_seen",
-		SortDesc: true,
-		Limit:    maxIPsListed,
-	})
-	if err != nil {
-		log.Printf("home: ListKnownIPs: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	// in one fixed order (newest first) and unfiltered by status. Each
+	// address family is fetched separately so the family filter always has
+	// up to maxIPsListed rows to show, even when recent scans are dominated
+	// by the other family.
+	var known []store.IPStatus
+	for _, family := range []int{4, 6} {
+		perFamily, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
+			Family:   family,
+			SortBy:   "last_seen",
+			SortDesc: true,
+			Limit:    maxIPsListed,
+		})
+		if err != nil {
+			log.Printf("home: ListKnownIPs: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if len(perFamily) == maxIPsListed {
+			data.Truncated = true
+		}
+		known = append(known, perFamily...)
 	}
+	// Restore the combined newest-first default order across families.
+	sort.Slice(known, func(i, j int) bool {
+		return known[i].LastSeen.After(known[j].LastSeen)
+	})
 	for _, st := range known {
 		row := ipRow{
 			IP:        st.IP,
@@ -256,7 +275,6 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		data.IPs = append(data.IPs, row)
 	}
 	data.Count = len(data.IPs)
-	data.Truncated = len(known) == maxIPsListed
 
 	if sc, err := s.st.LatestScan(""); err == nil && sc != nil {
 		data.ScanMode = sc.ScanMode
