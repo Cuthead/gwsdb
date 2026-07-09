@@ -39,16 +39,14 @@
 <td><b>首次发现</b></td>
 <td><b>最近可达</b></td>
 <td><b>最近 RTT</b></td>
-<td></td>
 </tr>
 {{range .IPs}}
 <tr>
-<td><tt>{{.IP}}</tt></td>
+<td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
 <td>{{if eq .Status "可达"}}<font color="#008000">✓ 可达</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ 不可达</font>{{else}}-{{end}}</td>
 <td>{{.FirstSeen}}</td>
 <td>{{.LastSeen}}</td>
 <td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td>
-<td><a href="/query?ip={{.IP}}">详情</a></td>
 </tr>
 {{end}}
 </table>
