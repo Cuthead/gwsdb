@@ -51,6 +51,7 @@ func RunAndSave(st *store.Store, ip, scanMode string, probeTimeout time.Duration
 		HTTPMethod:       cfg.HTTPMethod,
 		HTTPVerifyHosts:  strings.Join(cfg.HTTPVerifyHosts, ","),
 		ValidStatusCode:  cfg.ValidStatusCode,
+		ConfigJSON:       configJSON,
 		Level:            cfg.Level,
 		StartedAt:        now,
 		FinishedAt:       now,
