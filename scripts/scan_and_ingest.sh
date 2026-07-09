@@ -16,7 +16,7 @@ LOG_FILE="$LOG_DIR/scan_$(date +%Y%m%d_%H%M%S).log"
 
 cd "$SCANNER_DIR"
 sudo ./gscan_quic < /dev/null > >(tee "$LOG_FILE") 2>&1 &
-trap 'sudo pkill -TERM gscan_quic 2>/dev/null; wait; exit 130' INT TERM
+trap 'sudo pkill -TERM gscan_quic 2>/dev/null; wait; rm -f "$LOG_FILE"; exit 130' INT TERM
 wait || true
 trap - INT TERM
 
