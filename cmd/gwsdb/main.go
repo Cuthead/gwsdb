@@ -6,11 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
+	"github.com/cuthead/gwsdb/internal/recheck"
 	"github.com/cuthead/gwsdb/internal/store"
 	"github.com/cuthead/gwsdb/internal/web"
 )
@@ -28,6 +30,8 @@ func main() {
 		runIngest(os.Args[2:])
 	case "delete-scan":
 		runDeleteScan(os.Args[2:])
+	case "recheck":
+		runRecheck(os.Args[2:])
 	case "-h", "-help", "--help":
 		usage()
 	default:
@@ -43,7 +47,8 @@ func usage() {
 Usage:
   gwsdb serve  -db PATH [-addr :8080]
   gwsdb ingest -db PATH -config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]
-  gwsdb delete-scan -db PATH -id N`)
+  gwsdb delete-scan -db PATH -id N
+  gwsdb recheck -db PATH -ip IP [-timeout 10s]`)
 }
 
 func runServe(args []string) {
@@ -131,4 +136,37 @@ func runDeleteScan(args []string) {
 		log.Fatalf("delete-scan: %v", err)
 	}
 	log.Printf("deleted scan #%d", *id)
+}
+
+func runRecheck(args []string) {
+	fs := flag.NewFlagSet("recheck", flag.ExitOnError)
+	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
+	ip := fs.String("ip", "", "IP address to re-test")
+	timeout := fs.Duration("timeout", 10*time.Second, "probe timeout")
+	fs.Parse(args)
+
+	if *ip == "" {
+		fmt.Fprintln(os.Stderr, "recheck: -ip is required")
+		fs.Usage()
+		os.Exit(2)
+	}
+	if net.ParseIP(*ip) == nil {
+		log.Fatalf("recheck: invalid ip %q", *ip)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	result, err := recheck.RunAndSave(st, *ip, recheck.DefaultScanMode, *timeout)
+	if err != nil {
+		log.Fatalf("recheck: %v", err)
+	}
+	if result.OK {
+		fmt.Printf("OK ip=%s rtt=%dms\n", *ip, result.RTTMs)
+	} else {
+		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", *ip, result.Reason, result.Detail)
+	}
 }
