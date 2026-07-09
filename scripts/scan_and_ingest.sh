@@ -15,8 +15,10 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/scan_$(date +%Y%m%d_%H%M%S).log"
 
 cd "$SCANNER_DIR"
-# `< /dev/null` prevents the scanner's "Press [Enter] to exit..." pause from
-# blocking a non-interactive cron run.
-sudo ./gscan_quic < /dev/null > "$LOG_FILE" 2>&1 || true
+sudo ./gscan_quic < /dev/null > >(tee "$LOG_FILE") 2>&1 &
+SCAN_PID=$!
+trap 'sudo kill -TERM "$SCAN_PID" 2>/dev/null; wait "$SCAN_PID" 2>/dev/null; exit 130' INT TERM
+wait "$SCAN_PID" || true
+trap - INT TERM
 
 "$GWSDB_BIN" ingest -db "$DB_PATH" -config "$CONFIG_FILE" -log "$LOG_FILE"
