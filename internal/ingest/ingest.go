@@ -78,7 +78,6 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		return 0, fmt.Errorf("read output file: %w", err)
 	}
 
-	var logText string
 	sum := logSummary{RTTByIP: map[string]int{}}
 
 	if opts.LogPath != "" {
@@ -86,8 +85,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("read log: %w", err)
 		}
-		logText = string(logBytes)
-		sum = parseLog(logText)
+		sum = parseLog(string(logBytes))
 
 		if cfg.LogLevel < 5 {
 			log.Printf("warning: config LogLevel=%d (<5) -- failed attempts won't be logged, so ip_checks history will be incomplete; set \"LogLevel\": 5 in the scan config", cfg.LogLevel)
@@ -124,7 +122,6 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		OutputFile:       outputPath,
 		Level:            sub.Level,
 		ConfigJSON:       configJSON,
-		LogText:          logText,
 		StartedAt:        sum.StartedAt,
 		FinishedAt:       sum.FinishedAt,
 		ScannedCount:     sum.ScannedCount,
