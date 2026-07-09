@@ -138,6 +138,39 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 	return scanID, nil
 }
 
+// DeleteScan removes a scan and its results/checks. ip_status rows pointing
+// at it via last_scan_id are unlinked (set to NULL) rather than recomputed --
+// their last_seen/times_seen/last_rtt_ms aggregates are left as-is.
+func (s *Store) DeleteScan(id int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM ip_checks WHERE scan_id = ?`, id); err != nil {
+		return fmt.Errorf("delete ip_checks: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM scan_results WHERE scan_id = ?`, id); err != nil {
+		return fmt.Errorf("delete scan_results: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE ip_status SET last_scan_id = NULL WHERE last_scan_id = ?`, id); err != nil {
+		return fmt.Errorf("clear ip_status.last_scan_id: %w", err)
+	}
+	res, err := tx.Exec(`DELETE FROM scans WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete scan: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("scan %d not found", id)
+	}
+	return tx.Commit()
+}
+
 // LatestScan returns metadata about the most recent scan, if any.
 func (s *Store) LatestScan(scanMode string) (*Scan, error) {
 	var row *sql.Row

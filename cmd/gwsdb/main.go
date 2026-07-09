@@ -25,6 +25,8 @@ func main() {
 		runServe(os.Args[2:])
 	case "ingest":
 		runIngest(os.Args[2:])
+	case "delete-scan":
+		runDeleteScan(os.Args[2:])
 	case "-h", "-help", "--help":
 		usage()
 	default:
@@ -39,7 +41,8 @@ func usage() {
 
 Usage:
   gwsdb serve  -db PATH [-addr :8080]
-  gwsdb ingest -db PATH -config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]`)
+  gwsdb ingest -db PATH -config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]
+  gwsdb delete-scan -db PATH -id N`)
 }
 
 func runServe(args []string) {
@@ -98,4 +101,28 @@ func runIngest(args []string) {
 		log.Fatalf("ingest: %v", err)
 	}
 	log.Printf("ingested scan #%d", scanID)
+}
+
+func runDeleteScan(args []string) {
+	fs := flag.NewFlagSet("delete-scan", flag.ExitOnError)
+	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
+	id := fs.Int64("id", 0, "id of the scan to delete")
+	fs.Parse(args)
+
+	if *id == 0 {
+		fmt.Fprintln(os.Stderr, "delete-scan: -id is required")
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.DeleteScan(*id); err != nil {
+		log.Fatalf("delete-scan: %v", err)
+	}
+	log.Printf("deleted scan #%d", *id)
 }
