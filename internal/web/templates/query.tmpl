@@ -88,6 +88,38 @@
 {{end}}
 </table>
 {{end}}
+
+<p></p>
+<table border="1" cellpadding="6" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE"><td colspan="2"><b>Report This IP</b></td></tr>
+<tr>
+<td colspan="2">
+<form method="POST" action="/report">
+<input type="hidden" name="ip" value="{{.Query}}">
+Comment (optional): <input type="text" name="comment" size="40" maxlength="500">
+<input type="submit" name="verdict" value="usable">
+<input type="submit" name="verdict" value="unusable">
+</form>
+</td>
+</tr>
+</table>
+
+{{if .Reports}}
+<p></p>
+<table border="1" cellpadding="4" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE"><td colspan="5"><b>Community Reports</b> ({{.UsableCount}} usable / {{.UnusableCount}} unusable)</td></tr>
+<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Verdict</b></td><td><b>Reporter Prefix</b></td><td><b>Reporter AS</b></td><td><b>Comment</b></td></tr>
+{{range .Reports}}
+<tr>
+<td>{{.Time}}</td>
+<td>{{if .Verdict}}<font color="#008000">✓ Usable</font>{{else}}<font color="#CC0000">✗ Unusable</font>{{end}}</td>
+<td><tt>{{if .ReporterPrefix}}{{.ReporterPrefix}}{{else}}-{{end}}</tt></td>
+<td>{{if .ReporterASN}}AS{{.ReporterASN}}{{if .ReporterASName}} {{.ReporterASName}}{{end}}{{else}}-{{end}}</td>
+<td>{{if .Comment}}{{.Comment}}{{else}}-{{end}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}
 {{end}}
 {{end}}
 

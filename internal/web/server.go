@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cuthead/gwsdb/internal/asn"
 	"github.com/cuthead/gwsdb/internal/geo"
 	"github.com/cuthead/gwsdb/internal/resolver"
 	"github.com/cuthead/gwsdb/internal/store"
@@ -22,6 +23,10 @@ var templateFS embed.FS
 
 const ptrTimeout = 3 * time.Second
 const ptrCacheTTL = 30 * 24 * time.Hour
+const asnTimeout = 3 * time.Second
+const asnCacheTTL = 7 * 24 * time.Hour
+const maxReportRows = 100
+const maxReportCommentLen = 500
 
 // Server holds the dependencies for the HTTP frontend.
 type Server struct {
@@ -43,7 +48,29 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
 	mux.HandleFunc("/query", s.handleQuery)
+	mux.HandleFunc("/report", s.handleReport)
 	return mux
+}
+
+// clientIP extracts the real client address, preferring Cloudflare's
+// CF-Connecting-IP edge header over the generic X-Forwarded-For chain, and
+// falling back to the raw socket peer. CF-Connecting-IP is only trustworthy
+// if the origin refuses direct (non-Cloudflare) connections -- otherwise a
+// caller can set it themselves.
+func clientIP(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" && net.ParseIP(v) != nil {
+		return v
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		first := strings.TrimSpace(strings.Split(v, ",")[0])
+		if net.ParseIP(first) != nil {
+			return first
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 const timeLayout = "2006-01-02 15:04:05"
@@ -284,6 +311,21 @@ type queryData struct {
 	TimesSeen   int
 	LastRTTMs   int
 	Checks      []checkRow
+
+	Reports       []reportRow
+	UsableCount   int
+	UnusableCount int
+}
+
+// reportRow is one community report rendered on the query page. Only the
+// reporter's announced prefix and AS are shown -- never their raw IP.
+type reportRow struct {
+	Time           string
+	Verdict        bool // true = usable
+	ReporterPrefix string
+	ReporterASN    int
+	ReporterASName string
+	Comment        string
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -372,6 +414,108 @@ func (s *Server) lookup(ip string, data *queryData) {
 		}
 		data.Checks = append(data.Checks, row)
 	}
+
+	reports, err := s.st.ListReports(ip, maxReportRows)
+	if err != nil {
+		log.Printf("query: ListReports(%s): %v", ip, err)
+	}
+	for _, rep := range reports {
+		if rep.Verdict {
+			data.UsableCount++
+		} else {
+			data.UnusableCount++
+		}
+		data.Reports = append(data.Reports, reportRow{
+			Time:           formatTime(rep.CreatedAt),
+			Verdict:        rep.Verdict,
+			ReporterPrefix: rep.ReporterPrefix,
+			ReporterASN:    rep.ReporterASN,
+			ReporterASName: rep.ReporterASName,
+			Comment:        rep.Comment,
+		})
+	}
+}
+
+// lookupReporterASN resolves ip's announced prefix and AS, checking the
+// asn_cache first so repeat reporters don't re-trigger a Cymru DNS round trip.
+func (s *Server) lookupReporterASN(ip string) (asn.Info, bool) {
+	if cached, err := s.st.GetASN(ip, asnCacheTTL); err == nil && cached != nil {
+		return asn.Info{ASN: cached.ASN, ASName: cached.ASName, Prefix: cached.Prefix, Country: cached.Country}, cached.LookupOK
+	}
+	info, ok := asn.Lookup(ip, asnTimeout)
+	entry := store.ASNCacheEntry{
+		IP:        ip,
+		ASN:       info.ASN,
+		ASName:    info.ASName,
+		Prefix:    info.Prefix,
+		Country:   info.Country,
+		LookupOK:  ok,
+		CheckedAt: time.Now().UTC(),
+	}
+	if err := s.st.SaveASN(entry); err != nil {
+		log.Printf("report: SaveASN(%s): %v", ip, err)
+	}
+	return info, ok
+}
+
+// handleReport records a community "usable"/"unusable" report against an IP,
+// attributing it to the submitter's announced prefix and AS rather than
+// their raw address.
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+
+	ip := strings.TrimSpace(r.FormValue("ip"))
+	if net.ParseIP(ip) == nil {
+		http.Error(w, "invalid ip", http.StatusBadRequest)
+		return
+	}
+
+	var verdict bool
+	switch r.FormValue("verdict") {
+	case "usable":
+		verdict = true
+	case "unusable":
+		verdict = false
+	default:
+		http.Error(w, "invalid verdict", http.StatusBadRequest)
+		return
+	}
+
+	comment := strings.TrimSpace(r.FormValue("comment"))
+	if len(comment) > maxReportCommentLen {
+		comment = comment[:maxReportCommentLen]
+	}
+
+	reporterIP := clientIP(r)
+	rep := store.IPReport{
+		IP:         ip,
+		Verdict:    verdict,
+		Comment:    comment,
+		ReporterIP: reporterIP,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if reporterIP != "" {
+		if info, ok := s.lookupReporterASN(reporterIP); ok {
+			rep.ReporterPrefix = info.Prefix
+			rep.ReporterASN = info.ASN
+			rep.ReporterASName = info.ASName
+		}
+	}
+
+	if err := s.st.SaveReport(rep); err != nil {
+		log.Printf("report: SaveReport: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/query?ip="+url.QueryEscape(ip), http.StatusSeeOther)
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data any) {

@@ -80,3 +80,31 @@ type PTRCacheEntry struct {
 	LookupOK    bool
 	CheckedAt   time.Time
 }
+
+// ASNCacheEntry is a cached ASN/prefix lookup result for one IP, used to
+// avoid re-querying Team Cymru's DNS whois for repeat reporters.
+type ASNCacheEntry struct {
+	IP        string
+	ASN       int
+	ASName    string
+	Prefix    string
+	Country   string
+	LookupOK  bool
+	CheckedAt time.Time
+}
+
+// IPReport is a community-submitted "usable"/"unusable" report for one IP,
+// similar in spirit to AbuseIPDB's report feature. The reporter's full IP is
+// retained (ReporterIP) for abuse mitigation, but only their announced
+// prefix and AS are meant to be shown publicly.
+type IPReport struct {
+	ID             int64
+	IP             string // the IP being reported on
+	Verdict        bool   // true = usable, false = unusable
+	Comment        string
+	ReporterIP     string // full reporter address; not for public display
+	ReporterPrefix string // BGP-announced prefix containing ReporterIP
+	ReporterASN    int
+	ReporterASName string
+	CreatedAt      time.Time
+}

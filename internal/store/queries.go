@@ -411,6 +411,83 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	return out, rows.Err()
 }
 
+// GetASN returns a cached ASN/prefix lookup for ip if present and not older than maxAge.
+func (s *Store) GetASN(ip string, maxAge time.Duration) (*ASNCacheEntry, error) {
+	e := &ASNCacheEntry{}
+	var asName, prefix, country sql.NullString
+	var asNum sql.NullInt64
+	var lookupOK int
+	var checkedAt time.Time
+	err := s.db.QueryRow(`
+		SELECT ip, asn, as_name, prefix, country, lookup_ok, checked_at
+		FROM asn_cache WHERE ip = ?`, ip).Scan(&e.IP, &asNum, &asName, &prefix, &country, &lookupOK, &checkedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if maxAge > 0 && time.Since(checkedAt) > maxAge {
+		return nil, nil
+	}
+	e.ASN = int(asNum.Int64)
+	e.ASName, e.Prefix, e.Country = asName.String, prefix.String, country.String
+	e.LookupOK = lookupOK != 0
+	e.CheckedAt = checkedAt
+	return e, nil
+}
+
+// SaveASN upserts an ASN/prefix lookup result into the cache.
+func (s *Store) SaveASN(e ASNCacheEntry) error {
+	_, err := s.db.Exec(`
+		INSERT INTO asn_cache (ip, asn, as_name, prefix, country, lookup_ok, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(ip) DO UPDATE SET
+			asn        = excluded.asn,
+			as_name    = excluded.as_name,
+			prefix     = excluded.prefix,
+			country    = excluded.country,
+			lookup_ok  = excluded.lookup_ok,
+			checked_at = excluded.checked_at`,
+		e.IP, nullInt(e.ASN), nullString(e.ASName), nullString(e.Prefix), nullString(e.Country), boolToInt(e.LookupOK), e.CheckedAt)
+	return err
+}
+
+// SaveReport records one community report for an IP.
+func (s *Store) SaveReport(rep IPReport) error {
+	_, err := s.db.Exec(`
+		INSERT INTO ip_reports (ip, verdict, comment, reporter_ip, reporter_prefix, reporter_asn, reporter_as_name, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		rep.IP, boolToInt(rep.Verdict), nullString(rep.Comment), rep.ReporterIP,
+		nullString(rep.ReporterPrefix), nullInt(rep.ReporterASN), nullString(rep.ReporterASName), rep.CreatedAt)
+	return err
+}
+
+// ListReports returns the most recent reports for ip, newest first. The
+// reporter's full IP is intentionally not selected here -- callers should
+// only surface ReporterPrefix/ReporterASN/ReporterASName publicly.
+func (s *Store) ListReports(ip string, limit int) ([]IPReport, error) {
+	rows, err := s.db.Query(`
+		SELECT id, ip, verdict, COALESCE(comment, ''), COALESCE(reporter_prefix, ''), COALESCE(reporter_asn, 0), COALESCE(reporter_as_name, ''), created_at
+		FROM ip_reports WHERE ip = ? ORDER BY created_at DESC LIMIT ?`, ip, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []IPReport
+	for rows.Next() {
+		var rep IPReport
+		var verdict int
+		if err := rows.Scan(&rep.ID, &rep.IP, &verdict, &rep.Comment, &rep.ReporterPrefix, &rep.ReporterASN, &rep.ReporterASName, &rep.CreatedAt); err != nil {
+			return nil, err
+		}
+		rep.Verdict = verdict != 0
+		out = append(out, rep)
+	}
+	return out, rows.Err()
+}
+
 func nullInt(v int) any {
 	if v == 0 {
 		return nil

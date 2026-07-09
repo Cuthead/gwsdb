@@ -78,6 +78,29 @@ CREATE TABLE IF NOT EXISTS ptr_cache (
 	lookup_ok     INTEGER NOT NULL DEFAULT 1,
 	checked_at    DATETIME NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS asn_cache (
+	ip            TEXT PRIMARY KEY,
+	asn           INTEGER,
+	as_name       TEXT,
+	prefix        TEXT,
+	country       TEXT,
+	lookup_ok     INTEGER NOT NULL DEFAULT 1,
+	checked_at    DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ip_reports (
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	ip                TEXT NOT NULL,
+	verdict           INTEGER NOT NULL,
+	comment           TEXT,
+	reporter_ip       TEXT NOT NULL,
+	reporter_prefix   TEXT,
+	reporter_asn      INTEGER,
+	reporter_as_name  TEXT,
+	created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ip_reports_ip ON ip_reports(ip, created_at);
 `
 
 // Store wraps a SQLite database handle.
