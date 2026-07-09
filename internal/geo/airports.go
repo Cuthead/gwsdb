@@ -54,6 +54,7 @@ var airportCodes = map[string]place{
 	"okc": {"Oklahoma City, OK", "United States"},
 	"clt": {"Charlotte, NC", "United States"},
 	"las": {"Las Vegas, NV", "United States"},
+	"uos": {"Franklin County, TN", "United States"},
 
 	// Europe
 	"lhr": {"London", "United Kingdom"},
@@ -73,6 +74,7 @@ var airportCodes = map[string]place{
 	"fco": {"Rome", "Italy"},
 	"arn": {"Stockholm", "Sweden"},
 	"osl": {"Oslo", "Norway"},
+	"ske": {"Skien", "Norway"},
 	"cph": {"Copenhagen", "Denmark"},
 	"hel": {"Hamina/Helsinki", "Finland"},
 	"waw": {"Warsaw", "Poland"},
