@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -54,6 +55,9 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	outputPath := opts.OutputPath
 	if outputPath == "" {
 		outputPath = sub.OutputFile
+		if outputPath != "" && !filepath.IsAbs(outputPath) {
+			outputPath = filepath.Join(filepath.Dir(opts.ConfigPath), outputPath)
+		}
 	}
 	if outputPath == "" {
 		return 0, fmt.Errorf("no output file for mode %q", mode)
