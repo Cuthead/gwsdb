@@ -78,7 +78,7 @@ body { margin: 0; }
 <tr bgcolor="#DDDDDD">
 <td align="center">
 <font face="Arial,Helvetica,sans-serif" size="-2" color="#666666">
-GWS Database &mdash; Tracking Google Web Server IP reachability in China
+{{if buildRevision}}commit <a href="{{buildCommitURL}}">{{buildRevision}}</a> &middot; {{buildDate}}{{else}}<a href="{{repoURL}}">gwsdb</a>{{end}}
 </font>
 </td>
 </tr>

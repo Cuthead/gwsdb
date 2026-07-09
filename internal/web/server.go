@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -20,6 +21,45 @@ import (
 
 //go:embed templates/*.tmpl
 var templateFS embed.FS
+
+const repoURL = "https://github.com/cuthead/gwsdb"
+
+// buildRevision, buildCommitURL, and buildDate are read once from the Go
+// module's VCS stamp (populated automatically by `go build` in a git
+// checkout) and exposed to templates for the page footer.
+var buildRevision, buildCommitURL, buildDate = readBuildStamp()
+
+func readBuildStamp() (revision, commitURL, date string) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", "", ""
+	}
+	var fullRevision string
+	var modified bool
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			fullRevision = s.Value
+			revision = s.Value
+			if len(revision) > 7 {
+				revision = revision[:7]
+			}
+		case "vcs.time":
+			if t, err := time.Parse(time.RFC3339, s.Value); err == nil {
+				date = t.Local().Format("2006-01-02")
+			}
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	if fullRevision != "" {
+		commitURL = repoURL + "/commit/" + fullRevision
+	}
+	if modified && revision != "" {
+		revision += "-dirty"
+	}
+	return revision, commitURL, date
+}
 
 const ptrTimeout = 3 * time.Second
 const ptrCacheTTL = 30 * 24 * time.Hour
@@ -36,7 +76,13 @@ type Server struct {
 
 // New builds a Server backed by st.
 func New(st *store.Store) (*Server, error) {
-	tmpl, err := template.ParseFS(templateFS, "templates/*.tmpl")
+	funcs := template.FuncMap{
+		"buildRevision":  func() string { return buildRevision },
+		"buildCommitURL": func() string { return buildCommitURL },
+		"buildDate":      func() string { return buildDate },
+		"repoURL":        func() string { return repoURL },
+	}
+	tmpl, err := template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, err
 	}
