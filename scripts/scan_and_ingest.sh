@@ -21,3 +21,5 @@ wait || true
 trap - INT TERM
 
 "$GWSDB_BIN" ingest -db "$DB_PATH" -config "$CONFIG_FILE" -scanner-dir "$SCANNER_DIR" -log "$LOG_FILE"
+
+rm "$LOG_FILE"
