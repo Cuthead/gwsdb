@@ -55,7 +55,7 @@
 <td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
 <td>{{if .PTR}}<tt>{{.PTR}}</tt>{{else}}-{{end}}</td>
 <td>{{if .CountryCode}}<img src="https://bgp.he.net/images/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" width="16" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
-<td>{{if eq .Status "可达"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td>
+<td>{{if eq .Status "Reachable"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td>
 <td>{{.FirstSeen}}</td>
 <td>{{.LastSeen}}</td>
 <td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td>

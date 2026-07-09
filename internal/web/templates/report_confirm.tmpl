@@ -1,8 +1,8 @@
 {{define "report_confirm.tmpl"}}<!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>Confirm Report - GWS Database</title>
+<title>确认 - GWS Database</title>
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
 <center>
@@ -13,9 +13,9 @@
 <tr bgcolor="#DDDDDD">
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
-<a href="/">Home</a> |
-<a href="/query">Query IP</a> |
-<a href="/scans">Scans</a>
+<a href="/">首页</a> |
+<a href="/query">查询 IP</a> |
+<a href="/scans">扫描记录</a>
 </font>
 </td>
 </tr>
@@ -23,18 +23,18 @@
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
 
-<p><b>Confirm Report Submission</b></p>
+<p><b>确认提交报告</b></p>
 
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="2"><b>The following will be stored and shown publicly</b></td></tr>
-<tr><td width="30%">Target IP</td><td><tt>{{.IP}}</tt></td></tr>
-<tr><td>Verdict</td><td>{{if .Verdict}}<font color="#008000">✓ Usable</font>{{else}}<font color="#CC0000">✗ Unusable</font>{{end}}</td></tr>
-{{if .Comment}}<tr><td>Comment</td><td>{{.Comment}}</td></tr>{{end}}
-<tr><td>Your Prefix</td><td><tt>{{if .ReporterPrefix}}{{.ReporterPrefix}}{{else}}(unknown){{end}}</tt></td></tr>
-<tr><td>Your AS</td><td>{{if .ReporterASN}}AS{{.ReporterASN}}{{if .ReporterASName}} {{.ReporterASName}}{{end}}{{else}}(unknown){{end}}</td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="2"><b>以下内容将被存储并公开显示</b></td></tr>
+<tr><td width="30%">目标IP</td><td><tt>{{.IP}}</tt></td></tr>
+<tr><td>结论</td><td>{{if .Verdict}}<font color="#008000">✓ 可用</font>{{else}}<font color="#CC0000">✗ 不可用</font>{{end}}</td></tr>
+{{if .Comment}}<tr><td>备注</td><td>{{.Comment}}</td></tr>{{end}}
+<tr><td>你的前缀</td><td><tt>{{if .ReporterPrefix}}{{.ReporterPrefix}}{{else}}(未知){{end}}</tt></td></tr>
+<tr><td>你的AS</td><td>{{if .ReporterASN}}AS{{.ReporterASN}}{{if .ReporterASName}} {{.ReporterASName}}{{end}}{{else}}(未知){{end}}</td></tr>
 </table>
 
-<p><font color="#CC0000">Your raw IP address is not published, but the announced prefix and AS number derived from it will be visible to anyone viewing this IP's report history.</font></p>
+<p><font color="#CC0000">你的IP地址路由公告前缀与AS号码将对查看此IP报告历史的任何人可见。</font></p>
 
 <form method="POST" action="/report">
 <input type="hidden" name="ip" value="{{.IP}}">
@@ -42,7 +42,7 @@
 <input type="hidden" name="confirm" value="1">
 <input type="submit" name="verdict" value="{{if .Verdict}}usable{{else}}unusable{{end}}">
 </form>
-<p><a href="/query?ip={{.IP}}">Cancel</a></p>
+<p><a href="/query?ip={{.IP}}">取消</a></p>
 
 </font>
 </td>

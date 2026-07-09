@@ -63,7 +63,7 @@
 {{end}}
 {{if .HasHistory}}
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>Reachability Overview</b></td></tr>
-<tr><td>Current Status</td><td>{{if eq .Status "可达"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "不可达"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td></tr>
+<tr><td>Current Status</td><td>{{if eq .Status "Reachable"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td></tr>
 <tr><td>First Seen</td><td>{{.FirstSeen}}</td></tr>
 <tr><td>Last Reachable</td><td>{{.LastSeen}}</td></tr>
 <tr><td>Total Times Seen</td><td>{{.TimesSeen}}</td></tr>
@@ -92,12 +92,12 @@
 
 <p></p>
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="2"><b>Report This IP</b></td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="2"><b>报告IP</b></td></tr>
 <tr>
 <td colspan="2">
 <form method="POST" action="/report">
 <input type="hidden" name="ip" value="{{.Query}}">
-Comment (optional): <input type="text" name="comment" size="40" maxlength="500">
+备注（可选）：<input type="text" name="comment" size="40" maxlength="500">
 <input type="submit" name="verdict" value="usable">
 <input type="submit" name="verdict" value="unusable">
 </form>
@@ -108,12 +108,12 @@ Comment (optional): <input type="text" name="comment" size="40" maxlength="500">
 {{if .Reports}}
 <p></p>
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="5"><b>Community Reports</b> ({{.UsableCount}} usable / {{.UnusableCount}} unusable)</td></tr>
-<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Verdict</b></td><td><b>Reporter Prefix</b></td><td><b>Reporter AS</b></td><td><b>Comment</b></td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="5"><b>社区报告</b>（{{.UsableCount}} 可用 / {{.UnusableCount}} 不可用）</td></tr>
+<tr bgcolor="#EEEEEE"><td><b>时间</b></td><td><b>结论</b></td><td><b>前缀</b></td><td><b>AS</b></td><td><b>备注</b></td></tr>
 {{range .Reports}}
 <tr>
 <td>{{.Time}}</td>
-<td>{{if .Verdict}}<font color="#008000">✓ Usable</font>{{else}}<font color="#CC0000">✗ Unusable</font>{{end}}</td>
+<td>{{if .Verdict}}<font color="#008000">✓ 可用</font>{{else}}<font color="#CC0000">✗ 不可用</font>{{end}}</td>
 <td><tt>{{if .ReporterPrefix}}{{.ReporterPrefix}}{{else}}-{{end}}</tt></td>
 <td>{{if .ReporterASN}}AS{{.ReporterASN}}{{if .ReporterASName}} {{.ReporterASName}}{{end}}{{else}}-{{end}}</td>
 <td>{{if .Comment}}{{.Comment}}{{else}}-{{end}}</td>
