@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 )
@@ -587,30 +588,42 @@ func (s *Store) ListReports(ip string, limit int) ([]IPReport, error) {
 	return out, rows.Err()
 }
 
-// EnqueueRecheck schedules a re-scan of ip for report reportID. A no-op if
-// that report was already enqueued (UNIQUE(report_id)), so callers can call
-// it at most once per report without a separate existence check.
+// recheckMinDelay/recheckMaxDelay bound the random delay applied before a
+// queued recheck becomes eligible for the worker to pick up -- spreads out
+// probes triggered by a burst of reports instead of firing them all at once.
+const recheckMinDelay = 1 * time.Minute
+const recheckMaxDelay = 1 * time.Hour
+
+// EnqueueRecheck schedules a re-scan of ip for report reportID, eligible to
+// run at a random time 1 minute to 1 hour from now. A no-op if that report
+// was already enqueued (UNIQUE(report_id)), so callers can call it at most
+// once per report without a separate existence check.
 func (s *Store) EnqueueRecheck(reportID int64, ip string, createdAt time.Time) error {
+	delay := recheckMinDelay + time.Duration(rand.Int63n(int64(recheckMaxDelay-recheckMinDelay)))
+	scheduledAt := time.Now().UTC().Add(delay)
 	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO recheck_queue (report_id, ip, created_at) VALUES (?, ?, ?)`,
-		reportID, ip, createdAt)
+		INSERT OR IGNORE INTO recheck_queue (report_id, ip, created_at, scheduled_at) VALUES (?, ?, ?, ?)`,
+		reportID, ip, createdAt, scheduledAt)
 	return err
 }
 
-// NextPendingRecheck returns the oldest not-yet-processed recheck_queue
-// entry, or nil if the queue is empty.
+// NextPendingRecheck returns the oldest not-yet-processed recheck_queue entry
+// whose scheduled_at has arrived, or nil if none are ready yet.
 func (s *Store) NextPendingRecheck() (*RecheckQueueItem, error) {
 	item := &RecheckQueueItem{}
+	var scheduledAt sql.NullTime
 	err := s.db.QueryRow(`
-		SELECT id, report_id, ip, created_at FROM recheck_queue
-		WHERE processed_at IS NULL ORDER BY created_at ASC LIMIT 1`).Scan(
-		&item.ID, &item.ReportID, &item.IP, &item.CreatedAt)
+		SELECT id, report_id, ip, created_at, scheduled_at FROM recheck_queue
+		WHERE processed_at IS NULL AND (scheduled_at IS NULL OR scheduled_at <= ?)
+		ORDER BY created_at ASC LIMIT 1`, time.Now().UTC()).Scan(
+		&item.ID, &item.ReportID, &item.IP, &item.CreatedAt, &scheduledAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	item.ScheduledAt = scheduledAt.Time
 	return item, nil
 }
 
@@ -620,6 +633,20 @@ func (s *Store) MarkRecheckProcessed(id int64, ok bool, processedAt time.Time) e
 	_, err := s.db.Exec(`UPDATE recheck_queue SET processed_at = ?, ok = ? WHERE id = ?`,
 		processedAt, boolToInt(ok), id)
 	return err
+}
+
+// PruneRecheckQueue deletes processed recheck_queue rows older than
+// olderThan, so the table doesn't grow unboundedly with completed work.
+// Pending (unprocessed) rows are never touched. Returns how many rows were
+// removed.
+func (s *Store) PruneRecheckQueue(olderThan time.Duration) (int64, error) {
+	res, err := s.db.Exec(`
+		DELETE FROM recheck_queue WHERE processed_at IS NOT NULL AND processed_at < ?`,
+		time.Now().UTC().Add(-olderThan))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // LatestScanConfigJSON returns the config_json of the most recent scan for

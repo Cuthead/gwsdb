@@ -116,5 +116,6 @@ type RecheckQueueItem struct {
 	ReportID    int64
 	IP          string
 	CreatedAt   time.Time
+	ScheduledAt time.Time // zero if eligible immediately (pre-delay rows)
 	ProcessedAt time.Time // zero if still pending
 }

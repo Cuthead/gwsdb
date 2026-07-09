@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS recheck_queue (
 	report_id    INTEGER NOT NULL REFERENCES ip_reports(id),
 	ip           TEXT NOT NULL,
 	created_at   DATETIME NOT NULL,
+	scheduled_at DATETIME, -- earliest time the worker may pick this up; NULL means immediately
 	processed_at DATETIME,
 	ok           INTEGER,
 	UNIQUE(report_id)
@@ -160,6 +161,11 @@ func migrate(db *sql.DB) error {
 	}
 	if err := addColumnsIfMissing(db, "scans", map[string]string{
 		"http_method": `ALTER TABLE scans ADD COLUMN http_method TEXT`,
+	}); err != nil {
+		return err
+	}
+	if err := addColumnsIfMissing(db, "recheck_queue", map[string]string{
+		"scheduled_at": `ALTER TABLE recheck_queue ADD COLUMN scheduled_at DATETIME`,
 	}); err != nil {
 		return err
 	}

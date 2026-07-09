@@ -11,13 +11,24 @@ import (
 // can't wedge the worker loop.
 const recheckProbeTimeout = 10 * time.Second
 
+// recheckQueueRetention is how long a processed recheck_queue row is kept
+// around (for debugging/audit) before StartRecheckWorker prunes it.
+const recheckQueueRetention = 30 * 24 * time.Hour
+
 // StartRecheckWorker processes one pending recheck_queue item per interval
-// tick, re-testing the reported IP via recheck.RunAndSave. Intended to run in
-// its own goroutine for the lifetime of the server.
+// tick, re-testing the reported IP via recheck.RunAndSave, and prunes
+// processed entries older than recheckQueueRetention so the table doesn't
+// grow unboundedly. Intended to run in its own goroutine for the lifetime of
+// the server.
 func (s *Server) StartRecheckWorker(interval time.Duration) {
 	for {
 		if err := s.processNextRecheck(); err != nil {
 			log.Printf("recheck: %v", err)
+		}
+		if n, err := s.st.PruneRecheckQueue(recheckQueueRetention); err != nil {
+			log.Printf("recheck: PruneRecheckQueue: %v", err)
+		} else if n > 0 {
+			log.Printf("recheck: pruned %d processed queue entries older than %s", n, recheckQueueRetention)
 		}
 		time.Sleep(interval)
 	}
