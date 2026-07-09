@@ -552,20 +552,20 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/query?ip="+url.QueryEscape(ip), http.StatusSeeOther)
 }
 
-// maybeEnqueueRecheck schedules a re-scan of rep.IP if this report postdates
-// our last check of it and disagrees with what that check found. Evaluated
-// once, right here at report-submission time, so each report can trigger at
-// most one recheck regardless of how the underlying status changes later.
+// maybeEnqueueRecheck schedules a re-scan of rep.IP if either we've never
+// tested it before (nothing on file to disagree with, but still worth a
+// first look since /report already gates on it being a Google IP) or this
+// report postdates our last check of it and disagrees with what that check
+// found. Evaluated once, right here at report-submission time, so each
+// report can trigger at most one recheck regardless of how the underlying
+// status changes later.
 func (s *Server) maybeEnqueueRecheck(reportID int64, rep store.IPReport) {
 	st, err := s.st.IPStatusFor(rep.IP)
 	if err != nil {
 		log.Printf("report: IPStatusFor(%s): %v", rep.IP, err)
 		return
 	}
-	if st == nil || !st.HasCheck {
-		return // no prior check on file to disagree with
-	}
-	if !rep.CreatedAt.After(st.LastCheckedAt) || rep.Verdict == st.LastCheckOK {
+	if st != nil && st.HasCheck && (!rep.CreatedAt.After(st.LastCheckedAt) || rep.Verdict == st.LastCheckOK) {
 		return
 	}
 	if err := s.st.EnqueueRecheck(reportID, rep.IP, rep.CreatedAt); err != nil {
