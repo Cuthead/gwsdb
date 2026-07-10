@@ -4,13 +4,14 @@
 package asn
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cuthead/gwsdb/internal/resolver"
 )
 
 // Info is the result of an ASN lookup for one IP.
@@ -21,16 +22,16 @@ type Info struct {
 	Country string
 }
 
-// Lookup resolves ip's origin AS and announced prefix. ok is false if ip is
+// Lookup resolves ip's origin AS and announced prefix via DoH (dohURL is an
+// RFC 8484 endpoint and is required). ttl is the minimum TTL across both TXT
+// queries used (origin lookup, plus the AS-name lookup when it succeeds);
+// callers should not cache the result longer than that. ok is false if ip is
 // invalid or the lookup failed/timed out.
-func Lookup(ip string, timeout time.Duration) (Info, bool) {
+func Lookup(ip string, timeout time.Duration, dohURL string) (info Info, ttl time.Duration, ok bool) {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
-		return Info{}, false
+		return Info{}, 0, false
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	var query string
 	if v4 := parsed.To4(); v4 != nil {
@@ -39,40 +40,43 @@ func Lookup(ip string, timeout time.Duration) (Info, bool) {
 		query = reverseNibbles(parsed) + ".origin6.asn.cymru.com"
 	}
 
-	txts, err := net.DefaultResolver.LookupTXT(ctx, query)
-	if err != nil || len(txts) == 0 {
-		return Info{}, false
+	txts, ttl, ok, err := resolver.LookupTXT(query, timeout, dohURL)
+	if err != nil || !ok {
+		return Info{}, 0, false
 	}
 	// "13335 | 1.1.1.0/24 | US | apnic | 2011-08-11" -- multiple origin ASNs
 	// are newline-joined within the record; take the first.
 	fields := strings.Split(strings.Split(txts[0], "\n")[0], "|")
 	if len(fields) < 3 {
-		return Info{}, false
+		return Info{}, 0, false
 	}
 	asnField := strings.Fields(strings.TrimSpace(fields[0]))
 	if len(asnField) == 0 {
-		return Info{}, false
+		return Info{}, 0, false
 	}
 	asnNum, err := strconv.Atoi(asnField[0])
 	if err != nil {
-		return Info{}, false
+		return Info{}, 0, false
 	}
 
-	info := Info{
+	info = Info{
 		ASN:     asnNum,
 		Prefix:  strings.TrimSpace(fields[1]),
 		Country: strings.TrimSpace(fields[2]),
 	}
 
-	if nameTxts, err := net.DefaultResolver.LookupTXT(ctx, fmt.Sprintf("AS%d.asn.cymru.com", asnNum)); err == nil && len(nameTxts) > 0 {
+	if nameTxts, nameTTL, nameOK, err := resolver.LookupTXT(fmt.Sprintf("AS%d.asn.cymru.com", asnNum), timeout, dohURL); err == nil && nameOK {
 		// "13335 | US | arin | 2010-07-14 | CLOUDFLARENET, US"
 		nf := strings.Split(nameTxts[0], "|")
 		if len(nf) >= 5 {
 			info.ASName = strings.TrimSpace(nf[4])
 		}
+		if nameTTL < ttl {
+			ttl = nameTTL
+		}
 	}
 
-	return info, true
+	return info, ttl, true
 }
 
 // reverseNibbles renders ip (IPv6) as the dot-separated, reversed hex nibble

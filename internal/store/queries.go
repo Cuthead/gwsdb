@@ -324,26 +324,29 @@ func (s *Store) Overview() (Stats, error) {
 	return st, nil
 }
 
-// GetPTR returns a cached PTR/geo lookup for ip if present and not older than maxAge.
-func (s *Store) GetPTR(ip string, maxAge time.Duration) (*PTRCacheEntry, error) {
+// GetPTR returns a cached PTR/geo lookup for ip if present and not past its
+// observed DNS TTL (checked_at + ttl_seconds).
+func (s *Store) GetPTR(ip string) (*PTRCacheEntry, error) {
 	e := &PTRCacheEntry{}
 	var ptr sql.NullString
 	var lookupOK int
+	var ttlSeconds int64
 	var checkedAt time.Time
 	err := s.db.QueryRow(`
-		SELECT ip, ptr_hostname, lookup_ok, checked_at
-		FROM ptr_cache WHERE ip = ?`, ip).Scan(&e.IP, &ptr, &lookupOK, &checkedAt)
+		SELECT ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at
+		FROM ptr_cache WHERE ip = ?`, ip).Scan(&e.IP, &ptr, &lookupOK, &ttlSeconds, &checkedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if maxAge > 0 && time.Since(checkedAt) > maxAge {
+	if time.Since(checkedAt) > time.Duration(ttlSeconds)*time.Second {
 		return nil, nil
 	}
 	e.PTRHostname = ptr.String
 	e.LookupOK = lookupOK != 0
+	e.TTL = time.Duration(ttlSeconds) * time.Second
 	e.CheckedAt = checkedAt
 	return e, nil
 }
@@ -351,32 +354,76 @@ func (s *Store) GetPTR(ip string, maxAge time.Duration) (*PTRCacheEntry, error) 
 // SavePTR upserts a PTR lookup result into the cache.
 func (s *Store) SavePTR(e PTRCacheEntry) error {
 	_, err := s.db.Exec(`
-		INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, checked_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(ip) DO UPDATE SET
 			ptr_hostname = excluded.ptr_hostname,
 			lookup_ok    = excluded.lookup_ok,
+			ttl_seconds  = excluded.ttl_seconds,
 			checked_at   = excluded.checked_at`,
-		e.IP, e.PTRHostname, boolToInt(e.LookupOK), e.CheckedAt)
+		e.IP, e.PTRHostname, boolToInt(e.LookupOK), int64(e.TTL/time.Second), e.CheckedAt)
 	return err
 }
 
 // NextIPForPTRRefresh returns one IP from ip_status whose ptr_cache entry is
-// missing or older than maxAge, preferring never-checked IPs first, then the
-// stalest. Returns "" if every known IP has a fresh cache entry.
-func (s *Store) NextIPForPTRRefresh(maxAge time.Duration) (string, error) {
+// missing or past its observed DNS TTL, preferring never-checked IPs first,
+// then the stalest. Returns "" if every known IP has a fresh cache entry.
+func (s *Store) NextIPForPTRRefresh() (string, error) {
 	var ip string
 	err := s.db.QueryRow(`
 		SELECT i.ip
 		FROM ip_status i
 		LEFT JOIN ptr_cache p ON p.ip = i.ip
-		WHERE p.ip IS NULL OR p.checked_at < ?
+		WHERE p.ip IS NULL OR datetime(p.checked_at, '+' || p.ttl_seconds || ' seconds') < ?
 		ORDER BY (p.checked_at IS NULL) DESC, p.checked_at ASC
-		LIMIT 1`, time.Now().UTC().Add(-maxAge)).Scan(&ip)
+		LIMIT 1`, time.Now().UTC()).Scan(&ip)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
 	return ip, err
+}
+
+// GetHost returns a cached forward A/AAAA lookup for hostname if present and
+// not past its observed DNS TTL (see GetPTR).
+func (s *Store) GetHost(hostname string) (*HostCacheEntry, error) {
+	e := &HostCacheEntry{}
+	var ipv4, ipv6 sql.NullString
+	var lookupOK int
+	var ttlSeconds int64
+	var checkedAt time.Time
+	err := s.db.QueryRow(`
+		SELECT hostname, ipv4, ipv6, lookup_ok, ttl_seconds, checked_at
+		FROM host_cache WHERE hostname = ?`, hostname).Scan(&e.Hostname, &ipv4, &ipv6, &lookupOK, &ttlSeconds, &checkedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if time.Since(checkedAt) > time.Duration(ttlSeconds)*time.Second {
+		return nil, nil
+	}
+	e.IPv4 = SplitStrings(ipv4.String)
+	e.IPv6 = SplitStrings(ipv6.String)
+	e.LookupOK = lookupOK != 0
+	e.TTL = time.Duration(ttlSeconds) * time.Second
+	e.CheckedAt = checkedAt
+	return e, nil
+}
+
+// SaveHost upserts a forward A/AAAA lookup result into the cache.
+func (s *Store) SaveHost(e HostCacheEntry) error {
+	_, err := s.db.Exec(`
+		INSERT INTO host_cache (hostname, ipv4, ipv6, lookup_ok, ttl_seconds, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(hostname) DO UPDATE SET
+			ipv4        = excluded.ipv4,
+			ipv6        = excluded.ipv6,
+			lookup_ok   = excluded.lookup_ok,
+			ttl_seconds = excluded.ttl_seconds,
+			checked_at  = excluded.checked_at`,
+		e.Hostname, JoinStrings(e.IPv4), JoinStrings(e.IPv6), boolToInt(e.LookupOK), int64(e.TTL/time.Second), e.CheckedAt)
+	return err
 }
 
 // RecentScans returns the most recent scans across all modes, newest first.
@@ -631,28 +678,31 @@ func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	return out, rows.Err()
 }
 
-// GetASN returns a cached ASN/prefix lookup for ip if present and not older than maxAge.
-func (s *Store) GetASN(ip string, maxAge time.Duration) (*ASNCacheEntry, error) {
+// GetASN returns a cached ASN/prefix lookup for ip if present and not past
+// its observed DNS TTL (see GetPTR).
+func (s *Store) GetASN(ip string) (*ASNCacheEntry, error) {
 	e := &ASNCacheEntry{}
 	var asName, prefix, country sql.NullString
 	var asNum sql.NullInt64
 	var lookupOK int
+	var ttlSeconds int64
 	var checkedAt time.Time
 	err := s.db.QueryRow(`
-		SELECT ip, asn, as_name, prefix, country, lookup_ok, checked_at
-		FROM asn_cache WHERE ip = ?`, ip).Scan(&e.IP, &asNum, &asName, &prefix, &country, &lookupOK, &checkedAt)
+		SELECT ip, asn, as_name, prefix, country, lookup_ok, ttl_seconds, checked_at
+		FROM asn_cache WHERE ip = ?`, ip).Scan(&e.IP, &asNum, &asName, &prefix, &country, &lookupOK, &ttlSeconds, &checkedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if maxAge > 0 && time.Since(checkedAt) > maxAge {
+	if time.Since(checkedAt) > time.Duration(ttlSeconds)*time.Second {
 		return nil, nil
 	}
 	e.ASN = int(asNum.Int64)
 	e.ASName, e.Prefix, e.Country = asName.String, prefix.String, country.String
 	e.LookupOK = lookupOK != 0
+	e.TTL = time.Duration(ttlSeconds) * time.Second
 	e.CheckedAt = checkedAt
 	return e, nil
 }
@@ -660,16 +710,17 @@ func (s *Store) GetASN(ip string, maxAge time.Duration) (*ASNCacheEntry, error) 
 // SaveASN upserts an ASN/prefix lookup result into the cache.
 func (s *Store) SaveASN(e ASNCacheEntry) error {
 	_, err := s.db.Exec(`
-		INSERT INTO asn_cache (ip, asn, as_name, prefix, country, lookup_ok, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO asn_cache (ip, asn, as_name, prefix, country, lookup_ok, ttl_seconds, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(ip) DO UPDATE SET
-			asn        = excluded.asn,
-			as_name    = excluded.as_name,
-			prefix     = excluded.prefix,
-			country    = excluded.country,
-			lookup_ok  = excluded.lookup_ok,
-			checked_at = excluded.checked_at`,
-		e.IP, nullInt(e.ASN), nullString(e.ASName), nullString(e.Prefix), nullString(e.Country), boolToInt(e.LookupOK), e.CheckedAt)
+			asn         = excluded.asn,
+			as_name     = excluded.as_name,
+			prefix      = excluded.prefix,
+			country     = excluded.country,
+			lookup_ok   = excluded.lookup_ok,
+			ttl_seconds = excluded.ttl_seconds,
+			checked_at  = excluded.checked_at`,
+		e.IP, nullInt(e.ASN), nullString(e.ASName), nullString(e.Prefix), nullString(e.Country), boolToInt(e.LookupOK), int64(e.TTL/time.Second), e.CheckedAt)
 	return err
 }
 

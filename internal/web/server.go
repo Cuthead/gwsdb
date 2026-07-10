@@ -71,11 +71,23 @@ func readBuildStamp() (revision, commitURL, date string) {
 }
 
 const ptrTimeout = 3 * time.Second
-const ptrCacheTTL = 30 * 24 * time.Hour
 const asnTimeout = 3 * time.Second
-const asnCacheTTL = 7 * 24 * time.Hour
 const maxReportRows = 100
 const maxReportCommentLen = 500
+
+// minCacheTTL floors the DNS TTL observed on a DoH response before it's
+// stored in ptr_cache/asn_cache/host_cache. A 0 or near-0 TTL is common for
+// some providers (Team Cymru's whois TXT records in particular) and taking
+// it literally would force a fresh DoH round trip on nearly every request.
+const minCacheTTL = 5 * time.Minute
+
+// clampTTL floors ttl at minCacheTTL.
+func clampTTL(ttl time.Duration) time.Duration {
+	if ttl < minCacheTTL {
+		return minCacheTTL
+	}
+	return ttl
+}
 
 // Server holds the dependencies for the HTTP frontend.
 type Server struct {
@@ -246,7 +258,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, st := range known {
-		hostnames := store.SplitPTRHostnames(st.PTRHostname)
+		hostnames := store.SplitStrings(st.PTRHostname)
 		row := ipRow{
 			IP:        st.IP,
 			PTR:       strings.Join(hostnames, "\n"),
@@ -455,7 +467,7 @@ func conflictingLocations(hostnames []string) bool {
 // Transient lookup failures (timeout, SERVFAIL) are not cached, so the next
 // lookup or refresher pass retries; only NXDOMAIN is cached as lookup_ok=0.
 func (s *Server) resolveAndCachePTR(ip string) (hostnames []string, ok bool) {
-	hostnames, ok, err := resolver.LookupPTR(ip, ptrTimeout, s.dohURL)
+	hostnames, ttl, ok, err := resolver.LookupPTR(ip, ptrTimeout, s.dohURL)
 	if err != nil {
 		log.Printf("ptr: lookup %s: %v (not cached)", ip, err)
 		return nil, false
@@ -465,8 +477,9 @@ func (s *Server) resolveAndCachePTR(ip string) (hostnames []string, ok bool) {
 	}
 	entry := store.PTRCacheEntry{
 		IP:          ip,
-		PTRHostname: store.JoinPTRHostnames(hostnames),
+		PTRHostname: store.JoinStrings(hostnames),
 		LookupOK:    ok,
+		TTL:         clampTTL(ttl),
 		CheckedAt:   time.Now().UTC(),
 	}
 	if err := s.st.SavePTR(entry); err != nil {
@@ -481,7 +494,7 @@ func (s *Server) resolveAndCachePTR(ip string) (hostnames []string, ok bool) {
 // the lifetime of the server.
 func (s *Server) StartPTRRefresher(interval time.Duration) {
 	for {
-		ip, err := s.st.NextIPForPTRRefresh(ptrCacheTTL)
+		ip, err := s.st.NextIPForPTRRefresh()
 		if err != nil {
 			log.Printf("ptr-refresh: NextIPForPTRRefresh: %v", err)
 		} else if ip != "" {
@@ -532,12 +545,15 @@ func (s *Server) lookupHostname(hostname string, data *queryData) {
 	}
 }
 
-// resolveHostnameForm forward-resolves hostname's A/AAAA records and looks
-// up each address's known reachability (blank/"-" if never scanned).
+// resolveHostnameForm forward-resolves hostname's A/AAAA records (via
+// host_cache, refreshing on a cache miss/expiry) and looks up each
+// address's known reachability (blank/"-" if never scanned).
 func (s *Server) resolveHostnameForm(hostname string) hostnameForm {
-	ipv4, ipv6, _, err := resolver.LookupHost(hostname, ptrTimeout, s.dohURL)
-	if err != nil {
-		log.Printf("query: LookupHost(%s): %v", hostname, err)
+	var ipv4, ipv6 []string
+	if cached, err := s.st.GetHost(hostname); err == nil && cached != nil {
+		ipv4, ipv6 = cached.IPv4, cached.IPv6
+	} else {
+		ipv4, ipv6 = s.resolveAndCacheHost(hostname)
 	}
 	form := hostnameForm{Hostname: hostname}
 	for _, addr := range ipv4 {
@@ -549,12 +565,34 @@ func (s *Server) resolveHostnameForm(hostname string) hostnameForm {
 	return form
 }
 
+// resolveAndCacheHost does a live forward A/AAAA lookup for hostname and
+// upserts the result into host_cache, regardless of what's already cached.
+func (s *Server) resolveAndCacheHost(hostname string) (ipv4, ipv6 []string) {
+	ipv4, ipv6, ttl, ok, err := resolver.LookupHost(hostname, ptrTimeout, s.dohURL)
+	if err != nil {
+		log.Printf("host: lookup %s: %v (not cached)", hostname, err)
+		return nil, nil
+	}
+	entry := store.HostCacheEntry{
+		Hostname:  hostname,
+		IPv4:      ipv4,
+		IPv6:      ipv6,
+		LookupOK:  ok,
+		TTL:       clampTTL(ttl),
+		CheckedAt: time.Now().UTC(),
+	}
+	if err := s.st.SaveHost(entry); err != nil {
+		log.Printf("host: SaveHost(%s): %v", hostname, err)
+	}
+	return ipv4, ipv6
+}
+
 func (s *Server) lookup(ip string, data *queryData) {
 	var hostnames []string
 	var ok bool
 
-	if cached, err := s.st.GetPTR(ip, ptrCacheTTL); err == nil && cached != nil {
-		hostnames, ok = store.SplitPTRHostnames(cached.PTRHostname), cached.LookupOK
+	if cached, err := s.st.GetPTR(ip); err == nil && cached != nil {
+		hostnames, ok = store.SplitStrings(cached.PTRHostname), cached.LookupOK
 	} else {
 		hostnames, ok = s.resolveAndCachePTR(ip)
 	}
@@ -634,10 +672,10 @@ func isGoogleASN(info asn.Info) bool {
 // lookupASN resolves ip's announced prefix and AS, checking the asn_cache
 // first so repeat lookups don't re-trigger a Cymru DNS round trip.
 func (s *Server) lookupASN(ip string) (asn.Info, bool) {
-	if cached, err := s.st.GetASN(ip, asnCacheTTL); err == nil && cached != nil {
+	if cached, err := s.st.GetASN(ip); err == nil && cached != nil {
 		return asn.Info{ASN: cached.ASN, ASName: cached.ASName, Prefix: cached.Prefix, Country: cached.Country}, cached.LookupOK
 	}
-	info, ok := asn.Lookup(ip, asnTimeout)
+	info, ttl, ok := asn.Lookup(ip, asnTimeout, s.dohURL)
 	if !ok {
 		return info, ok
 	}
@@ -651,6 +689,7 @@ func (s *Server) lookupASN(ip string) (asn.Info, bool) {
 		Prefix:    info.Prefix,
 		Country:   info.Country,
 		LookupOK:  ok,
+		TTL:       clampTTL(ttl),
 		CheckedAt: time.Now().UTC(),
 	}
 	if err := s.st.SaveASN(entry); err != nil {

@@ -5,23 +5,27 @@ import (
 	"time"
 )
 
-// ptrHostnameSep joins multiple PTR hostnames into ptr_cache's single
-// ptr_hostname column -- Google sometimes publishes more than one PTR per
-// IP. "; " can't appear in a 1e100.net hostname, so splitting is unambiguous.
-const ptrHostnameSep = "; "
+// listSep joins multiple values into a single TEXT column -- ptr_cache's
+// ptr_hostname (a hostname can have more than one PTR) and host_cache's
+// ipv4/ipv6 (a hostname can have more than one A/AAAA record). "; " can't
+// appear in a 1e100.net hostname or an IP address, so splitting is
+// unambiguous.
+const listSep = "; "
 
-// JoinPTRHostnames packs multiple PTR hostnames for storage in PTRCacheEntry.PTRHostname.
-func JoinPTRHostnames(hostnames []string) string {
-	return strings.Join(hostnames, ptrHostnameSep)
+// JoinStrings packs multiple values for storage in a single "; "-joined
+// TEXT column (PTRCacheEntry.PTRHostname, HostCacheEntry.IPv4/IPv6).
+func JoinStrings(values []string) string {
+	return strings.Join(values, listSep)
 }
 
-// SplitPTRHostnames unpacks a PTRCacheEntry.PTRHostname (or IPStatus.PTRHostname)
-// back into individual hostnames. Returns nil for "".
-func SplitPTRHostnames(joined string) []string {
+// SplitStrings unpacks a "; "-joined column (PTRCacheEntry.PTRHostname,
+// IPStatus.PTRHostname, HostCacheEntry.IPv4/IPv6) back into individual
+// values. Returns nil for "".
+func SplitStrings(joined string) []string {
 	if joined == "" {
 		return nil
 	}
-	return strings.Split(joined, ptrHostnameSep)
+	return strings.Split(joined, listSep)
 }
 
 // Scan represents one execution of the gscan_quic scanner for a given scan mode.
@@ -102,16 +106,20 @@ type IPCheck struct {
 
 // PTRCacheEntry is a cached reverse-DNS lookup result for one IP. Geo/airport
 // decoding is derived from PTRHostname at read time via geo.Decode, not
-// stored here, so it always reflects the current airports.go tables.
+// stored here, so it always reflects the current airports.go tables. TTL is
+// the DNS TTL observed when it was looked up -- the row is stale once
+// CheckedAt+TTL has passed, not after any fixed cache lifetime.
 type PTRCacheEntry struct {
 	IP          string
 	PTRHostname string
 	LookupOK    bool
+	TTL         time.Duration
 	CheckedAt   time.Time
 }
 
 // ASNCacheEntry is a cached ASN/prefix lookup result for one IP, used to
-// avoid re-querying Team Cymru's DNS whois for repeat reporters.
+// avoid re-querying Team Cymru's DNS whois for repeat reporters. TTL is the
+// DNS TTL observed when it was looked up (see PTRCacheEntry.TTL).
 type ASNCacheEntry struct {
 	IP        string
 	ASN       int
@@ -119,6 +127,19 @@ type ASNCacheEntry struct {
 	Prefix    string
 	Country   string
 	LookupOK  bool
+	TTL       time.Duration
+	CheckedAt time.Time
+}
+
+// HostCacheEntry is a cached forward A/AAAA lookup result for one 1e100.net
+// hostname (the query page's hostname-mode). TTL is the DNS TTL observed
+// when it was looked up (see PTRCacheEntry.TTL).
+type HostCacheEntry struct {
+	Hostname  string
+	IPv4      []string
+	IPv6      []string
+	LookupOK  bool
+	TTL       time.Duration
 	CheckedAt time.Time
 }
 

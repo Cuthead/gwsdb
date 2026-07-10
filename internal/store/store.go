@@ -59,10 +59,17 @@ CREATE TABLE IF NOT EXISTS ip_checks (
 CREATE INDEX IF NOT EXISTS idx_ip_checks_ip ON ip_checks(ip, checked_at);
 CREATE INDEX IF NOT EXISTS idx_ip_checks_scan_id ON ip_checks(scan_id);
 
+-- ttl_seconds on the three *_cache tables is the DNS TTL observed at
+-- checked_at (DoH wire-format responses carry it per record; the minimum
+-- across a lookup's records is stored, floored at web.minCacheTTL so a
+-- 0/near-0 TTL doesn't force a fresh DoH round trip on every request). A
+-- row is stale once checked_at + ttl_seconds has passed, rather than any
+-- fixed cache lifetime.
 CREATE TABLE IF NOT EXISTS ptr_cache (
 	ip            TEXT PRIMARY KEY,
 	ptr_hostname  TEXT,
 	lookup_ok     INTEGER NOT NULL DEFAULT 1,
+	ttl_seconds   INTEGER NOT NULL DEFAULT 0,
 	checked_at    DATETIME NOT NULL
 );
 
@@ -73,6 +80,20 @@ CREATE TABLE IF NOT EXISTS asn_cache (
 	prefix        TEXT,
 	country       TEXT,
 	lookup_ok     INTEGER NOT NULL DEFAULT 1,
+	ttl_seconds   INTEGER NOT NULL DEFAULT 0,
+	checked_at    DATETIME NOT NULL
+);
+
+-- host_cache is the forward-lookup counterpart to ptr_cache: A/AAAA records
+-- for a 1e100.net hostname queried directly (see the query page's
+-- hostname-mode). ipv4/ipv6 are "; "-joined lists, same packing as
+-- ptr_cache.ptr_hostname (store.JoinStrings/SplitStrings).
+CREATE TABLE IF NOT EXISTS host_cache (
+	hostname      TEXT PRIMARY KEY,
+	ipv4          TEXT,
+	ipv6          TEXT,
+	lookup_ok     INTEGER NOT NULL DEFAULT 1,
+	ttl_seconds   INTEGER NOT NULL DEFAULT 0,
 	checked_at    DATETIME NOT NULL
 );
 
@@ -153,6 +174,16 @@ func migrate(db *sql.DB) error {
 	}
 	if err := addColumnsIfMissing(db, "recheck_queue", map[string]string{
 		"scheduled_at": `ALTER TABLE recheck_queue ADD COLUMN scheduled_at DATETIME`,
+	}); err != nil {
+		return err
+	}
+	if err := addColumnsIfMissing(db, "ptr_cache", map[string]string{
+		"ttl_seconds": `ALTER TABLE ptr_cache ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0`,
+	}); err != nil {
+		return err
+	}
+	if err := addColumnsIfMissing(db, "asn_cache", map[string]string{
+		"ttl_seconds": `ALTER TABLE asn_cache ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0`,
 	}); err != nil {
 		return err
 	}

@@ -22,6 +22,12 @@ import (
 	"github.com/cuthead/gwsdb/internal/web"
 )
 
+// defaultDoHURL is used when config.json doesn't set ptrDohUrl. DNS
+// resolution (PTR/host/ASN) has no system-resolver fallback -- it's DoH
+// wire format (RFC 8484) only, since that's the only way to see each
+// record's real DNS TTL for cache staleness.
+const defaultDoHURL = "https://dns.google/dns-query"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -108,12 +114,16 @@ func runServe(args []string) {
 		log.Printf("dns publish enabled from %s", *configPath)
 	}
 
-	if cfg, err := config.Load(*configPath); err != nil {
+	cfg, err := config.Load(*configPath)
+	if err != nil {
 		log.Fatalf("load config: %v", err)
-	} else if cfg.PTRDoHURL != "" {
-		srv.SetDoHURL(cfg.PTRDoHURL)
-		log.Printf("PTR resolution via DoH: %s", cfg.PTRDoHURL)
 	}
+	dohURL := cfg.PTRDoHURL
+	if dohURL == "" {
+		dohURL = defaultDoHURL
+	}
+	srv.SetDoHURL(dohURL)
+	log.Printf("DNS resolution (PTR/host/ASN) via DoH: %s", dohURL)
 
 	go srv.StartPTRRefresher(15 * time.Second)
 	go srv.StartRecheckWorker(15 * time.Second)

@@ -15,9 +15,12 @@ import (
 type Config struct {
 	DNS DNS `json:"dns"`
 
-	// PTRDoHURL is the RFC 8484 DoH endpoint (wire format) used for PTR
-	// lookups, e.g. "https://dns.google/dns-query". Empty (the default)
-	// means resolve PTRs via the host's system resolver instead.
+	// PTRDoHURL is the RFC 8484 DoH endpoint (wire format) used for all DNS
+	// resolution -- PTR, forward A/AAAA, and ASN lookups -- e.g.
+	// "https://dns.google/dns-query". There's no system-resolver fallback
+	// (DoH is the only way to see each record's real TTL, needed to cache
+	// correctly), so empty falls back to cmd/gwsdb's defaultDoHURL rather
+	// than disabling resolution.
 	PTRDoHURL string `json:"ptrDohUrl"`
 }
 

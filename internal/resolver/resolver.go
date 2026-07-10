@@ -1,15 +1,16 @@
-// Package resolver performs DNS lookups (PTR and forward A/AAAA), either via
-// the host's system resolver or via a DNS-over-HTTPS (RFC 8484 wire format)
-// endpoint when configured. DoH avoids depending on what a given
-// deployment's local/ISP resolver happens to return -- some silently drop
-// one of two PTR records Google publishes for the same IP, or steer
-// geo-sensitive replies toward their own resolver's location.
+// Package resolver performs DNS lookups (PTR, forward A/AAAA, and TXT) over
+// DNS-over-HTTPS (RFC 8484 wire format), not the host's system resolver, so
+// results don't depend on what a given deployment's local/ISP resolver
+// happens to return -- some silently drop one of two PTR records Google
+// publishes for the same IP, or steer geo-sensitive replies toward their own
+// resolver's location. It also has no way to report the record's DNS TTL,
+// which callers need to cache results correctly; the wire-format DoH
+// response carries it directly.
 package resolver
 
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,31 +25,30 @@ import (
 var httpClient = &http.Client{}
 
 // LookupPTR resolves every PTR record for ip, deduped and sorted for
-// deterministic ordering. Google sometimes publishes more than one PTR per
-// IP (e.g. an f-numeric and an x-hex form of the same host), so callers
-// that need a single hostname must pick one explicitly rather than assume
-// there's only ever one. ok is false with a nil err when the record
+// deterministic ordering, plus the minimum TTL across the matched records
+// (how long the result may be cached). Google sometimes publishes more than
+// one PTR per IP (e.g. an f-numeric and an x-hex form of the same host), so
+// callers that need a single hostname must pick one explicitly rather than
+// assume there's only ever one. ok is false with a nil err when the record
 // definitively does not exist (NXDOMAIN / no records); a non-nil err means
 // the lookup failed transiently (timeout, HTTP error, malformed response)
 // and says nothing about whether a PTR record exists.
 //
-// dohURL is an RFC 8484 DoH endpoint, e.g. "https://dns.google/dns-query".
-// Empty uses the host's system resolver instead.
-func LookupPTR(ip string, timeout time.Duration, dohURL string) (hostnames []string, ok bool, err error) {
-	if dohURL == "" {
-		return lookupPTRSystem(ip, timeout)
-	}
+// dohURL is an RFC 8484 DoH endpoint, e.g. "https://dns.google/dns-query",
+// and is required.
+func LookupPTR(ip string, timeout time.Duration, dohURL string) (hostnames []string, ttl time.Duration, ok bool, err error) {
 	name, err := reverseName(ip)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	reply, err := doHQuery(name, dnsmessage.TypePTR, timeout, dohURL)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	if reply == nil {
-		return nil, false, nil
+		return nil, 0, false, nil
 	}
+	var minSeconds uint32
 	for _, a := range reply.Answers {
 		ptr, isPTR := a.Body.(*dnsmessage.PTRResource)
 		if !isPTR {
@@ -56,35 +56,43 @@ func LookupPTR(ip string, timeout time.Duration, dohURL string) (hostnames []str
 		}
 		if h := strings.TrimSuffix(ptr.PTR.String(), "."); h != "" {
 			hostnames = append(hostnames, h)
+			if minSeconds == 0 || a.Header.TTL < minSeconds {
+				minSeconds = a.Header.TTL
+			}
 		}
 	}
 	if len(hostnames) == 0 {
-		return nil, false, nil
+		return nil, 0, false, nil
 	}
-	return dedupeSorted(hostnames), true, nil
+	return dedupeSorted(hostnames), time.Duration(minSeconds) * time.Second, true, nil
 }
 
 // LookupHost forward-resolves host's A and AAAA records, each deduped and
-// sorted. Both are empty (with ok=false, err=nil) if the host has neither --
+// sorted, plus the minimum TTL across every matched record. Both address
+// lists are empty (with ok=false, err=nil, ttl=0) if the host has neither --
 // NXDOMAIN or an empty answer for both record types.
 //
-// dohURL is an RFC 8484 DoH endpoint; empty uses the host's system resolver.
-func LookupHost(host string, timeout time.Duration, dohURL string) (ipv4, ipv6 []string, ok bool, err error) {
-	if dohURL == "" {
-		return lookupHostSystem(host, timeout)
-	}
+// dohURL is an RFC 8484 DoH endpoint and is required.
+func LookupHost(host string, timeout time.Duration, dohURL string) (ipv4, ipv6 []string, ttl time.Duration, ok bool, err error) {
 	replyA, errA := doHQuery(host, dnsmessage.TypeA, timeout, dohURL)
 	if errA != nil {
-		return nil, nil, false, errA
+		return nil, nil, 0, false, errA
 	}
 	replyAAAA, errAAAA := doHQuery(host, dnsmessage.TypeAAAA, timeout, dohURL)
 	if errAAAA != nil {
-		return nil, nil, false, errAAAA
+		return nil, nil, 0, false, errAAAA
+	}
+	var minSeconds uint32
+	observe := func(s uint32) {
+		if minSeconds == 0 || s < minSeconds {
+			minSeconds = s
+		}
 	}
 	if replyA != nil {
 		for _, a := range replyA.Answers {
 			if rec, isA := a.Body.(*dnsmessage.AResource); isA {
 				ipv4 = append(ipv4, net.IP(rec.A[:]).String())
+				observe(a.Header.TTL)
 			}
 		}
 	}
@@ -92,56 +100,42 @@ func LookupHost(host string, timeout time.Duration, dohURL string) (ipv4, ipv6 [
 		for _, a := range replyAAAA.Answers {
 			if rec, isAAAA := a.Body.(*dnsmessage.AAAAResource); isAAAA {
 				ipv6 = append(ipv6, net.IP(rec.AAAA[:]).String())
+				observe(a.Header.TTL)
 			}
 		}
 	}
 	ipv4, ipv6 = dedupeSorted(ipv4), dedupeSorted(ipv6)
-	return ipv4, ipv6, len(ipv4)+len(ipv6) > 0, nil
+	return ipv4, ipv6, time.Duration(minSeconds) * time.Second, len(ipv4)+len(ipv6) > 0, nil
 }
 
-// lookupPTRSystem resolves via the host's system resolver (getaddrinfo/cgo
-// or Go's pure-Go resolver, whichever net.DefaultResolver picks).
-func lookupPTRSystem(ip string, timeout time.Duration) (hostnames []string, ok bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	names, err := net.DefaultResolver.LookupAddr(ctx, ip)
+// LookupTXT resolves every TXT record for name, in answer order (not
+// deduped -- unlike hostnames/addresses, repeated identical TXT strings can
+// be meaningful), plus the minimum TTL across them.
+//
+// dohURL is an RFC 8484 DoH endpoint and is required.
+func LookupTXT(name string, timeout time.Duration, dohURL string) (txts []string, ttl time.Duration, ok bool, err error) {
+	reply, err := doHQuery(name, dnsmessage.TypeTXT, timeout, dohURL)
 	if err != nil {
-		var dnsErr *net.DNSError
-		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-			return nil, false, nil
+		return nil, 0, false, err
+	}
+	if reply == nil {
+		return nil, 0, false, nil
+	}
+	var minSeconds uint32
+	for _, a := range reply.Answers {
+		txt, isTXT := a.Body.(*dnsmessage.TXTResource)
+		if !isTXT {
+			continue
 		}
-		return nil, false, err
-	}
-	if len(names) == 0 {
-		return nil, false, nil
-	}
-	return dedupeSorted(names), true, nil
-}
-
-// lookupHostSystem resolves via the host's system resolver.
-func lookupHostSystem(host string, timeout time.Duration) (ipv4, ipv6 []string, ok bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		var dnsErr *net.DNSError
-		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-			return nil, nil, false, nil
-		}
-		return nil, nil, false, err
-	}
-	var v4, v6 []string
-	for _, a := range addrs {
-		if v4addr := a.IP.To4(); v4addr != nil {
-			v4 = append(v4, v4addr.String())
-		} else {
-			v6 = append(v6, a.IP.String())
+		txts = append(txts, strings.Join(txt.TXT, ""))
+		if minSeconds == 0 || a.Header.TTL < minSeconds {
+			minSeconds = a.Header.TTL
 		}
 	}
-	v4, v6 = dedupeSorted(v4), dedupeSorted(v6)
-	return v4, v6, len(v4)+len(v6) > 0, nil
+	if len(txts) == 0 {
+		return nil, 0, false, nil
+	}
+	return txts, time.Duration(minSeconds) * time.Second, true, nil
 }
 
 // doHQuery sends a single RFC 8484 wire-format DoH question for name/qtype
@@ -149,6 +143,9 @@ func lookupHostSystem(host string, timeout time.Duration) (ipv4, ipv6 []string, 
 // answer is reported as a nil message with a nil error; any other failure
 // (transport, non-success RCode, malformed response) is a non-nil error.
 func doHQuery(name string, qtype dnsmessage.Type, timeout time.Duration, dohURL string) (*dnsmessage.Message, error) {
+	if dohURL == "" {
+		return nil, fmt.Errorf("doh: no endpoint configured")
+	}
 	fqdn, err := dnsmessage.NewName(name + ".")
 	if err != nil {
 		return nil, fmt.Errorf("doh: build query name: %w", err)
