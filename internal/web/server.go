@@ -311,15 +311,24 @@ type checkRow struct {
 
 // reasonLabels translates gscan_quic's REASON tags into short human-readable labels.
 var reasonLabels = map[string]string{
-	"dial":        "Connection failed",
-	"handshake":   "TLS handshake failed",
-	"cn":          "Certificate CN mismatch",
-	"status":      "HTTP status code mismatch",
-	"ping":        "Ping failed",
-	"rtt_too_low": "RTT below configured minimum",
+	"dial":      "tcp: TCP dial timeout",
+	"handshake": "tls: TLS handshake failed",
+	"cn":        "tls: Certificate CN mismatch",
+	"http":      "http: HTTP timeout",
+	"status":    "http: HTTP status code mismatch",
 }
 
-func reasonLabel(reason string) string {
+// reasonLabel translates a gscan_quic REASON tag (and, for "ping", its DETAIL)
+// into a short human-readable label. "ping" is the only reason whose DETAIL
+// carries a second-level distinction: the literal string "rtt_too_low" (see
+// gscan_quic's scan.go) vs. an actual ping error/timeout.
+func reasonLabel(reason, detail string) string {
+	if reason == "ping" {
+		if detail == "rtt_too_low" {
+			return "ping: RTT too low"
+		}
+		return "ping: Ping timeout"
+	}
 	if label, ok := reasonLabels[reason]; ok {
 		return label
 	}
@@ -633,7 +642,7 @@ func (s *Server) lookup(ip string, data *queryData) {
 			Probe:  describeProbe(c),
 		}
 		if !c.OK {
-			row.ReasonLabel = reasonLabel(c.Reason)
+			row.ReasonLabel = reasonLabel(c.Reason, c.Detail)
 		}
 		data.Checks = append(data.Checks, row)
 	}

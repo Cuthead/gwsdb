@@ -23,7 +23,7 @@ import (
 type Result struct {
 	OK     bool
 	RTTMs  int
-	Reason string // e.g. "dial", "handshake", "cn", "status", "rtt_too_low"; empty on success
+	Reason string // e.g. "dial", "handshake", "cn", "http", "status"; empty on success
 	Detail string
 }
 
@@ -50,7 +50,6 @@ func CheckSNI(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
 func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
 	handshakeTimeout := time.Duration(cfg.HandshakeTimeout) * time.Millisecond
 	scanMaxRTT := time.Duration(cfg.ScanMaxRTT) * time.Millisecond
-	scanMinRTT := time.Duration(cfg.ScanMinRTT) * time.Millisecond
 
 	tlscfg := &tls.Config{InsecureSkipVerify: true}
 	tr := &http.Transport{TLSClientConfig: tlscfg, ResponseHeaderTimeout: scanMaxRTT}
@@ -106,14 +105,14 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			req, err := http.NewRequest(method, "https://"+net.JoinHostPort(ip, "443")+cfg.HTTPPath, nil)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "status", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=build request: %s", serverName, host, method, cfg.HTTPPath, err.Error())}
+				return Result{Reason: "http", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=build request: %s", serverName, host, method, cfg.HTTPPath, err.Error())}
 			}
 			req.Host = host
 			tlsconn.SetDeadline(time.Now().Add(scanMaxRTT - time.Since(start)))
 			resp, err := httpconn.Do(req)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "status", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=%s", serverName, host, method, cfg.HTTPPath, ingest.SanitizeNetErr(err.Error()))}
+				return Result{Reason: "http", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=%s", serverName, host, method, cfg.HTTPPath, ingest.SanitizeNetErr(err.Error()))}
 			}
 			if resp.StatusCode != cfg.ValidStatusCode {
 				tlsconn.Close()
@@ -123,11 +122,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 
 		tlsconn.Close()
 
-		rtt := time.Since(start)
-		if rtt < scanMinRTT {
-			return Result{Reason: "rtt_too_low", Detail: fmt.Sprintf("sni=%s rtt=%s min=%s", serverName, rtt, scanMinRTT)}
-		}
-		totalRTT += rtt
+		totalRTT += time.Since(start)
 	}
 
 	return Result{OK: true, RTTMs: int(totalRTT.Milliseconds())}

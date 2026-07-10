@@ -80,7 +80,7 @@ type IPCheck struct {
 	IP        string
 	OK        bool
 	RTTMs     int
-	Reason    string // e.g. "dial", "handshake", "cn", "status", "ping"; empty for successes
+	Reason    string // e.g. "dial", "handshake", "cn", "http", "status", "ping"; empty for successes
 	Detail    string // e.g. "sni=g.cn host=www.google.com.hk got_code=403"; empty if unavailable
 	CheckedAt time.Time
 	Recheck   bool // true for report-triggered/CLI rechecks, which have no owning scan

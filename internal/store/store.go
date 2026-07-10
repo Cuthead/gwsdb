@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS ip_checks (
 	ip             TEXT NOT NULL,
 	ok             INTEGER NOT NULL,
 	rtt_ms         INTEGER,
-	reason         TEXT, -- e.g. dial/handshake/cn/status/ping; NULL for successes
+	reason         TEXT, -- e.g. dial/handshake/cn/http/status/ping; NULL for successes
 	detail         TEXT, -- e.g. "sni=g.cn host=www.google.com.hk got_code=403"
 	checked_at     DATETIME NOT NULL
 );
