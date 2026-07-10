@@ -90,6 +90,7 @@ var regionalCodes = map[string]place{
 	"gd": {"Sewanee, TN", "United States"},
 	"ge": {"Sewanee, TN", "United States"},
 	"gf": {"Atlanta, GA", "United States"},
+	"gg": {"Atlanta, GA", "United States"},
 	"gh": {"Columbus, OH", "United States"},
 	"gi": {"Atlanta, GA", "United States"},
 	"gj": {"Atlanta, GA", "United States"},
