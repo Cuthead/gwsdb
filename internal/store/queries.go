@@ -481,6 +481,7 @@ type ListKnownIPsOptions struct {
 	SortBy   string
 	SortDesc bool
 
+	// Limit caps the number of rows returned; 0 or negative means no cap.
 	Limit int
 }
 
@@ -522,8 +523,11 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += fmt.Sprintf(" ORDER BY %s %s, last_seen DESC LIMIT ?", col, dir)
-	args = append(args, opts.Limit)
+	q += fmt.Sprintf(" ORDER BY %s %s, last_seen DESC", col, dir)
+	if opts.Limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, opts.Limit)
+	}
 
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
