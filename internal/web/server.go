@@ -399,13 +399,9 @@ func (s *Server) resolveAndCachePTR(ip string) (hostname string, ok bool) {
 		log.Printf("ptr: lookup %s: %v (not cached)", ip, err)
 		return "", false
 	}
-	loc := geo.Decode(hostname)
 	entry := store.PTRCacheEntry{
 		IP:          ip,
 		PTRHostname: hostname,
-		AirportCode: loc.AirportCode,
-		GeoCity:     loc.City,
-		GeoCountry:  loc.Country,
 		LookupOK:    ok,
 		CheckedAt:   time.Now().UTC(),
 	}

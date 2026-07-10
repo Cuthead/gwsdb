@@ -78,13 +78,12 @@ type IPCheck struct {
 	ValidStatusCode  int
 }
 
-// PTRCacheEntry is a cached reverse-DNS + geo decode result for one IP.
+// PTRCacheEntry is a cached reverse-DNS lookup result for one IP. Geo/airport
+// decoding is derived from PTRHostname at read time via geo.Decode, not
+// stored here, so it always reflects the current airports.go tables.
 type PTRCacheEntry struct {
 	IP          string
 	PTRHostname string
-	AirportCode string
-	GeoCity     string
-	GeoCountry  string
 	LookupOK    bool
 	CheckedAt   time.Time
 }

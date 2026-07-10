@@ -62,9 +62,6 @@ CREATE INDEX IF NOT EXISTS idx_ip_checks_scan_id ON ip_checks(scan_id);
 CREATE TABLE IF NOT EXISTS ptr_cache (
 	ip            TEXT PRIMARY KEY,
 	ptr_hostname  TEXT,
-	airport_code  TEXT,
-	geo_city      TEXT,
-	geo_country   TEXT,
 	lookup_ok     INTEGER NOT NULL DEFAULT 1,
 	checked_at    DATETIME NOT NULL
 );
@@ -170,6 +167,15 @@ func migrate(db *sql.DB) error {
 	// previously saved.
 	if err := dropColumnIfPresent(db, "ip_reports", "reporter_ip"); err != nil {
 		return err
+	}
+	// airport_code/geo_city/geo_country were write-only: the /query page has
+	// always re-derived them from ptr_hostname via geo.Decode at read time,
+	// so the stored copies were dead and went stale whenever airports.go
+	// changed. Dropped in favor of always decoding live.
+	for _, col := range []string{"airport_code", "geo_city", "geo_country"} {
+		if err := dropColumnIfPresent(db, "ptr_cache", col); err != nil {
+			return err
+		}
 	}
 	return nil
 }

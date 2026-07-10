@@ -327,12 +327,12 @@ func (s *Store) Overview() (Stats, error) {
 // GetPTR returns a cached PTR/geo lookup for ip if present and not older than maxAge.
 func (s *Store) GetPTR(ip string, maxAge time.Duration) (*PTRCacheEntry, error) {
 	e := &PTRCacheEntry{}
-	var ptr, code, city, country sql.NullString
+	var ptr sql.NullString
 	var lookupOK int
 	var checkedAt time.Time
 	err := s.db.QueryRow(`
-		SELECT ip, ptr_hostname, airport_code, geo_city, geo_country, lookup_ok, checked_at
-		FROM ptr_cache WHERE ip = ?`, ip).Scan(&e.IP, &ptr, &code, &city, &country, &lookupOK, &checkedAt)
+		SELECT ip, ptr_hostname, lookup_ok, checked_at
+		FROM ptr_cache WHERE ip = ?`, ip).Scan(&e.IP, &ptr, &lookupOK, &checkedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -342,25 +342,22 @@ func (s *Store) GetPTR(ip string, maxAge time.Duration) (*PTRCacheEntry, error) 
 	if maxAge > 0 && time.Since(checkedAt) > maxAge {
 		return nil, nil
 	}
-	e.PTRHostname, e.AirportCode, e.GeoCity, e.GeoCountry = ptr.String, code.String, city.String, country.String
+	e.PTRHostname = ptr.String
 	e.LookupOK = lookupOK != 0
 	e.CheckedAt = checkedAt
 	return e, nil
 }
 
-// SavePTR upserts a PTR/geo lookup result into the cache.
+// SavePTR upserts a PTR lookup result into the cache.
 func (s *Store) SavePTR(e PTRCacheEntry) error {
 	_, err := s.db.Exec(`
-		INSERT INTO ptr_cache (ip, ptr_hostname, airport_code, geo_city, geo_country, lookup_ok, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, checked_at)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(ip) DO UPDATE SET
 			ptr_hostname = excluded.ptr_hostname,
-			airport_code = excluded.airport_code,
-			geo_city     = excluded.geo_city,
-			geo_country  = excluded.geo_country,
 			lookup_ok    = excluded.lookup_ok,
 			checked_at   = excluded.checked_at`,
-		e.IP, e.PTRHostname, e.AirportCode, e.GeoCity, e.GeoCountry, boolToInt(e.LookupOK), e.CheckedAt)
+		e.IP, e.PTRHostname, boolToInt(e.LookupOK), e.CheckedAt)
 	return err
 }
 
