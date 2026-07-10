@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -14,6 +15,10 @@ const recheckProbeTimeout = 10 * time.Second
 // recheckQueueRetention is how long a processed recheck_queue row is kept
 // around (for debugging/audit) before StartRecheckWorker prunes it.
 const recheckQueueRetention = 30 * 24 * time.Hour
+
+// publishTimeout bounds one DNS-publish reconcile so a slow Cloudflare API
+// call can't wedge the recheck worker loop.
+const publishTimeout = 15 * time.Second
 
 // StartRecheckWorker processes one pending recheck_queue item per interval
 // tick, re-testing the reported IP via recheck.RunAndSave, and prunes
@@ -49,5 +54,25 @@ func (s *Server) processNextRecheck() error {
 		log.Printf("recheck: #%d %s: %v", item.ID, item.IP, err)
 		return s.st.MarkRecheckProcessed(item.ID, false, now)
 	}
-	return s.st.MarkRecheckProcessed(item.ID, result.OK, now)
+	if err := s.st.MarkRecheckProcessed(item.ID, result.OK, now); err != nil {
+		return err
+	}
+	s.publishAfterRecheck()
+	return nil
+}
+
+// publishAfterRecheck reconciles the published DNS records with the store's
+// current top IPs, if a publisher is configured. A recheck just changed an
+// IP's status, so the top set may have shifted. Runs synchronously but is
+// diff-only, so an unchanged set makes no write calls; publish failures are
+// logged, not propagated -- they must not fail the recheck.
+func (s *Server) publishAfterRecheck() {
+	if s.pub == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
+	defer cancel()
+	if err := s.pub.Sync(ctx); err != nil {
+		log.Printf("recheck: publish: %v", err)
+	}
 }

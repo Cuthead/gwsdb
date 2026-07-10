@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
+	"github.com/cuthead/gwsdb/internal/publish"
 	"github.com/cuthead/gwsdb/internal/recheck"
 	"github.com/cuthead/gwsdb/internal/store"
 	"github.com/cuthead/gwsdb/internal/web"
@@ -51,10 +53,46 @@ Usage:
   gwsdb recheck -db PATH -ip IP [-timeout 10s]`)
 }
 
+// dnsFlags holds the DNS-publish flags shared by serve and ingest: both can
+// reconcile the published GWS records after they change the store.
+type dnsFlags struct {
+	name  *string
+	ttl   *int
+	limit *int
+}
+
+func registerDNSFlags(fs *flag.FlagSet) dnsFlags {
+	return dnsFlags{
+		name:  fs.String("dns-name", "", "if set, publish top GWS IPs as A/AAAA records on this name after each recheck/ingest (needs CF_API_TOKEN and CF_ZONE_ID)"),
+		ttl:   fs.Int("dns-ttl", 300, "TTL in seconds for published DNS records"),
+		limit: fs.Int("dns-limit", 4, "max published records per address family"),
+	}
+}
+
+// buildPublisher returns a Publisher when DNS publishing is configured, or nil
+// when -dns-name is empty. Fatal on misconfiguration (bad/missing credentials).
+func buildPublisher(st *store.Store, f dnsFlags) *publish.Publisher {
+	if *f.name == "" {
+		return nil
+	}
+	pub, err := publish.New(st, publish.Config{
+		APIToken: os.Getenv("CF_API_TOKEN"),
+		ZoneID:   os.Getenv("CF_ZONE_ID"),
+		Name:     *f.name,
+		TTL:      *f.ttl,
+		Limit:    *f.limit,
+	})
+	if err != nil {
+		log.Fatalf("dns publish: %v", err)
+	}
+	return pub
+}
+
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
 	addr := fs.String("addr", ":8080", "address to listen on")
+	dns := registerDNSFlags(fs)
 	fs.Parse(args)
 
 	st, err := store.Open(*dbPath)
@@ -66,6 +104,11 @@ func runServe(args []string) {
 	srv, err := web.New(st)
 	if err != nil {
 		log.Fatalf("build web server: %v", err)
+	}
+
+	if pub := buildPublisher(st, dns); pub != nil {
+		srv.SetPublisher(pub)
+		log.Printf("dns publish enabled: %s (ttl=%ds, limit=%d/family)", *dns.name, *dns.ttl, *dns.limit)
 	}
 
 	go srv.StartPTRRefresher(15 * time.Second)
@@ -86,6 +129,7 @@ func runIngest(args []string) {
 	mode := fs.String("mode", "", "scan mode to ingest (SNI/QUIC/TLS/PING); defaults to the config's ScanMode")
 	output := fs.String("output", "", "override path to the scan output IP list; defaults to the config's OutputFile")
 	logOnly := fs.Bool("log-only", false, "ignore the output file even if present; derive hits from -log only (use when a later scan overwrote the output file at this path)")
+	dns := registerDNSFlags(fs)
 	fs.Parse(args)
 
 	if *configPath == "" {
@@ -112,7 +156,23 @@ func runIngest(args []string) {
 		log.Fatalf("ingest: %v", err)
 	}
 	log.Printf("ingested scan #%d", scanID)
+
+	// A bulk ingest can shift the top set a lot; reconcile the published
+	// records once, at the end, rather than per IP. Publish failure doesn't
+	// fail the ingest -- the scan is already saved.
+	if pub := buildPublisher(st, dns); pub != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), ingestPublishTimeout)
+		defer cancel()
+		if err := pub.Sync(ctx); err != nil {
+			log.Printf("ingest: publish: %v", err)
+		} else {
+			log.Printf("ingest: dns publish synced")
+		}
+	}
 }
+
+// ingestPublishTimeout bounds the post-ingest DNS reconcile.
+const ingestPublishTimeout = 15 * time.Second
 
 func runDeleteScan(args []string) {
 	fs := flag.NewFlagSet("delete-scan", flag.ExitOnError)
