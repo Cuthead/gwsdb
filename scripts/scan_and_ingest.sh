@@ -8,16 +8,17 @@ SCANNER_DIR="${GWSDB_SCANNER_DIR:-$HOME/gscan_quic}"
 GWSDB_DIR="${GWSDB_HOME:-$HOME/git/gwsdb}"
 GWSDB_BIN="$GWSDB_DIR/gwsdb"
 DB_PATH="${GWSDB_DB:-$GWSDB_DIR/gwsdb.sqlite3}"
-CONFIG_FILE="${GWSDB_SCAN_CONFIG:-$SCANNER_DIR/config.user.json}"
+CONFIG="${GWSDB_CONFIG:-$GWSDB_DIR/config.json}"
+SCANNER_CONFIG="${GWSDB_SCAN_CONFIG:-$SCANNER_DIR/config.user.json}"
 
 LOG_DIR="$SCANNER_DIR/scan_logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/scan_$(date +%Y%m%d_%H%M%S).log"
 
 cd "$SCANNER_DIR"
-sudo ./gscan_quic -Config "$CONFIG_FILE" < /dev/null > >(tee "$LOG_FILE") 2>&1 &
+sudo ./gscan_quic -Config "$SCANNER_CONFIG" < /dev/null > >(tee "$LOG_FILE") 2>&1 &
 trap 'sudo pkill -TERM gscan_quic 2>/dev/null; wait; rm -f "$LOG_FILE"; exit 130' INT TERM
 wait || true
 trap - INT TERM
 
-"$GWSDB_BIN" ingest -db "$DB_PATH" --scanner-config "$CONFIG_FILE" -scanner-dir "$SCANNER_DIR" -log "$LOG_FILE" && rm "$LOG_FILE"
+"$GWSDB_BIN" ingest -db "$DB_PATH" -config "$CONFIG" --scanner-config "$SCANNER_CONFIG" -scanner-dir "$SCANNER_DIR" -log "$LOG_FILE" && rm "$LOG_FILE"
