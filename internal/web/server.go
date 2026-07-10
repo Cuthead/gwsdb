@@ -117,7 +117,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/report", s.handleReport)
 	mux.HandleFunc("/scans", s.handleScans)
 	mux.Handle("/static/", staticHandler())
-	return securityHeaders(mux)
+	return securityHeaders(compressResponses(mux))
 }
 
 // contentSecurityPolicy locks the pages down to their own origin. Everything
