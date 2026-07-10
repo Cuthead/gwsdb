@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -251,6 +252,9 @@ func migrate(db *sql.DB) error {
 	if err := mergeScanResultsIntoChecks(db); err != nil {
 		return err
 	}
+	if err := migrateDetailStrings(db); err != nil {
+		return err
+	}
 	if err := makeIPChecksScanIDNullable(db); err != nil {
 		return err
 	}
@@ -414,6 +418,70 @@ func mergeScanResultsIntoChecks(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`DROP TABLE scan_results`); err != nil {
 		return fmt.Errorf("drop scan_results: %w", err)
+	}
+	return tx.Commit()
+}
+
+// detailRedundantPrefixRE matches the sni=/host=/method=/path=/want_cn=/
+// want_code= tokens that CheckSNI's Detail strings used to duplicate from
+// the Probe Request column (see describeProbe in internal/web/server.go)
+// before Detail was trimmed to carry only error=/got_cn=/got_code=. These
+// keys' values are always single tokens (no spaces), so a leading run of
+// them can be stripped without touching the trailing error=... text, which
+// may itself contain spaces.
+var detailRedundantPrefixRE = regexp.MustCompile(`^(?:(?:sni|host|method|path|want_cn|want_code)=\S+ )+`)
+
+// migrateDetailStrings rewrites pre-existing ip_checks.detail values to drop
+// the fields describeProbe now shows. Guarded by a cheap LIKE check so it's
+// a no-op on every Open after the one that does the rewrite.
+func migrateDetailStrings(db *sql.DB) error {
+	var exists int
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM ip_checks WHERE detail LIKE 'sni=%')`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+
+	rows, err := db.Query(`SELECT id, detail FROM ip_checks WHERE detail LIKE 'sni=%'`)
+	if err != nil {
+		return err
+	}
+	type update struct {
+		id     int64
+		detail string
+	}
+	var updates []update
+	for rows.Next() {
+		var id int64
+		var detail string
+		if err := rows.Scan(&id, &detail); err != nil {
+			rows.Close()
+			return err
+		}
+		if trimmed := detailRedundantPrefixRE.ReplaceAllString(detail, ""); trimmed != detail {
+			updates = append(updates, update{id, trimmed})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE ip_checks SET detail = ? WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, u := range updates {
+		if _, err := stmt.Exec(u.detail, u.id); err != nil {
+			return fmt.Errorf("update ip_checks.detail id=%d: %w", u.id, err)
+		}
 	}
 	return tx.Commit()
 }

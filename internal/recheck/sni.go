@@ -78,7 +78,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(ip, "443"))
 		cancel()
 		if err != nil {
-			return Result{Reason: "dial", Detail: fmt.Sprintf("sni=%s error=%s", serverName, ingest.SanitizeNetErr(err.Error()))}
+			return Result{Reason: "dial", Detail: fmt.Sprintf("error=%s", ingest.SanitizeNetErr(err.Error()))}
 		}
 
 		tlscfg.ServerName = serverName
@@ -86,7 +86,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		tlsconn.SetDeadline(time.Now().Add(handshakeTimeout))
 		if err := tlsconn.Handshake(); err != nil {
 			tlsconn.Close()
-			return Result{Reason: "handshake", Detail: fmt.Sprintf("sni=%s error=%s", serverName, ingest.SanitizeNetErr(err.Error()))}
+			return Result{Reason: "handshake", Detail: fmt.Sprintf("error=%s", ingest.SanitizeNetErr(err.Error()))}
 		}
 
 		if cfg.Level > 1 {
@@ -97,7 +97,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			}
 			if len(pcs) == 0 || gotCN != cfg.VerifyCommonName {
 				tlsconn.Close()
-				return Result{Reason: "cn", Detail: fmt.Sprintf("sni=%s want_cn=%s got_cn=%s", serverName, cfg.VerifyCommonName, gotCN)}
+				return Result{Reason: "cn", Detail: fmt.Sprintf("got_cn=%s", gotCN)}
 			}
 		}
 
@@ -105,18 +105,18 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			req, err := http.NewRequest(method, "https://"+net.JoinHostPort(ip, "443")+cfg.HTTPPath, nil)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "http", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=build request: %s", serverName, host, method, cfg.HTTPPath, err.Error())}
+				return Result{Reason: "http", Detail: fmt.Sprintf("error=build request: %s", err.Error())}
 			}
 			req.Host = host
 			tlsconn.SetDeadline(time.Now().Add(scanMaxRTT - time.Since(start)))
 			resp, err := httpconn.Do(req)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "http", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=%s", serverName, host, method, cfg.HTTPPath, ingest.SanitizeNetErr(err.Error()))}
+				return Result{Reason: "http", Detail: fmt.Sprintf("error=%s", ingest.SanitizeNetErr(err.Error()))}
 			}
 			if resp.StatusCode != cfg.ValidStatusCode {
 				tlsconn.Close()
-				return Result{Reason: "status", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s want_code=%d got_code=%d", serverName, host, method, cfg.HTTPPath, cfg.ValidStatusCode, resp.StatusCode)}
+				return Result{Reason: "status", Detail: fmt.Sprintf("got_code=%d", resp.StatusCode)}
 			}
 		}
 

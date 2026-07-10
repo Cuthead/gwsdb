@@ -305,7 +305,7 @@ type checkRow struct {
 	OK          bool
 	RTT         int
 	ReasonLabel string // human-readable label for Reason, "" for successes
-	Detail      string // e.g. "sni=g.cn host=www.google.com.hk got_code=403"
+	Detail      string // e.g. "got_code=403"
 	Probe       string // the scan's request parameters in effect at check time
 }
 
@@ -346,6 +346,9 @@ func describeProbe(c store.IPCheck) string {
 	}
 	if c.ScanMode != "" {
 		parts = append(parts, c.ScanMode)
+	}
+	if c.ServerName != "" {
+		parts = append(parts, "sni="+c.ServerName)
 	}
 	if c.HTTPMethod != "" {
 		parts = append(parts, "method="+c.HTTPMethod)
