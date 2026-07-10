@@ -10,12 +10,11 @@ import (
 )
 
 // SaveScan persists a completed scan, its successful results, and every
-// pass/fail check observed in its log. Both roll into ip_checks (the
-// availability history timeline): each result becomes an ok row (so
-// successes are recorded even when the log is incomplete), and log successes
-// are added only for IPs not already covered by a result. Results also roll
-// into the per-IP ip_status registry (the "ever found reachable" pool);
-// failure checks are kept only for IPs already in that pool -- a scan can
+// pass/fail check observed in its log, all into ip_checks (the availability
+// history timeline that ip_pool is computed from): each result becomes an ok
+// row (so successes are recorded even when the log is incomplete), log
+// successes are added only for IPs not already covered by a result, and
+// failure checks are kept only for IPs with a prior ok=1 check -- a scan can
 // probe thousands of never-seen-good IPs and we don't want to keep permanent
 // history for every one of them. Everything happens in one transaction.
 func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (int64, error) {
@@ -44,27 +43,17 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 	}
 
 	insertCheck, err := tx.Prepare(`
-		INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
 	defer insertCheck.Close()
 
-	upsertStatus, err := tx.Prepare(`
-		INSERT INTO ip_status (ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 1)
-		ON CONFLICT(ip) DO UPDATE SET
-			last_seen       = excluded.last_seen,
-			last_scan_id    = excluded.last_scan_id,
-			last_rtt_ms     = excluded.last_rtt_ms,
-			scan_mode       = excluded.scan_mode,
-			times_seen      = times_seen + 1,
-			last_checked_at = excluded.last_checked_at,
-			last_check_ok   = 1`)
+	knownGood, err := tx.Prepare(`SELECT EXISTS(SELECT 1 FROM ip_checks WHERE ip = ? AND ok = 1)`)
 	if err != nil {
 		return 0, err
 	}
-	defer upsertStatus.Close()
+	defer knownGood.Close()
 
 	now := time.Now().UTC()
 
@@ -89,21 +78,10 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 		if !ok {
 			ts = now
 		}
-		if _, err := insertCheck.Exec(scanID, r.IP, 1, nullInt(r.RTTMs), nil, nil, ts); err != nil {
+		if _, err := insertCheck.Exec(scanID, r.IP, 1, nullInt(r.RTTMs), nil, nil, ts, scan.ScanMode); err != nil {
 			return 0, fmt.Errorf("insert ip_check %s: %w", r.IP, err)
 		}
-		isIPv6 := strings.Contains(r.IP, ":")
-		if _, err := upsertStatus.Exec(r.IP, boolToInt(isIPv6), scan.ScanMode, ts, ts, scanID, nullInt(r.RTTMs), ts); err != nil {
-			return 0, fmt.Errorf("upsert ip_status %s: %w", r.IP, err)
-		}
 	}
-
-	markFailed, err := tx.Prepare(`
-		UPDATE ip_status SET last_checked_at = ?, last_check_ok = 0 WHERE ip = ?`)
-	if err != nil {
-		return 0, err
-	}
-	defer markFailed.Close()
 
 	for _, c := range checks {
 		checkedAt := c.CheckedAt
@@ -117,24 +95,20 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 				continue
 			}
 			recorded[c.IP] = true
-			if _, err := insertCheck.Exec(scanID, c.IP, 1, nullInt(c.RTTMs), nil, nil, checkedAt); err != nil {
+			if _, err := insertCheck.Exec(scanID, c.IP, 1, nullInt(c.RTTMs), nil, nil, checkedAt, scan.ScanMode); err != nil {
 				return 0, fmt.Errorf("insert ip_check %s: %w", c.IP, err)
 			}
 			continue
 		}
-		res, err := markFailed.Exec(checkedAt, c.IP)
-		if err != nil {
-			return 0, fmt.Errorf("mark failed %s: %w", c.IP, err)
+		var exists int
+		if err := knownGood.QueryRow(c.IP).Scan(&exists); err != nil {
+			return 0, fmt.Errorf("check known-good %s: %w", c.IP, err)
 		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return 0, err
-		}
-		if affected == 0 {
+		if exists == 0 {
 			// Never seen reachable before -- not part of the tracked pool.
 			continue
 		}
-		if _, err := insertCheck.Exec(scanID, c.IP, 0, nil, nullString(c.Reason), nullString(c.Detail), checkedAt); err != nil {
+		if _, err := insertCheck.Exec(scanID, c.IP, 0, nil, nullString(c.Reason), nullString(c.Detail), checkedAt, scan.ScanMode); err != nil {
 			return 0, fmt.Errorf("insert ip_check %s: %w", c.IP, err)
 		}
 	}
@@ -148,11 +122,11 @@ func (s *Store) SaveScan(scan *Scan, results []ScanResult, checks []IPCheck) (in
 // SaveRecheck records the outcome of a single report-triggered (or CLI)
 // recheck probe: an ip_checks row with no owning scan (scan_id NULL, with
 // config_scan_id pointing at the scan whose config the probe ran with) plus
-// the same ip_status bookkeeping SaveScan does per IP. Rechecks deliberately do
-// not create a scans row -- the scans table only records real scanner runs
-// ingested via the CLI. Failure semantics match SaveScan: an IP never seen
-// reachable gets its ip_status/history untouched, so probing arbitrary
-// reported IPs can't grow permanent state.
+// ip_pool's live derivation. Rechecks deliberately do not create a scans row
+// -- the scans table only records real scanner runs ingested via the CLI.
+// Failure semantics match SaveScan: an IP never seen reachable gets its
+// history untouched, so probing arbitrary reported IPs can't grow permanent
+// state.
 func (s *Store) SaveRecheck(c IPCheck) error {
 	checkedAt := c.CheckedAt
 	if checkedAt.IsZero() {
@@ -169,50 +143,34 @@ func (s *Store) SaveRecheck(c IPCheck) error {
 
 	if c.OK {
 		if _, err := tx.Exec(`
-			INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
-			VALUES (NULL, ?, ?, 1, ?, NULL, NULL, ?)`,
-			configScanID, c.IP, nullInt(c.RTTMs), checkedAt); err != nil {
+			INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+			VALUES (NULL, ?, ?, 1, ?, NULL, NULL, ?, ?)`,
+			configScanID, c.IP, nullInt(c.RTTMs), checkedAt, c.ScanMode); err != nil {
 			return fmt.Errorf("insert ip_check %s: %w", c.IP, err)
-		}
-		isIPv6 := strings.Contains(c.IP, ":")
-		if _, err := tx.Exec(`
-			INSERT INTO ip_status (ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
-			VALUES (?, ?, ?, ?, ?, NULL, ?, 1, ?, 1)
-			ON CONFLICT(ip) DO UPDATE SET
-				last_seen       = excluded.last_seen,
-				last_rtt_ms     = excluded.last_rtt_ms,
-				times_seen      = times_seen + 1,
-				last_checked_at = excluded.last_checked_at,
-				last_check_ok   = 1`,
-			c.IP, boolToInt(isIPv6), c.ScanMode, checkedAt, checkedAt, nullInt(c.RTTMs), checkedAt); err != nil {
-			return fmt.Errorf("upsert ip_status %s: %w", c.IP, err)
 		}
 		return tx.Commit()
 	}
 
-	res, err := tx.Exec(`
-		UPDATE ip_status SET last_checked_at = ?, last_check_ok = 0 WHERE ip = ?`, checkedAt, c.IP)
-	if err != nil {
-		return fmt.Errorf("mark failed %s: %w", c.IP, err)
+	var exists int
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM ip_checks WHERE ip = ? AND ok = 1)`, c.IP).Scan(&exists); err != nil {
+		return fmt.Errorf("check known-good %s: %w", c.IP, err)
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return err
+	if exists == 0 {
+		// Never seen reachable before -- not part of the tracked pool.
+		return tx.Commit()
 	}
-	if affected > 0 {
-		if _, err := tx.Exec(`
-			INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at)
-			VALUES (NULL, ?, ?, 0, NULL, ?, ?, ?)`,
-			configScanID, c.IP, nullString(c.Reason), nullString(c.Detail), checkedAt); err != nil {
-			return fmt.Errorf("insert ip_check %s: %w", c.IP, err)
-		}
+	if _, err := tx.Exec(`
+		INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+		VALUES (NULL, ?, ?, 0, NULL, ?, ?, ?, ?)`,
+		configScanID, c.IP, nullString(c.Reason), nullString(c.Detail), checkedAt, c.ScanMode); err != nil {
+		return fmt.Errorf("insert ip_check %s: %w", c.IP, err)
 	}
 	return tx.Commit()
 }
 
-// DeleteScan removes a scan and its checks. ip_status rows pointing
-// at it via last_scan_id are unlinked (set to NULL) rather than recomputed --
-// their last_seen/times_seen/last_rtt_ms aggregates are left as-is.
+// DeleteScan removes a scan and its checks. ip_pool is computed live from
+// ip_checks, so an IP left with no surviving ok=1 check simply falls out of
+// it on its own -- there's no aggregate left to clean up.
 func (s *Store) DeleteScan(id int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -228,18 +186,16 @@ func (s *Store) DeleteScan(id int64) error {
 	if _, err := tx.Exec(`UPDATE ip_checks SET config_scan_id = NULL WHERE config_scan_id = ?`, id); err != nil {
 		return fmt.Errorf("clear ip_checks.config_scan_id: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE ip_status SET last_scan_id = NULL WHERE last_scan_id = ?`, id); err != nil {
-		return fmt.Errorf("clear ip_status.last_scan_id: %w", err)
-	}
+
 	res, err := tx.Exec(`DELETE FROM scans WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete scan: %w", err)
 	}
-	affected, err := res.RowsAffected()
+	rowsAffected, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
-	if affected == 0 {
+	if rowsAffected == 0 {
 		return fmt.Errorf("scan %d not found", id)
 	}
 	return tx.Commit()
@@ -270,12 +226,13 @@ func (s *Store) LatestScan(scanMode string) (*Scan, error) {
 func (s *Store) IPStatusFor(ip string) (*IPStatus, error) {
 	st := &IPStatus{}
 	var isIPv6 int
+	var scanMode sql.NullString
 	var first, last, lastChecked sql.NullTime
 	var lastScanID, lastRTT, lastCheckOK sql.NullInt64
 	err := s.db.QueryRow(`
 		SELECT ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok
-		FROM ip_status WHERE ip = ?`, ip).Scan(
-		&st.IP, &isIPv6, &st.ScanMode, &first, &last, &lastScanID, &lastRTT, &st.TimesSeen, &lastChecked, &lastCheckOK)
+		FROM ip_pool WHERE ip = ?`, ip).Scan(
+		&st.IP, &isIPv6, &scanMode, &first, &last, &lastScanID, &lastRTT, &st.TimesSeen, &lastChecked, &lastCheckOK)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -283,6 +240,7 @@ func (s *Store) IPStatusFor(ip string) (*IPStatus, error) {
 		return nil, err
 	}
 	st.IsIPv6 = isIPv6 != 0
+	st.ScanMode = scanMode.String
 	st.FirstSeen = first.Time
 	st.LastSeen = last.Time
 	st.LastScanID = lastScanID.Int64
@@ -303,7 +261,7 @@ type Stats struct {
 // Overview returns aggregate stats for the home page.
 func (s *Store) Overview() (Stats, error) {
 	var st Stats
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ip_status`).Scan(&st.TotalKnownIPs); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ip_pool`).Scan(&st.TotalKnownIPs); err != nil {
 		return st, err
 	}
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM scans`).Scan(&st.TotalScans); err != nil {
@@ -365,14 +323,14 @@ func (s *Store) SavePTR(e PTRCacheEntry) error {
 	return err
 }
 
-// NextIPForPTRRefresh returns one IP from ip_status whose ptr_cache entry is
+// NextIPForPTRRefresh returns one IP from ip_pool whose ptr_cache entry is
 // missing or past its observed DNS TTL, preferring never-checked IPs first,
 // then the stalest. Returns "" if every known IP has a fresh cache entry.
 func (s *Store) NextIPForPTRRefresh() (string, error) {
 	var ip string
 	err := s.db.QueryRow(`
 		SELECT i.ip
-		FROM ip_status i
+		FROM ip_pool i
 		LEFT JOIN ptr_cache p ON p.ip = i.ip
 		WHERE p.ip IS NULL OR datetime(p.checked_at, '+' || p.ttl_seconds || ' seconds') < ?
 		ORDER BY (p.checked_at IS NULL) DESC, p.checked_at ASC
@@ -500,7 +458,7 @@ func (s *Store) ListScans(limit int) ([]Scan, error) {
 // caller-controlled (it comes from a query param), so it must never be
 // interpolated into the query directly.
 var listKnownIPsSortColumns = map[string]string{
-	"ip":         "ip_status.ip",
+	"ip":         "ip_pool.ip",
 	"ptr":        "ptr_cache.ptr_hostname",
 	"status":     "last_check_ok",
 	"first_seen": "first_seen",
@@ -529,7 +487,7 @@ type ListKnownIPsOptions struct {
 	Limit int
 }
 
-// ListKnownIPs returns IPs from the tracked pool (ip_status), along with
+// ListKnownIPs returns IPs from the tracked pool (ip_pool), along with
 // each IP's cached PTR hostname (empty if never resolved). If OnlyUp is
 // true, only IPs whose most recent check succeeded (or that have never
 // failed a check) are returned.
@@ -544,9 +502,9 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 	}
 
 	q := `
-		SELECT ip_status.ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '')
-		FROM ip_status
-		LEFT JOIN ptr_cache ON ptr_cache.ip = ip_status.ip`
+		SELECT ip_pool.ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '')
+		FROM ip_pool
+		LEFT JOIN ptr_cache ON ptr_cache.ip = ip_pool.ip`
 
 	var where []string
 	var args []any
@@ -560,7 +518,7 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 		where = append(where, `is_ipv6 = 1`)
 	}
 	if opts.Search != "" {
-		where = append(where, `(ip_status.ip LIKE ? OR ptr_cache.ptr_hostname LIKE ?)`)
+		where = append(where, `(ip_pool.ip LIKE ? OR ptr_cache.ptr_hostname LIKE ?)`)
 		pattern := "%" + opts.Search + "%"
 		args = append(args, pattern, pattern)
 	}
@@ -583,12 +541,14 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 	for rows.Next() {
 		var st IPStatus
 		var isIPv6 int
+		var scanMode sql.NullString
 		var first, last, lastChecked sql.NullTime
 		var lastScanID, lastRTT, lastCheckOK sql.NullInt64
-		if err := rows.Scan(&st.IP, &isIPv6, &st.ScanMode, &first, &last, &lastScanID, &lastRTT, &st.TimesSeen, &lastChecked, &lastCheckOK, &st.PTRHostname); err != nil {
+		if err := rows.Scan(&st.IP, &isIPv6, &scanMode, &first, &last, &lastScanID, &lastRTT, &st.TimesSeen, &lastChecked, &lastCheckOK, &st.PTRHostname); err != nil {
 			return nil, err
 		}
 		st.IsIPv6 = isIPv6 != 0
+		st.ScanMode = scanMode.String
 		st.FirstSeen = first.Time
 		st.LastSeen = last.Time
 		st.LastScanID = lastScanID.Int64
@@ -613,7 +573,7 @@ func (s *Store) TopIPsForPublish(family, limit int) ([]string, error) {
 		isIPv6 = 1
 	}
 	rows, err := s.db.Query(`
-		SELECT ip FROM ip_status
+		SELECT ip FROM ip_pool
 		WHERE is_ipv6 = ? AND last_check_ok = 1 AND last_rtt_ms IS NOT NULL
 		ORDER BY times_seen DESC, last_rtt_ms ASC
 		LIMIT ?`, isIPv6, limit)

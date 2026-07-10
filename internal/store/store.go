@@ -31,20 +31,12 @@ CREATE TABLE IF NOT EXISTS scans (
 	created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS ip_status (
-	ip              TEXT PRIMARY KEY,
-	is_ipv6         INTEGER NOT NULL DEFAULT 0,
-	scan_mode       TEXT NOT NULL,
-	first_seen      DATETIME NOT NULL,
-	last_seen       DATETIME NOT NULL,
-	last_scan_id    INTEGER,
-	last_rtt_ms     INTEGER,
-	times_seen      INTEGER NOT NULL DEFAULT 1,
-	last_checked_at DATETIME,
-	last_check_ok   INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_ip_status_last_seen ON ip_status(last_seen);
-
+-- ip_checks is the append-only availability history: every pass/fail probe,
+-- scan-driven or report-triggered recheck. The tracked "pool" of known-good
+-- IPs and their aggregates (first/last seen, times seen, etc.) are never
+-- stored -- they're derived live from this table by the ip_pool view (see
+-- migrate()), so deleting or editing history here can never leave a stale
+-- aggregate behind.
 CREATE TABLE IF NOT EXISTS ip_checks (
 	id             INTEGER PRIMARY KEY AUTOINCREMENT,
 	scan_id        INTEGER REFERENCES scans(id), -- NULL for report-triggered rechecks (no owning scan)
@@ -54,9 +46,11 @@ CREATE TABLE IF NOT EXISTS ip_checks (
 	rtt_ms         INTEGER,
 	reason         TEXT, -- e.g. dial/handshake/cn/http/status/ping; NULL for successes
 	detail         TEXT, -- e.g. "sni=g.cn host=www.google.com.hk got_code=403"
-	checked_at     DATETIME NOT NULL
+	checked_at     DATETIME NOT NULL,
+	scan_mode      TEXT -- the scan mode in effect for this probe (e.g. "SNI")
 );
 CREATE INDEX IF NOT EXISTS idx_ip_checks_ip ON ip_checks(ip, checked_at);
+CREATE INDEX IF NOT EXISTS idx_ip_checks_ip_ok ON ip_checks(ip, ok, checked_at);
 CREATE INDEX IF NOT EXISTS idx_ip_checks_scan_id ON ip_checks(scan_id);
 
 -- ttl_seconds on the three *_cache tables is the DNS TTL observed at
@@ -127,6 +121,51 @@ CREATE TABLE IF NOT EXISTS recheck_queue (
 CREATE INDEX IF NOT EXISTS idx_recheck_queue_pending ON recheck_queue(processed_at);
 `
 
+// ipPoolViewSQL defines ip_pool, the tracked pool of "ever seen reachable"
+// IPs and their aggregates, computed live from ip_checks rather than
+// maintained incrementally. An IP appears here only while at least one
+// ok=1 row for it survives in ip_checks -- delete the checks and the IP
+// falls back out of the pool on its own, no cleanup pass required.
+const ipPoolViewSQL = `
+CREATE VIEW ip_pool AS
+WITH ranked AS (
+	-- rn_* columns rank each ip_checks row within its group so the
+	-- earliest/latest row can be picked by plain column reference below
+	-- (aggregates like MIN()/COALESCE() over checked_at make the sqlite3
+	-- driver lose the DATETIME declared type and hand back a bare string
+	-- instead of time.Time -- see nullTime's caller comment in Overview).
+	SELECT
+		ip, ok, rtt_ms, scan_id, scan_mode, checked_at,
+		ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn_any,
+		ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at DESC, id DESC) AS rn_ok_desc,
+		ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at ASC, id ASC) AS rn_ok_asc
+	FROM ip_checks
+),
+counts AS (
+	SELECT
+		ip,
+		CASE WHEN instr(ip, ':') > 0 THEN 1 ELSE 0 END AS is_ipv6,
+		COUNT(CASE WHEN ok = 1 THEN 1 END) AS times_seen
+	FROM ip_checks
+	GROUP BY ip
+	HAVING times_seen > 0
+)
+SELECT
+	counts.ip            AS ip,
+	counts.is_ipv6       AS is_ipv6,
+	last_ok.scan_mode    AS scan_mode,
+	first_ok.checked_at  AS first_seen,
+	last_ok.checked_at   AS last_seen,
+	last_ok.scan_id      AS last_scan_id,
+	last_ok.rtt_ms       AS last_rtt_ms,
+	counts.times_seen    AS times_seen,
+	last_any.checked_at  AS last_checked_at,
+	last_any.ok          AS last_check_ok
+FROM counts
+JOIN ranked last_ok  ON last_ok.ip = counts.ip  AND last_ok.ok = 1 AND last_ok.rn_ok_desc = 1
+JOIN ranked first_ok ON first_ok.ip = counts.ip AND first_ok.ok = 1 AND first_ok.rn_ok_asc = 1
+JOIN ranked last_any ON last_any.ip = counts.ip AND last_any.rn_any = 1`
+
 // Store wraps a SQLite database handle.
 type Store struct {
 	db *sql.DB
@@ -154,18 +193,40 @@ func Open(path string) (*Store, error) {
 // created. CREATE TABLE IF NOT EXISTS above doesn't touch existing tables,
 // so new columns need an explicit, idempotent ALTER TABLE here.
 func migrate(db *sql.DB) error {
-	if err := addColumnsIfMissing(db, "ip_status", map[string]string{
-		"last_checked_at": `ALTER TABLE ip_status ADD COLUMN last_checked_at DATETIME`,
-		"last_check_ok":   `ALTER TABLE ip_status ADD COLUMN last_check_ok INTEGER`,
-	}); err != nil {
-		return err
-	}
 	if err := addColumnsIfMissing(db, "ip_checks", map[string]string{
 		"reason":         `ALTER TABLE ip_checks ADD COLUMN reason TEXT`,
 		"detail":         `ALTER TABLE ip_checks ADD COLUMN detail TEXT`,
 		"config_scan_id": `ALTER TABLE ip_checks ADD COLUMN config_scan_id INTEGER REFERENCES scans(id)`,
+		"scan_mode":      `ALTER TABLE ip_checks ADD COLUMN scan_mode TEXT`,
 	}); err != nil {
 		return err
+	}
+	// Backfill scan_mode for rows written before the column existed, from
+	// the scan whose config produced them. Rows whose scan_id/config_scan_id
+	// no longer resolve (e.g. a recheck whose source scan was since deleted)
+	// are left NULL -- there's nothing left to recover it from.
+	if _, err := db.Exec(`
+		UPDATE ip_checks SET scan_mode = (
+			SELECT s.scan_mode FROM scans s WHERE s.id = COALESCE(ip_checks.scan_id, ip_checks.config_scan_id)
+		) WHERE scan_mode IS NULL`); err != nil {
+		return fmt.Errorf("backfill ip_checks.scan_mode: %w", err)
+	}
+	// ip_status used to be a maintained table of per-IP aggregates
+	// (times_seen, last_seen, ...), updated incrementally by every write path.
+	// That made it easy for a write path (notably DeleteScan) to leave stale
+	// numbers behind. It's now the ip_pool view below, computed live from
+	// ip_checks, so there's nothing to keep in sync.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS ip_status`); err != nil {
+		return fmt.Errorf("drop ip_status: %w", err)
+	}
+	// Recreated unconditionally (cheap: it's metadata only) so a definition
+	// change here always takes effect on the next Open, no version tracking
+	// needed.
+	if _, err := db.Exec(`DROP VIEW IF EXISTS ip_pool`); err != nil {
+		return fmt.Errorf("drop ip_pool view: %w", err)
+	}
+	if _, err := db.Exec(ipPoolViewSQL); err != nil {
+		return fmt.Errorf("create ip_pool view: %w", err)
 	}
 	if err := addColumnsIfMissing(db, "scans", map[string]string{
 		"http_method": `ALTER TABLE scans ADD COLUMN http_method TEXT`,

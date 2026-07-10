@@ -498,7 +498,7 @@ func (s *Server) resolveAndCachePTR(ip string) (hostnames []string, ok bool) {
 }
 
 // StartPTRRefresher resolves one missing/stale ptr_cache entry per interval
-// tick, so ip_status IPs accumulate PTR records in the background instead of
+// tick, so ip_pool IPs accumulate PTR records in the background instead of
 // only on a user's /query click. Intended to run in its own goroutine for
 // the lifetime of the server.
 func (s *Server) StartPTRRefresher(interval time.Duration) {

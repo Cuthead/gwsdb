@@ -17,8 +17,8 @@ const DefaultScanMode = "SNI"
 
 // RunAndSave re-tests ip using the config of the most recent scanMode scan on
 // file, then records the outcome via SaveRecheck: an ip_checks history row
-// (with no owning scan) plus the ip_status update. No scans row is created --
-// the scans table only records real scanner runs ingested via the CLI.
+// with no owning scan. No scans row is created -- the scans table only
+// records real scanner runs ingested via the CLI.
 // Shared by the recheck_queue background worker and the "gwsdb recheck" CLI
 // command.
 //
