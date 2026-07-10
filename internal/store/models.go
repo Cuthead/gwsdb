@@ -103,15 +103,14 @@ type ASNCacheEntry struct {
 
 // IPReport is a community-submitted "usable"/"unusable" report for one IP,
 // similar in spirit to AbuseIPDB's report feature. The reporter's full IP is
-// retained (ReporterIP) for abuse mitigation, but only their announced
-// prefix and AS are meant to be shown publicly.
+// never stored -- only the announced prefix and AS it resolved to at
+// submission time.
 type IPReport struct {
 	ID             int64
 	IP             string // the IP being reported on
 	Verdict        bool   // true = usable, false = unusable
 	Comment        string
-	ReporterIP     string // full reporter address; not for public display
-	ReporterPrefix string // BGP-announced prefix containing ReporterIP
+	ReporterPrefix string // BGP-announced prefix containing the reporter's address
 	ReporterASN    int
 	ReporterASName string
 	CreatedAt      time.Time

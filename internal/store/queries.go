@@ -679,9 +679,9 @@ func (s *Store) SaveASN(e ASNCacheEntry) error {
 // SaveReport records one community report for an IP and returns its id.
 func (s *Store) SaveReport(rep IPReport) (int64, error) {
 	res, err := s.db.Exec(`
-		INSERT INTO ip_reports (ip, verdict, comment, reporter_ip, reporter_prefix, reporter_asn, reporter_as_name, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		rep.IP, boolToInt(rep.Verdict), nullString(rep.Comment), rep.ReporterIP,
+		INSERT INTO ip_reports (ip, verdict, comment, reporter_prefix, reporter_asn, reporter_as_name, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		rep.IP, boolToInt(rep.Verdict), nullString(rep.Comment),
 		nullString(rep.ReporterPrefix), nullInt(rep.ReporterASN), nullString(rep.ReporterASName), rep.CreatedAt)
 	if err != nil {
 		return 0, err

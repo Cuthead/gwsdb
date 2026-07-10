@@ -601,13 +601,14 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		comment = comment[:maxReportCommentLen]
 	}
 
+	// The reporter's address is used only to resolve their announced
+	// prefix/AS; it is never persisted.
 	reporterIP := clientIP(r)
 	rep := store.IPReport{
-		IP:         ip,
-		Verdict:    verdict,
-		Comment:    comment,
-		ReporterIP: reporterIP,
-		CreatedAt:  time.Now().UTC(),
+		IP:        ip,
+		Verdict:   verdict,
+		Comment:   comment,
+		CreatedAt: time.Now().UTC(),
 	}
 	if reporterIP != "" {
 		if info, ok := s.lookupASN(reporterIP); ok {

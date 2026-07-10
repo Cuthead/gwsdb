@@ -84,7 +84,6 @@ CREATE TABLE IF NOT EXISTS ip_reports (
 	ip                TEXT NOT NULL,
 	verdict           INTEGER NOT NULL,
 	comment           TEXT,
-	reporter_ip       TEXT NOT NULL,
 	reporter_prefix   TEXT,
 	reporter_asn      INTEGER,
 	reporter_as_name  TEXT,
@@ -165,6 +164,49 @@ func migrate(db *sql.DB) error {
 	}
 	if err := makeIPChecksScanIDNullable(db); err != nil {
 		return err
+	}
+	// Reporter addresses are no longer stored at all -- the announced
+	// prefix/AS is enough. Dropping the column also purges every full IP
+	// previously saved.
+	if err := dropColumnIfPresent(db, "ip_reports", "reporter_ip"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func dropColumnIfPresent(db *sql.DB, table, col string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	present := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == col {
+			present = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if !present {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` DROP COLUMN ` + col); err != nil {
+		return fmt.Errorf("drop %s.%s: %w", table, col, err)
+	}
+	// The dropped values can survive in freelist pages; rewrite the file so
+	// they're actually gone. Only runs the one time the column is dropped.
+	if _, err := db.Exec(`VACUUM`); err != nil {
+		return fmt.Errorf("vacuum after dropping %s.%s: %w", table, col, err)
 	}
 	return nil
 }
