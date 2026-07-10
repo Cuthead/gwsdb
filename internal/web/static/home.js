@@ -52,7 +52,7 @@
 			var familyMatch = family === '6' ? isIPv6 : !isIPv6;
 			if (familyMatch) familyTotal++;
 			var statusMatch = status === 'all' || r.dataset.status === 'Reachable';
-			var hay = (r.dataset.ip + ' ' + r.dataset.ptr).toLowerCase();
+			var hay = (r.dataset.ip + ' ' + r.dataset.ptr + ' ' + r.dataset.country).toLowerCase();
 			if (familyMatch && statusMatch && hay.indexOf(q) !== -1) {
 				matched.push(r);
 			}
