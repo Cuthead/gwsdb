@@ -543,7 +543,7 @@ var airportCodes = map[string]place{
 	"pek": {"Beijing", "China"},
 	"per": {"Perth", "Australia"},
 	"pnq": {"Pune", "India"},
-	"pvg": {"Shanghai", "China"},
+	"sha": {"Shanghai", "China"},
 	"sin": {"Singapore", "Singapore"},
 	"syd": {"Sydney", "Australia"},
 	"tsa": {"Taipei", "Taiwan"},
