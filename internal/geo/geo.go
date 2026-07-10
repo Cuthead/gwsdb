@@ -140,6 +140,7 @@ var countryCodes = map[string]string{
 	"Israel":               "il",
 	"Italy":                "it",
 	"Japan":                "jp",
+	"Kenya":                "ke",
 	"Malaysia":             "my",
 	"Mexico":               "mx",
 	"Netherlands":          "nl",

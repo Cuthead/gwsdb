@@ -561,5 +561,6 @@ var airportCodes = map[string]place{
 	"doh": {"Doha", "Qatar"},
 	"dxb": {"Dubai", "United Arab Emirates"},
 	"jnb": {"Johannesburg", "South Africa"},
+	"mba": {"Mombasa", "Kenya"},
 	"tlv": {"Tel Aviv", "Israel"},
 }

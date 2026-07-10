@@ -63,3 +63,4 @@ New columns on existing tables go through `migrate()` in `internal/store/store.g
 - `listKnownIPsSortColumns` in `internal/store/queries.go` whitelists sortable columns because `SortBy` comes straight from a query param — never interpolate caller-controlled strings into SQL directly; extend the whitelist map instead.
 - Templates are a mix of `lang="en"` and `lang="zh"` (`report_confirm.tmpl` is Chinese; the rest are English) — this is intentional per-page, not a bug, per the i18n commit history.
 - `gwsdb.sqlite3*` and the `gwsdb` binary are gitignored — don't commit them.
+- Fetching anything from he.net / bgp.he.net (e.g. flag gifs under `bgp.he.net/images/flags/`) requires a browser User-Agent or the request is rejected — use `curl -H "User-Agent: Mozilla/5.0" ...`.
