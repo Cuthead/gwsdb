@@ -152,6 +152,7 @@ var countryCodes = map[string]string{
 	"Portugal":             "pt",
 	"Qatar":                "qa",
 	"Romania":              "ro",
+	"Saudi Arabia":         "sa",
 	"Singapore":            "sg",
 	"South Africa":         "za",
 	"South Korea":          "kr",

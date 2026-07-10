@@ -560,6 +560,7 @@ var airportCodes = map[string]place{
 
 	// Middle East / Africa
 	"cai": {"Cairo", "Egypt"},
+	"dmm": {"Dammam", "Saudi Arabia"},
 	"doh": {"Doha", "Qatar"},
 	"dxb": {"Dubai", "United Arab Emirates"},
 	"jnb": {"Johannesburg", "South Africa"},
