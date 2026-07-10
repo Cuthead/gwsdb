@@ -108,6 +108,13 @@ func runServe(args []string) {
 		log.Printf("dns publish enabled from %s", *configPath)
 	}
 
+	if cfg, err := config.Load(*configPath); err != nil {
+		log.Fatalf("load config: %v", err)
+	} else if cfg.PTRDoHURL != "" {
+		srv.SetDoHURL(cfg.PTRDoHURL)
+		log.Printf("PTR resolution via DoH: %s", cfg.PTRDoHURL)
+	}
+
 	go srv.StartPTRRefresher(15 * time.Second)
 	go srv.StartRecheckWorker(15 * time.Second)
 

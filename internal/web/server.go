@@ -79,9 +79,10 @@ const maxReportCommentLen = 500
 
 // Server holds the dependencies for the HTTP frontend.
 type Server struct {
-	st   *store.Store
-	tmpl *template.Template
-	pub  Publisher // nil when DNS publishing is not configured
+	st     *store.Store
+	tmpl   *template.Template
+	pub    Publisher // nil when DNS publishing is not configured
+	dohURL string    // "" uses the system resolver for PTR lookups; see SetDoHURL
 }
 
 // Publisher reconciles the published GWS DNS records with the store's current
@@ -93,6 +94,11 @@ type Publisher interface {
 // SetPublisher enables DNS publishing after a recheck. Passing nil (the
 // default) disables it.
 func (s *Server) SetPublisher(p Publisher) { s.pub = p }
+
+// SetDoHURL configures a DNS-over-HTTPS endpoint (RFC 8484 wire format,
+// e.g. "https://dns.google/dns-query") for PTR resolution. Passing "" (the
+// default) uses the host's system resolver instead.
+func (s *Server) SetDoHURL(url string) { s.dohURL = url }
 
 // New builds a Server backed by st.
 func New(st *store.Store) (*Server, error) {
@@ -239,15 +245,16 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, st := range known {
+		hostnames := store.SplitPTRHostnames(st.PTRHostname)
 		row := ipRow{
 			IP:        st.IP,
-			PTR:       st.PTRHostname,
+			PTR:       strings.Join(hostnames, ", "),
 			FirstSeen: formatTime(st.FirstSeen),
 			LastSeen:  formatTime(st.LastSeen),
 			LastRTTMs: st.LastRTTMs,
 		}
-		if st.PTRHostname != "" {
-			loc := geo.Decode(st.PTRHostname)
+		if len(hostnames) > 0 {
+			loc := geo.DecodeBest(hostnames)
 			row.Country = loc.Country
 			row.CountryCode = geo.CountryCode(loc.Country)
 		}
@@ -388,27 +395,52 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "query.tmpl", data)
 }
 
+// conflictingLocations reports whether hostnames' matched, resolvable
+// entries decode to more than one distinct city/country. A single IP with
+// multiple PTRs normally agrees (an f-numeric and x-hex form of the same
+// host); disagreement would mean Google published genuinely inconsistent
+// PTRs for that IP, worth a log line even though DecodeBest silently picks
+// a deterministic winner.
+func conflictingLocations(hostnames []string) bool {
+	var city, country string
+	for _, h := range hostnames {
+		loc := geo.Decode(h)
+		if !loc.Matched || loc.City == "" {
+			continue
+		}
+		if city == "" {
+			city, country = loc.City, loc.Country
+		} else if loc.City != city || loc.Country != country {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveAndCachePTR does a live PTR lookup for ip and upserts the result
 // into ptr_cache, regardless of what's already cached. Shared by the
 // on-demand /query lookup (cache miss) and the background refresher.
 // Transient lookup failures (timeout, SERVFAIL) are not cached, so the next
 // lookup or refresher pass retries; only NXDOMAIN is cached as lookup_ok=0.
-func (s *Server) resolveAndCachePTR(ip string) (hostname string, ok bool) {
-	hostname, ok, err := resolver.LookupPTR(ip, ptrTimeout)
+func (s *Server) resolveAndCachePTR(ip string) (hostnames []string, ok bool) {
+	hostnames, ok, err := resolver.LookupPTR(ip, ptrTimeout, s.dohURL)
 	if err != nil {
 		log.Printf("ptr: lookup %s: %v (not cached)", ip, err)
-		return "", false
+		return nil, false
+	}
+	if conflictingLocations(hostnames) {
+		log.Printf("ptr: %s has PTR records disagreeing on location: %v", ip, hostnames)
 	}
 	entry := store.PTRCacheEntry{
 		IP:          ip,
-		PTRHostname: hostname,
+		PTRHostname: store.JoinPTRHostnames(hostnames),
 		LookupOK:    ok,
 		CheckedAt:   time.Now().UTC(),
 	}
 	if err := s.st.SavePTR(entry); err != nil {
 		log.Printf("ptr: SavePTR(%s): %v", ip, err)
 	}
-	return hostname, ok
+	return hostnames, ok
 }
 
 // StartPTRRefresher resolves one missing/stale ptr_cache entry per interval
@@ -428,18 +460,18 @@ func (s *Server) StartPTRRefresher(interval time.Duration) {
 }
 
 func (s *Server) lookup(ip string, data *queryData) {
-	var hostname string
+	var hostnames []string
 	var ok bool
 
 	if cached, err := s.st.GetPTR(ip, ptrCacheTTL); err == nil && cached != nil {
-		hostname, ok = cached.PTRHostname, cached.LookupOK
+		hostnames, ok = store.SplitPTRHostnames(cached.PTRHostname), cached.LookupOK
 	} else {
-		hostname, ok = s.resolveAndCachePTR(ip)
+		hostnames, ok = s.resolveAndCachePTR(ip)
 	}
 
 	if ok {
-		data.PTRHostname = hostname
-		loc := geo.Decode(hostname)
+		data.PTRHostname = strings.Join(hostnames, ", ")
+		loc := geo.DecodeBest(hostnames)
 		data.Matched = loc.Matched
 		data.AirportCode = loc.AirportCode
 		data.City = loc.City

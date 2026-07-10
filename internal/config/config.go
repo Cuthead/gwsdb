@@ -14,6 +14,11 @@ import (
 // Config is gwsdb's application config.
 type Config struct {
 	DNS DNS `json:"dns"`
+
+	// PTRDoHURL is the RFC 8484 DoH endpoint (wire format) used for PTR
+	// lookups, e.g. "https://dns.google/dns-query". Empty (the default)
+	// means resolve PTRs via the host's system resolver instead.
+	PTRDoHURL string `json:"ptrDohUrl"`
 }
 
 // DNS configures the Cloudflare DNS publisher. Publishing stays off unless

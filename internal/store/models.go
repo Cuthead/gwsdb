@@ -1,6 +1,28 @@
 package store
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// ptrHostnameSep joins multiple PTR hostnames into ptr_cache's single
+// ptr_hostname column -- Google sometimes publishes more than one PTR per
+// IP. "; " can't appear in a 1e100.net hostname, so splitting is unambiguous.
+const ptrHostnameSep = "; "
+
+// JoinPTRHostnames packs multiple PTR hostnames for storage in PTRCacheEntry.PTRHostname.
+func JoinPTRHostnames(hostnames []string) string {
+	return strings.Join(hostnames, ptrHostnameSep)
+}
+
+// SplitPTRHostnames unpacks a PTRCacheEntry.PTRHostname (or IPStatus.PTRHostname)
+// back into individual hostnames. Returns nil for "".
+func SplitPTRHostnames(joined string) []string {
+	if joined == "" {
+		return nil
+	}
+	return strings.Split(joined, ptrHostnameSep)
+}
 
 // Scan represents one execution of the gscan_quic scanner for a given scan mode.
 type Scan struct {

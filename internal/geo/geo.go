@@ -96,6 +96,39 @@ func Decode(hostname string) Location {
 	return loc
 }
 
+// DecodeBest decodes every hostname in hostnames and returns the most
+// specific match. Google sometimes publishes more than one PTR for the same
+// IP (e.g. an f-numeric and an x-hex form of the same host, which always
+// agree), but on the rare hostname that disagrees, a 3-letter airport-code
+// match (pattern 1/3) outranks a 2-letter regional match (pattern 2), which
+// outranks the "any" anycast fallback (pattern 4). Ties break on input
+// order, so callers should pass a deterministically ordered slice (e.g.
+// resolver.LookupPTR's sorted output) to get a stable result.
+func DecodeBest(hostnames []string) Location {
+	var best Location
+	bestRank := -1
+	for _, h := range hostnames {
+		loc := Decode(h)
+		if rank := decodeRank(loc); rank > bestRank {
+			best, bestRank = loc, rank
+		}
+	}
+	return best
+}
+
+func decodeRank(loc Location) int {
+	switch {
+	case !loc.Matched:
+		return 0
+	case loc.AirportCode == "any":
+		return 1
+	case len(loc.AirportCode) == 2:
+		return 2
+	default:
+		return 3
+	}
+}
+
 func lookupAirport(code string) (city, country string, ok bool) {
 	e, ok := airportCodes[code]
 	if !ok {
