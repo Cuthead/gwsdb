@@ -47,7 +47,7 @@
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>Query Result: {{.Query}}</b></td></tr>
 <tr>
 <td width="30%">PTR Record</td>
-<td><tt>{{if .PTRHostname}}{{.PTRHostname}}{{else}}<i>(no PTR record)</i>{{end}}</tt></td>
+<td><tt class="ptr-list">{{if .PTRHostname}}{{.PTRHostname}}{{else}}<i>(no PTR record)</i>{{end}}</tt></td>
 </tr>
 {{if .Matched}}
 <tr>

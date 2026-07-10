@@ -62,7 +62,7 @@
 {{range .IPs}}
 <tr data-ip="{{.IP}}" data-ptr="{{.PTR}}" data-country="{{.Country}}" data-status="{{.Status}}" data-first-seen="{{.FirstSeen}}" data-last-seen="{{.LastSeen}}" data-rtt="{{.LastRTTMs}}">
 <td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
-<td>{{if .PTR}}<tt>{{.PTR}}</tt>{{else}}-{{end}}</td>
+<td>{{if .PTR}}<tt class="ptr-list">{{.PTR}}</tt>{{else}}-{{end}}</td>
 <td>{{if .CountryCode}}<img src="/static/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
 <td>{{if eq .Status "Reachable"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td>
 <td>{{.FirstSeen}}</td>

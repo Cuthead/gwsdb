@@ -248,7 +248,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		hostnames := store.SplitPTRHostnames(st.PTRHostname)
 		row := ipRow{
 			IP:        st.IP,
-			PTR:       strings.Join(hostnames, ", "),
+			PTR:       strings.Join(hostnames, "\n"),
 			FirstSeen: formatTime(st.FirstSeen),
 			LastSeen:  formatTime(st.LastSeen),
 			LastRTTMs: st.LastRTTMs,
@@ -470,7 +470,7 @@ func (s *Server) lookup(ip string, data *queryData) {
 	}
 
 	if ok {
-		data.PTRHostname = strings.Join(hostnames, ", ")
+		data.PTRHostname = strings.Join(hostnames, "\n")
 		loc := geo.DecodeBest(hostnames)
 		data.Matched = loc.Matched
 		data.AirportCode = loc.AirportCode
