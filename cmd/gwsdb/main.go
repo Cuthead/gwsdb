@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/cuthead/gwsdb/internal/config"
 	"github.com/cuthead/gwsdb/internal/ingest"
 	"github.com/cuthead/gwsdb/internal/publish"
 	"github.com/cuthead/gwsdb/internal/recheck"
@@ -53,34 +54,25 @@ Usage:
   gwsdb recheck -db PATH -ip IP [-timeout 10s]`)
 }
 
-// dnsFlags holds the DNS-publish flags shared by serve and ingest: both can
-// reconcile the published GWS records after they change the store.
-type dnsFlags struct {
-	name  *string
-	ttl   *int
-	limit *int
-}
-
-func registerDNSFlags(fs *flag.FlagSet) dnsFlags {
-	return dnsFlags{
-		name:  fs.String("dns-name", "", "if set, publish top GWS IPs as A/AAAA records on this name after each recheck/ingest (needs CF_API_TOKEN and CF_ZONE_ID)"),
-		ttl:   fs.Int("dns-ttl", 300, "TTL in seconds for published DNS records"),
-		limit: fs.Int("dns-limit", 4, "max published records per address family"),
+// buildPublisher loads gwsdb's config.json (+ config.user.json overlay) from
+// configPath and returns a Publisher when DNS publishing is configured, or nil
+// when dns.name is unset. Fatal on unreadable config or bad credentials.
+// Shared by serve and ingest so both reconcile records after they change the
+// store.
+func buildPublisher(st *store.Store, configPath string) *publish.Publisher {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
 	}
-}
-
-// buildPublisher returns a Publisher when DNS publishing is configured, or nil
-// when -dns-name is empty. Fatal on misconfiguration (bad/missing credentials).
-func buildPublisher(st *store.Store, f dnsFlags) *publish.Publisher {
-	if *f.name == "" {
+	if cfg.DNS.Name == "" {
 		return nil
 	}
 	pub, err := publish.New(st, publish.Config{
-		APIToken: os.Getenv("CF_API_TOKEN"),
-		ZoneID:   os.Getenv("CF_ZONE_ID"),
-		Name:     *f.name,
-		TTL:      *f.ttl,
-		Limit:    *f.limit,
+		APIToken: cfg.DNS.CloudflareAPIToken,
+		ZoneID:   cfg.DNS.CloudflareZoneID,
+		Name:     cfg.DNS.Name,
+		TTL:      cfg.DNS.TTL,
+		Limit:    cfg.DNS.Limit,
 	})
 	if err != nil {
 		log.Fatalf("dns publish: %v", err)
@@ -92,7 +84,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
 	addr := fs.String("addr", ":8080", "address to listen on")
-	dns := registerDNSFlags(fs)
+	configPath := fs.String("config", "config.json", "path to gwsdb's config.json (holds DNS-publish settings)")
 	fs.Parse(args)
 
 	st, err := store.Open(*dbPath)
@@ -106,9 +98,9 @@ func runServe(args []string) {
 		log.Fatalf("build web server: %v", err)
 	}
 
-	if pub := buildPublisher(st, dns); pub != nil {
+	if pub := buildPublisher(st, *configPath); pub != nil {
 		srv.SetPublisher(pub)
-		log.Printf("dns publish enabled: %s (ttl=%ds, limit=%d/family)", *dns.name, *dns.ttl, *dns.limit)
+		log.Printf("dns publish enabled from %s", *configPath)
 	}
 
 	go srv.StartPTRRefresher(15 * time.Second)
@@ -123,17 +115,17 @@ func runServe(args []string) {
 func runIngest(args []string) {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
-	configPath := fs.String("config", "", "path to the gscan_quic config.json/config.user.json used for the scan")
-	scanDir := fs.String("scanner-dir", "", "dir gscan_quic ran in; base for relative OutputFile paths (defaults to -config's dir)")
+	scannerConfigPath := fs.String("scanner-config", "", "path to the gscan_quic config.json/config.user.json used for the scan")
+	scanDir := fs.String("scanner-dir", "", "dir gscan_quic ran in; base for relative OutputFile paths (defaults to -scanner-config's dir)")
 	logPath := fs.String("log", "", "path to the captured gscan_quic stdout log (optional)")
 	mode := fs.String("mode", "", "scan mode to ingest (SNI/QUIC/TLS/PING); defaults to the config's ScanMode")
 	output := fs.String("output", "", "override path to the scan output IP list; defaults to the config's OutputFile")
 	logOnly := fs.Bool("log-only", false, "ignore the output file even if present; derive hits from -log only (use when a later scan overwrote the output file at this path)")
-	dns := registerDNSFlags(fs)
+	configPath := fs.String("config", "config.json", "path to gwsdb's config.json for post-ingest DNS publish")
 	fs.Parse(args)
 
-	if *configPath == "" {
-		fmt.Fprintln(os.Stderr, "ingest: -config is required")
+	if *scannerConfigPath == "" {
+		fmt.Fprintln(os.Stderr, "ingest: -scanner-config is required")
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -145,7 +137,7 @@ func runIngest(args []string) {
 	defer st.Close()
 
 	scanID, err := ingest.Run(st, ingest.Options{
-		ConfigPath: *configPath,
+		ConfigPath: *scannerConfigPath,
 		ScanDir:    *scanDir,
 		LogPath:    *logPath,
 		ScanMode:   *mode,
@@ -160,7 +152,7 @@ func runIngest(args []string) {
 	// A bulk ingest can shift the top set a lot; reconcile the published
 	// records once, at the end, rather than per IP. Publish failure doesn't
 	// fail the ingest -- the scan is already saved.
-	if pub := buildPublisher(st, dns); pub != nil {
+	if pub := buildPublisher(st, *configPath); pub != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), ingestPublishTimeout)
 		defer cancel()
 		if err := pub.Sync(ctx); err != nil {
