@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/config"
@@ -35,6 +37,10 @@ func main() {
 		runDeleteScan(os.Args[2:])
 	case "recheck":
 		runRecheck(os.Args[2:])
+	case "dns-sync":
+		// Hidden: a one-shot DNS reconcile, spawned detached by recheck so
+		// the recheck process can exit without waiting on the Cloudflare API.
+		runDNSSync(os.Args[2:])
 	case "-h", "-help", "--help":
 		usage()
 	default:
@@ -223,16 +229,53 @@ func runRecheck(args []string) {
 		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", *ip, result.Reason, result.Detail)
 	}
 
-	// A recheck changed this IP's status, so the top set may have shifted;
-	// reconcile the published records. Publish failure doesn't fail the
-	// recheck -- the result is already saved.
-	if pub := buildPublisher(st, *configPath); pub != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), cliPublishTimeout)
-		defer cancel()
-		if err := pub.Sync(ctx); err != nil {
-			log.Printf("recheck: publish: %v", err)
-		} else {
-			log.Printf("recheck: dns publish synced")
+	// A recheck changed this IP's status, so the top set may have shifted.
+	// Reconcile the published records in a detached child process so this
+	// command exits immediately instead of blocking on the Cloudflare API.
+	if cfg, err := config.Load(*configPath); err != nil {
+		log.Printf("recheck: load config: %v", err)
+	} else if cfg.DNS.Name != "" {
+		if err := spawnDetachedPublish(*dbPath, *configPath); err != nil {
+			log.Printf("recheck: spawn publish: %v", err)
 		}
+	}
+}
+
+// spawnDetachedPublish starts "gwsdb dns-sync" in a new session so it outlives
+// this process, and returns without waiting. A slow Cloudflare API therefore
+// can't delay the caller's exit.
+func spawnDetachedPublish(dbPath, configPath string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "dns-sync", "-db", dbPath, "-config", configPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd.Start()
+}
+
+// runDNSSync is the hidden dns-sync subcommand: build the publisher from config
+// and run one reconcile. Spawned detached by recheck so publishing doesn't
+// block the recheck's exit.
+func runDNSSync(args []string) {
+	fs := flag.NewFlagSet("dns-sync", flag.ExitOnError)
+	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
+	configPath := fs.String("config", "config.json", "path to gwsdb's config.json")
+	fs.Parse(args)
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatalf("dns-sync: open store: %v", err)
+	}
+	defer st.Close()
+
+	pub := buildPublisher(st, *configPath)
+	if pub == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cliPublishTimeout)
+	defer cancel()
+	if err := pub.Sync(ctx); err != nil {
+		log.Printf("dns-sync: %v", err)
 	}
 }
