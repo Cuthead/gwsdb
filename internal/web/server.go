@@ -643,19 +643,24 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 }
 
 // maybeEnqueueRecheck schedules a re-scan of rep.IP if either we've never
-// tested it before (nothing on file to disagree with, but still worth a
-// first look since /report already gates on it being a Google IP) or this
-// report postdates our last check of it and disagrees with what that check
-// found. Evaluated once, right here at report-submission time, so each
-// report can trigger at most one recheck regardless of how the underlying
-// status changes later.
+// tested it before and the report claims it's usable (a first look might gain
+// us a working IP; an "unusable" claim about an IP nobody uses gains nothing,
+// and skipping it keeps the queue from being a free scanner of Google's
+// address space) or this report postdates our last check of it and disagrees
+// with what that check found. Evaluated once, right here at report-submission
+// time, so each report can trigger at most one recheck regardless of how the
+// underlying status changes later.
 func (s *Server) maybeEnqueueRecheck(reportID int64, rep store.IPReport) {
 	st, err := s.st.IPStatusFor(rep.IP)
 	if err != nil {
 		log.Printf("report: IPStatusFor(%s): %v", rep.IP, err)
 		return
 	}
-	if st != nil && st.HasCheck && (!rep.CreatedAt.After(st.LastCheckedAt) || rep.Verdict == st.LastCheckOK) {
+	if st == nil || !st.HasCheck {
+		if !rep.Verdict {
+			return
+		}
+	} else if !rep.CreatedAt.After(st.LastCheckedAt) || rep.Verdict == st.LastCheckOK {
 		return
 	}
 	if err := s.st.EnqueueRecheck(reportID, rep.IP, rep.CreatedAt); err != nil {
