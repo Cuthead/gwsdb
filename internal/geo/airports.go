@@ -255,6 +255,7 @@ var regionalCodes = map[string]place{
 	"qb": {"Morganton, NC", "United States"},
 	"qc": {"Morganton, NC", "United States"},
 	"qf": {"Salt Lake City, UT", "United States"},
+	"qg": {"Morganton, NC", "United States"},
 	"qh": {"Columbus, OH", "United States"},
 	"qi": {"Morganton, NC", "United States"},
 	"qk": {"Morganton, NC", "United States"},
