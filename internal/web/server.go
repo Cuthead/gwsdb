@@ -391,8 +391,14 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 // resolveAndCachePTR does a live PTR lookup for ip and upserts the result
 // into ptr_cache, regardless of what's already cached. Shared by the
 // on-demand /query lookup (cache miss) and the background refresher.
+// Transient lookup failures (timeout, SERVFAIL) are not cached, so the next
+// lookup or refresher pass retries; only NXDOMAIN is cached as lookup_ok=0.
 func (s *Server) resolveAndCachePTR(ip string) (hostname string, ok bool) {
-	hostname, ok = resolver.LookupPTR(ip, ptrTimeout)
+	hostname, ok, err := resolver.LookupPTR(ip, ptrTimeout)
+	if err != nil {
+		log.Printf("ptr: lookup %s: %v (not cached)", ip, err)
+		return "", false
+	}
 	loc := geo.Decode(hostname)
 	entry := store.PTRCacheEntry{
 		IP:          ip,
