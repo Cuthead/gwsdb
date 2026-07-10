@@ -1,6 +1,5 @@
 body { margin: 0; }
 .gwsdb-wrap { width: 760px; max-width: 100%; }
-.ptr-list { white-space: pre-line; }
 @media (max-width: 780px) {
 	input#searchInput { width: 60%; box-sizing: border-box; }
 	.gwsdb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }

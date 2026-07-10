@@ -25,13 +25,13 @@
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
 
-<p>Enter an IP address within a Google ASN to look up its PTR record and estimate its geographic location.</p>
+<p>Enter an IP address within a Google ASN to look up its PTR record, or a 1e100.net hostname to look up its A/AAAA records, and estimate its geographic location.</p>
 
 <form method="GET" action="/query">
 <table border="0" cellpadding="4" cellspacing="0">
 <tr>
-<td>IP Address</td>
-<td><input type="text" name="ip" size="24" value="{{.Query}}"></td>
+<td>IP or 1e100.net Hostname</td>
+<td><input type="text" name="ip" size="28" value="{{.Query}}"></td>
 <td><input type="submit" value="Query"></td>
 </tr>
 </table>
@@ -41,13 +41,41 @@
 <hr>
 {{if .Error}}
 <p><font color="#CC0000">{{.Error}}</font></p>
+{{else if .QueryIsHostname}}
+<div class="gwsdb-scroll">
+<table border="1" cellpadding="6" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE"><td colspan="3"><b>Query Result: {{.Query}}</b></td></tr>
+<tr bgcolor="#EEEEEE"><td><b>Hostname</b></td><td><b>A (IPv4)</b></td><td><b>AAAA (IPv6)</b></td></tr>
+{{range .HostnameForms}}
+<tr>
+<td><tt><a href="/query?ip={{.Hostname}}">{{.Hostname}}</a></tt></td>
+<td>{{if .IPv4}}{{range .IPv4}}<tt><a href="/query?ip={{.Addr}}">{{.Addr}}</a></tt> {{if eq .Status "Reachable"}}<font color="#008000">✓</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗</font>{{else}}-{{end}}<br>{{end}}{{else}}<i>none</i>{{end}}</td>
+<td>{{if .IPv6}}{{range .IPv6}}<tt><a href="/query?ip={{.Addr}}">{{.Addr}}</a></tt> {{if eq .Status "Reachable"}}<font color="#008000">✓</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗</font>{{else}}-{{end}}<br>{{end}}{{else}}<i>none</i>{{end}}</td>
+</tr>
+{{end}}
+{{if .Matched}}
+<tr>
+<td>Airport Code</td>
+<td colspan="2"><tt>{{.AirportCode}}</tt></td>
+</tr>
+<tr>
+<td>Estimated Location</td>
+<td colspan="2">{{if .City}}{{.City}}, {{.Country}}{{else}}<i>Airport code not in database, cannot estimate</i>{{end}}</td>
+</tr>
+{{else}}
+<tr>
+<td colspan="3"><i>This does not match the known 1e100.net naming convention, cannot estimate a location</i></td>
+</tr>
+{{end}}
+</table>
+</div>
 {{else}}
 <div class="gwsdb-scroll">
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>Query Result: {{.Query}}</b></td></tr>
 <tr>
 <td width="30%">PTR Record</td>
-<td><tt class="ptr-list">{{if .PTRHostname}}{{.PTRHostname}}{{else}}<i>(no PTR record)</i>{{end}}</tt></td>
+<td><tt>{{if .PTRHostnames}}{{range $i, $h := .PTRHostnames}}{{if $i}}<br>{{end}}<a href="/query?ip={{$h}}">{{$h}}</a>{{end}}{{else}}<i>(no PTR record)</i>{{end}}</tt></td>
 </tr>
 {{if .Matched}}
 <tr>
@@ -58,7 +86,7 @@
 <td>Estimated Location</td>
 <td>{{if .City}}{{.City}}, {{.Country}}{{else}}<i>Airport code not in database, cannot estimate</i>{{end}}</td>
 </tr>
-{{else if .PTRHostname}}
+{{else if .PTRHostnames}}
 <tr>
 <td>Estimated Location</td>
 <td><i>This PTR does not match the known 1e100.net naming convention, cannot parse</i></td>

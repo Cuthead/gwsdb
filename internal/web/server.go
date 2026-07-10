@@ -206,10 +206,11 @@ const maxScansListed = 500
 
 type ipRow struct {
 	IP          string
-	PTR         string // cached PTR hostname, "" if never looked up
-	Country     string // best-effort, decoded from PTR, "" if unknown
-	CountryCode string // ISO 3166-1 alpha-2, "" if unknown
-	Status      string // "Reachable" / "Unreachable" / "-" (never explicitly re-checked)
+	PTR         string   // cached PTR hostname(s), newline-joined, "" if never looked up; kept for client-side search matching
+	PTRList     []string // same hostnames, for rendering one linked entry per PTR record
+	Country     string   // best-effort, decoded from PTR, "" if unknown
+	CountryCode string   // ISO 3166-1 alpha-2, "" if unknown
+	Status      string   // "Reachable" / "Unreachable" / "-" (never explicitly re-checked)
 	FirstSeen   string
 	LastSeen    string
 	LastRTTMs   int
@@ -249,6 +250,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		row := ipRow{
 			IP:        st.IP,
 			PTR:       strings.Join(hostnames, "\n"),
+			PTRList:   hostnames,
 			FirstSeen: formatTime(st.FirstSeen),
 			LastSeen:  formatTime(st.LastSeen),
 			LastRTTMs: st.LastRTTMs,
@@ -343,26 +345,48 @@ func describeProbe(c store.IPCheck) string {
 }
 
 type queryData struct {
-	Title       string
-	Query       string
-	Submitted   bool
-	Error       string
-	PTRHostname string
-	Matched     bool
-	AirportCode string
-	City        string
-	Country     string
-	HasHistory  bool
-	Status      string // "Reachable" / "Unreachable" / "-"
-	FirstSeen   string
-	LastSeen    string
-	TimesSeen   int
-	LastRTTMs   int
-	Checks      []checkRow
+	Title        string
+	Query        string
+	Submitted    bool
+	Error        string
+	PTRHostnames []string
+	Matched      bool
+	AirportCode  string
+	City         string
+	Country      string
+	HasHistory   bool
+	Status       string // "Reachable" / "Unreachable" / "-"
+	FirstSeen    string
+	LastSeen     string
+	TimesSeen    int
+	LastRTTMs    int
+	Checks       []checkRow
 
 	Reports       []reportRow
 	UsableCount   int
 	UnusableCount int
+
+	// QueryIsHostname is true when Query was a 1e100.net hostname rather
+	// than an IP -- the query page shows HostnameForms (forward A/AAAA
+	// lookups for the queried name and its decimal<->hex sibling) instead
+	// of the IP-oriented PTR/history/report sections.
+	QueryIsHostname bool
+	HostnameForms   []hostnameForm
+}
+
+// hostnameForm is one server-index form (decimal -f or hex -x) of a
+// 1e100.net hostname, with its forward-resolved addresses.
+type hostnameForm struct {
+	Hostname string
+	IPv4     []addrStatus
+	IPv6     []addrStatus
+}
+
+// addrStatus is a resolved A/AAAA address paired with its known
+// reachability, if any (blank when the address has no scan history).
+type addrStatus struct {
+	Addr   string
+	Status string // "Reachable" / "Unreachable" / "-"
 }
 
 // reportRow is one community report rendered on the query page. Only the
@@ -378,18 +402,26 @@ type reportRow struct {
 }
 
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
-	ipParam := strings.TrimSpace(r.URL.Query().Get("ip"))
-	data := queryData{Title: "Query", Query: ipParam}
+	q := strings.TrimSpace(r.URL.Query().Get("ip"))
+	data := queryData{Title: "Query", Query: q}
 
-	if ipParam != "" {
+	switch {
+	case q == "":
+		// not submitted; render the empty form
+	case net.ParseIP(q) != nil:
 		data.Submitted = true
-		if net.ParseIP(ipParam) == nil {
-			data.Error = "Not a valid IP address"
-		} else if info, ok := s.lookupASN(ipParam); !ok || !isGoogleASN(info) {
+		if info, ok := s.lookupASN(q); !ok || !isGoogleASN(info) {
 			data.Error = "This IP does not belong to a Google ASN"
 		} else {
-			s.lookup(ipParam, &data)
+			s.lookup(q, &data)
 		}
+	case geo.IsHostname(q):
+		data.Submitted = true
+		data.QueryIsHostname = true
+		s.lookupHostname(q, &data)
+	default:
+		data.Submitted = true
+		data.Error = "Not a valid IP address or 1e100.net hostname"
 	}
 
 	s.render(w, "query.tmpl", data)
@@ -459,6 +491,64 @@ func (s *Server) StartPTRRefresher(interval time.Duration) {
 	}
 }
 
+// reachabilityStatus derives the display status from an IPStatus row ("-" if
+// st is nil, meaning the address has no scan history at all).
+func reachabilityStatus(st *store.IPStatus) string {
+	switch {
+	case st == nil || !st.HasCheck:
+		return "-"
+	case st.LastCheckOK:
+		return "Reachable"
+	default:
+		return "Unreachable"
+	}
+}
+
+// statusForIP is reachabilityStatus for a single address looked up by IP,
+// for the compact per-address display in hostname-mode query results.
+func (s *Server) statusForIP(ip string) string {
+	st, err := s.st.IPStatusFor(ip)
+	if err != nil {
+		log.Printf("query: IPStatusFor(%s): %v", ip, err)
+	}
+	return reachabilityStatus(st)
+}
+
+// lookupHostname handles querying by a 1e100.net hostname directly (as
+// opposed to by IP): decodes the location from the hostname's naming
+// convention, then forward-resolves A/AAAA for it and, where a
+// decimal<->hex sibling form exists (e.g. f202 <-> xca, the same server
+// under its other base -- see geo.SiblingHostname), for that form too.
+func (s *Server) lookupHostname(hostname string, data *queryData) {
+	loc := geo.Decode(hostname)
+	data.Matched = loc.Matched
+	data.AirportCode = loc.AirportCode
+	data.City = loc.City
+	data.Country = loc.Country
+
+	data.HostnameForms = append(data.HostnameForms, s.resolveHostnameForm(hostname))
+	if sibling, ok := geo.SiblingHostname(hostname); ok {
+		data.HostnameForms = append(data.HostnameForms, s.resolveHostnameForm(sibling))
+	}
+}
+
+// resolveHostnameForm forward-resolves hostname's A/AAAA records and looks
+// up each address's known reachability (blank/"-" if never scanned).
+func (s *Server) resolveHostnameForm(hostname string) hostnameForm {
+	ipv4, ipv6, _, err := resolver.LookupHost(hostname, ptrTimeout, s.dohURL)
+	if err != nil {
+		log.Printf("query: LookupHost(%s): %v", hostname, err)
+	}
+	form := hostnameForm{Hostname: hostname}
+	for _, addr := range ipv4 {
+		form.IPv4 = append(form.IPv4, addrStatus{Addr: addr, Status: s.statusForIP(addr)})
+	}
+	for _, addr := range ipv6 {
+		form.IPv6 = append(form.IPv6, addrStatus{Addr: addr, Status: s.statusForIP(addr)})
+	}
+	return form
+}
+
 func (s *Server) lookup(ip string, data *queryData) {
 	var hostnames []string
 	var ok bool
@@ -470,7 +560,7 @@ func (s *Server) lookup(ip string, data *queryData) {
 	}
 
 	if ok {
-		data.PTRHostname = strings.Join(hostnames, "\n")
+		data.PTRHostnames = hostnames
 		loc := geo.DecodeBest(hostnames)
 		data.Matched = loc.Matched
 		data.AirportCode = loc.AirportCode
@@ -488,15 +578,8 @@ func (s *Server) lookup(ip string, data *queryData) {
 		data.LastSeen = formatTime(st.LastSeen)
 		data.TimesSeen = st.TimesSeen
 		data.LastRTTMs = st.LastRTTMs
-		switch {
-		case !st.HasCheck:
-			data.Status = "-"
-		case st.LastCheckOK:
-			data.Status = "Reachable"
-		default:
-			data.Status = "Unreachable"
-		}
 	}
+	data.Status = reachabilityStatus(st)
 
 	const maxHistoryRows = 30
 	checks, err := s.st.IPHistory(ip, maxHistoryRows)

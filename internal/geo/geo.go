@@ -4,7 +4,9 @@
 package geo
 
 import (
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +24,12 @@ var pattern3 = regexp.MustCompile(`^([a-z]{2})([a-z]{3})([a-z]{1,3})(?:-([a-z0-9
 // pattern 4: e.g. any-in-201d.1e100.net (anycast, no fixed airport)
 // any-in-[hex, bare, no f/x marker]
 var pattern4 = regexp.MustCompile(`^any-in-([0-9a-f]{2,6})\.1e100\.net\.?$`)
+
+// siblingPattern isolates the trailing "-in-f<dec>" / "-in-x<hex>" server
+// index marker shared by patterns 1-3, so it can be swapped to derive the
+// other base's hostname for the same server. Doesn't match pattern 4 (no
+// f/x marker), which has no sibling form.
+var siblingPattern = regexp.MustCompile(`^(.+-in-)(?:f(\d{1,3})|x([0-9a-f]{2}))(\.1e100\.net\.?)$`)
 
 // Location is the result of decoding a 1e100.net PTR hostname.
 type Location struct {
@@ -94,6 +102,44 @@ func Decode(hostname string) Location {
 	}
 
 	return loc
+}
+
+// IsHostname reports whether s is a 1e100.net hostname (with or without a
+// trailing dot), as opposed to an IP address or unrelated input.
+func IsHostname(s string) bool {
+	s = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
+	return strings.HasSuffix(s, ".1e100.net")
+}
+
+// SiblingHostname derives the other server-index base for hostname: given
+// the decimal form (-in-f202) it returns the hex form (-in-xca) and vice
+// versa. Both name the same server -- Google publishes both PTRs for it --
+// so this lets the query page show one when given the other. Returns
+// ok=false for hostnames with no sibling form, including pattern 4's "any"
+// anycast hosts (bare hex, no f/x marker) and anything not ending in
+// ".1e100.net".
+func SiblingHostname(hostname string) (sibling string, ok bool) {
+	if !IsHostname(hostname) {
+		return "", false
+	}
+	h := strings.ToLower(strings.TrimSpace(hostname))
+	m := siblingPattern.FindStringSubmatch(h)
+	if m == nil {
+		return "", false
+	}
+	prefix, decPart, hexPart, suffix := m[1], m[2], m[3], m[4]
+	if decPart != "" {
+		n, err := strconv.Atoi(decPart)
+		if err != nil || n > 0xff {
+			return "", false
+		}
+		return fmt.Sprintf("%sx%02x%s", prefix, n, suffix), true
+	}
+	n, err := strconv.ParseUint(hexPart, 16, 8)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%sf%d%s", prefix, n, suffix), true
 }
 
 // DecodeBest decodes every hostname in hostnames and returns the most
