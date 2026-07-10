@@ -2,6 +2,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"html/template"
@@ -81,7 +82,18 @@ const maxReportCommentLen = 500
 type Server struct {
 	st   *store.Store
 	tmpl *template.Template
+	pub  Publisher // nil when DNS publishing is not configured
 }
+
+// Publisher reconciles the published GWS DNS records with the store's current
+// top IPs. The recheck worker calls it after a user-driven recheck.
+type Publisher interface {
+	Sync(ctx context.Context) error
+}
+
+// SetPublisher enables DNS publishing after a recheck. Passing nil (the
+// default) disables it.
+func (s *Server) SetPublisher(p Publisher) { s.pub = p }
 
 // New builds a Server backed by st.
 func New(st *store.Store) (*Server, error) {

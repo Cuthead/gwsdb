@@ -553,6 +553,37 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 	return out, rows.Err()
 }
 
+// TopIPsForPublish returns up to limit IPs of the given address family
+// (4 or 6) to publish as DNS records, most-seen first with lowest RTT
+// breaking ties. Only IPs whose most recent check succeeded are returned, so
+// a known-dead IP is never published; times_seen/RTT are read as-is (no
+// freshness window, since recheck timing is user-driven, not scheduled).
+func (s *Store) TopIPsForPublish(family, limit int) ([]string, error) {
+	isIPv6 := 0
+	if family == 6 {
+		isIPv6 = 1
+	}
+	rows, err := s.db.Query(`
+		SELECT ip FROM ip_status
+		WHERE is_ipv6 = ? AND last_check_ok = 1
+		ORDER BY times_seen DESC, last_rtt_ms ASC
+		LIMIT ?`, isIPv6, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		ips = append(ips, ip)
+	}
+	return ips, rows.Err()
+}
+
 // IPHistory returns the most recent availability checks for ip, newest first.
 func (s *Store) IPHistory(ip string, limit int) ([]IPCheck, error) {
 	rows, err := s.db.Query(`
