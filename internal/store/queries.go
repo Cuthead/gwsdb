@@ -559,9 +559,10 @@ func (s *Store) ListKnownIPs(opts ListKnownIPsOptions) ([]IPStatus, error) {
 
 // TopIPsForPublish returns up to limit IPs of the given address family
 // (4 or 6) to publish as DNS records, most-seen first with lowest RTT
-// breaking ties. Only IPs whose most recent check succeeded are returned, so
-// a known-dead IP is never published; times_seen/RTT are read as-is (no
-// freshness window, since recheck timing is user-driven, not scheduled).
+// breaking ties. Only IPs whose most recent check succeeded and that have a
+// measured RTT are returned, so a known-dead or unmeasured IP is never
+// published; times_seen/RTT are read as-is (no freshness window, since
+// recheck timing is user-driven, not scheduled).
 func (s *Store) TopIPsForPublish(family, limit int) ([]string, error) {
 	isIPv6 := 0
 	if family == 6 {
@@ -569,7 +570,7 @@ func (s *Store) TopIPsForPublish(family, limit int) ([]string, error) {
 	}
 	rows, err := s.db.Query(`
 		SELECT ip FROM ip_status
-		WHERE is_ipv6 = ? AND last_check_ok = 1
+		WHERE is_ipv6 = ? AND last_check_ok = 1 AND last_rtt_ms IS NOT NULL
 		ORDER BY times_seen DESC, last_rtt_ms ASC
 		LIMIT ?`, isIPv6, limit)
 	if err != nil {
