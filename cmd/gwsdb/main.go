@@ -48,17 +48,16 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `gwsdb - GWS Database
 
 Usage:
-  gwsdb serve  -db PATH [-addr :8080]
-  gwsdb ingest -db PATH -config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]
+  gwsdb serve  -db PATH [-addr :8080] [-config config.json]
+  gwsdb ingest -db PATH -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH] [-config config.json]
   gwsdb delete-scan -db PATH -id N
-  gwsdb recheck -db PATH -ip IP [-timeout 10s]`)
+  gwsdb recheck -db PATH -ip IP [-timeout 10s] [-config config.json]`)
 }
 
-// buildPublisher loads gwsdb's config.json (+ config.user.json overlay) from
-// configPath and returns a Publisher when DNS publishing is configured, or nil
-// when dns.name is unset. Fatal on unreadable config or bad credentials.
-// Shared by serve and ingest so both reconcile records after they change the
-// store.
+// buildPublisher loads gwsdb's config.json from configPath and returns a
+// Publisher when DNS publishing is configured, or nil when dns.name is unset.
+// Fatal on unreadable config or bad credentials. Shared by serve, ingest and
+// recheck so all three reconcile records after they change the store.
 func buildPublisher(st *store.Store, configPath string) *publish.Publisher {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -153,7 +152,7 @@ func runIngest(args []string) {
 	// records once, at the end, rather than per IP. Publish failure doesn't
 	// fail the ingest -- the scan is already saved.
 	if pub := buildPublisher(st, *configPath); pub != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), ingestPublishTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cliPublishTimeout)
 		defer cancel()
 		if err := pub.Sync(ctx); err != nil {
 			log.Printf("ingest: publish: %v", err)
@@ -163,8 +162,9 @@ func runIngest(args []string) {
 	}
 }
 
-// ingestPublishTimeout bounds the post-ingest DNS reconcile.
-const ingestPublishTimeout = 15 * time.Second
+// cliPublishTimeout bounds the one-shot DNS reconcile a CLI command runs after
+// it changes the store (ingest, recheck).
+const cliPublishTimeout = 15 * time.Second
 
 func runDeleteScan(args []string) {
 	fs := flag.NewFlagSet("delete-scan", flag.ExitOnError)
@@ -195,6 +195,7 @@ func runRecheck(args []string) {
 	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
 	ip := fs.String("ip", "", "IP address to re-test")
 	timeout := fs.Duration("timeout", 10*time.Second, "probe timeout")
+	configPath := fs.String("config", "config.json", "path to gwsdb's config.json for post-recheck DNS publish")
 	fs.Parse(args)
 
 	if *ip == "" {
@@ -220,5 +221,18 @@ func runRecheck(args []string) {
 		fmt.Printf("OK ip=%s rtt=%dms\n", *ip, result.RTTMs)
 	} else {
 		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", *ip, result.Reason, result.Detail)
+	}
+
+	// A recheck changed this IP's status, so the top set may have shifted;
+	// reconcile the published records. Publish failure doesn't fail the
+	// recheck -- the result is already saved.
+	if pub := buildPublisher(st, *configPath); pub != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), cliPublishTimeout)
+		defer cancel()
+		if err := pub.Sync(ctx); err != nil {
+			log.Printf("recheck: publish: %v", err)
+		} else {
+			log.Printf("recheck: dns publish synced")
+		}
 	}
 }
