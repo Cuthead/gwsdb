@@ -297,24 +297,11 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Crawler/archiver path: full server-rendered table, gated on the same
-	// cheap PoolVersion an ETag so a repeat crawl (Googlebot recrawls
-	// periodically; IA's Save Page Now can be re-run) costs nothing beyond
-	// that one query when nothing has changed since the last visit.
-	version, err := s.st.PoolVersion()
-	if err != nil {
-		log.Printf("home: PoolVersion: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	etag := fmt.Sprintf(`"pool-%d"`, version)
-	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-
+	// Crawler/archiver path: full server-rendered table. No ETag/304 here --
+	// this deployment sits behind Cloudflare with HTML Auto Minify on, which
+	// strips the origin's ETag on the way out (its minified bytes no longer
+	// match the hash), so no client ever sees it to send back. Revisit if
+	// Auto Minify gets turned off or CF is removed from the path.
 	ips, scanMode, stats, err := s.loadPool()
 	if err != nil {
 		log.Printf("home: loadPool: %v", err)
