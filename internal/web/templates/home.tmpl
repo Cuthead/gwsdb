@@ -3,6 +3,7 @@
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{if not .Bot}}<noscript><meta http-equiv="refresh" content="0;url=/?nojs=1"></noscript>{{end}}
 <title>Home - GWS Database</title>
 <link rel="stylesheet" href="/static/gwsdb.css">
 </head>
@@ -69,7 +70,7 @@
 </table>
 {{else}}
 
-<noscript><p><i>This page needs JavaScript enabled -- the IP list is fetched and rendered client-side so repeat visits can be served from a local cache instead of re-querying the server.</i></p></noscript>
+<noscript><p><i>This page needs JavaScript to fetch and render the IP list client-side. You should have been redirected automatically -- if not, <a href="/?nojs=1">click here for the full list</a>.</i></p></noscript>
 
 <p id="poolStatus">Loading…</p>
 

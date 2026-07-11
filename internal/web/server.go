@@ -292,12 +292,17 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isCrawlerUA(r.UserAgent()) {
+	// nojs=1 is how a JS-disabled browser gets here: home.tmpl's <head> has a
+	// <noscript><meta http-equiv="refresh" ...> pointing at this, which the
+	// HTML parser honors regardless of script execution, so NoScript-style
+	// users land on the full render automatically instead of an empty shell.
+	if !isCrawlerUA(r.UserAgent()) && r.URL.Query().Get("nojs") != "1" {
 		s.render(w, "home.tmpl", homeData{Title: "Home"})
 		return
 	}
 
-	// Crawler/archiver path: full server-rendered table. No ETag/304 here --
+	// Crawler/archiver and nojs=1 path: full server-rendered table. No
+	// ETag/304 here --
 	// this deployment sits behind Cloudflare with HTML Auto Minify on, which
 	// strips the origin's ETag on the way out (its minified bytes no longer
 	// match the hash), so no client ever sees it to send back. Revisit if
