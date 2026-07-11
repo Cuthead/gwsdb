@@ -8,4 +8,9 @@ export interface Env {
 	// parseLogTimestamp for why this can't just be assumed as the Worker's
 	// own timezone.
 	LOG_TZ_OFFSET_MINUTES?: string;
+	// Injected automatically by Cloudflare Pages at request time (see
+	// src/html.ts's buildInfoFromEnv) -- not set in wrangler.jsonc.
+	CF_PAGES_COMMIT_SHA?: string;
+	CF_PAGES_BRANCH?: string;
+	CF_PAGES_URL?: string;
 }
