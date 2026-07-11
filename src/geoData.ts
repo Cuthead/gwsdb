@@ -444,6 +444,7 @@ export const airportCodes: Record<string, Place> = {
 	"bos": { city: "Boston, MA", country: "United States" },
 	"cbf": { city: "Council Bluffs, IA", country: "United States" },
 	"clt": { city: "Charlotte, NC", country: "United States" },
+	"cmh" :{ city: "Columbus, OH", country: "United States"},
 	"den": { city: "Denver, CO", country: "United States" },
 	"dfw": { city: "Dallas-Fort Worth, TX", country: "United States" },
 	"dls": { city: "The Dalles, OR", country: "United States" },

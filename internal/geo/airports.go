@@ -448,6 +448,7 @@ var airportCodes = map[string]place{
 	"bos": {"Boston, MA", "United States"},
 	"cbf": {"Council Bluffs, IA", "United States"},
 	"clt": {"Charlotte, NC", "United States"},
+	"cmh": {"Columbus, OH", "United States"},
 	"den": {"Denver, CO", "United States"},
 	"dfw": {"Dallas-Fort Worth, TX", "United States"},
 	"dls": {"The Dalles, OR", "United States"},
