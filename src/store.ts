@@ -102,6 +102,80 @@ export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise
 	}
 }
 
+// POOL_REFRESH_CHUNK caps how many IPs one refreshPoolForIPs statement
+// covers -- each IP appears twice in the generated SQL (once per CTE's
+// WHERE ip IN (...)), so this keeps bound-parameter counts well under D1's
+// per-statement limit even when a bulk ingest touches thousands of IPs.
+const POOL_REFRESH_CHUNK = 100;
+
+// refreshPoolForIPs recomputes and upserts the ip_pool row for each of ips,
+// scoped to just those IPs -- the same aggregation migrations/
+// 0002_materialize_ip_pool.sql's backfill used to populate the whole table,
+// just with `WHERE ip_checks.ip IN (...)` added to both CTEs so SQLite can
+// filter before doing the per-IP window-function ranking, rather than
+// recomputing the aggregate over the entire ip_checks table. Callers must
+// invoke this after every ip_checks write (insertCheckRows, saveRecheckResult)
+// -- upsert-only is safe here because both callers only ever add a check
+// row for an IP that already has (or now has) an ok=1 history, so the
+// `HAVING times_seen > 0` gate below is always satisfied for a just-written IP.
+export async function refreshPoolForIPs(db: D1Database, ips: string[]): Promise<void> {
+	const unique = [...new Set(ips)];
+	for (let i = 0; i < unique.length; i += POOL_REFRESH_CHUNK) {
+		const chunk = unique.slice(i, i + POOL_REFRESH_CHUNK);
+		const placeholders = chunk.map(() => "?").join(",");
+		await db
+			.prepare(
+				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
+				WITH ranked AS (
+					SELECT
+						ip, ok, rtt_ms, scan_id, scan_mode, checked_at,
+						ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn_any,
+						ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at DESC, id DESC) AS rn_ok_desc,
+						ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at ASC, id ASC) AS rn_ok_asc
+					FROM ip_checks
+					WHERE ip IN (${placeholders})
+				),
+				counts AS (
+					SELECT
+						ip,
+						CASE WHEN instr(ip, ':') > 0 THEN 1 ELSE 0 END AS is_ipv6,
+						COUNT(CASE WHEN ok = 1 THEN 1 END) AS times_seen
+					FROM ip_checks
+					WHERE ip IN (${placeholders})
+					GROUP BY ip
+					HAVING times_seen > 0
+				)
+				SELECT
+					counts.ip            AS ip,
+					counts.is_ipv6       AS is_ipv6,
+					last_ok.scan_mode    AS scan_mode,
+					first_ok.checked_at  AS first_seen,
+					last_ok.checked_at   AS last_seen,
+					last_ok.scan_id      AS last_scan_id,
+					last_ok.rtt_ms       AS last_rtt_ms,
+					counts.times_seen    AS times_seen,
+					last_any.checked_at  AS last_checked_at,
+					last_any.ok          AS last_check_ok
+				FROM counts
+				JOIN ranked last_ok  ON last_ok.ip = counts.ip  AND last_ok.ok = 1 AND last_ok.rn_ok_desc = 1
+				JOIN ranked first_ok ON first_ok.ip = counts.ip AND first_ok.ok = 1 AND first_ok.rn_ok_asc = 1
+				JOIN ranked last_any ON last_any.ip = counts.ip AND last_any.rn_any = 1
+				ON CONFLICT(ip) DO UPDATE SET
+					is_ipv6 = excluded.is_ipv6,
+					scan_mode = excluded.scan_mode,
+					first_seen = excluded.first_seen,
+					last_seen = excluded.last_seen,
+					last_scan_id = excluded.last_scan_id,
+					last_rtt_ms = excluded.last_rtt_ms,
+					times_seen = excluded.times_seen,
+					last_checked_at = excluded.last_checked_at,
+					last_check_ok = excluded.last_check_ok`,
+			)
+			.bind(...chunk, ...chunk)
+			.run();
+	}
+}
+
 // isKnownGood reports whether ip has ever had a successful check recorded --
 // mirrors Go's live "EXISTS(SELECT 1 FROM ip_checks WHERE ip = ? AND ok = 1)"
 // query in SaveScan. Callers should memoize per ingest run (see

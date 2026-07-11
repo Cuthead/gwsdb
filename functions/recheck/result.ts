@@ -7,7 +7,7 @@
 // so they happen on every submitted result here too.
 import { checkBearerAuth } from "../../src/auth";
 import { syncPublish } from "../../src/publish";
-import { markRecheckProcessed, pruneRecheckQueue, saveRecheckResult } from "../../src/store";
+import { markRecheckProcessed, pruneRecheckQueue, refreshPoolForIPs, saveRecheckResult } from "../../src/store";
 import type { Env } from "../../src/env";
 
 // RECHECK_QUEUE_RETENTION_DAYS mirrors internal/web/recheck.go's
@@ -58,6 +58,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		scanMode: body.scanMode,
 		configScanId: body.configScanId ?? null,
 	});
+	await refreshPoolForIPs(env.DB, [body.ip]);
 	await markRecheckProcessed(env.DB, body.id, body.ok, checkedAt);
 	await pruneRecheckQueue(env.DB, RECHECK_QUEUE_RETENTION_DAYS);
 

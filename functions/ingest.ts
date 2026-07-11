@@ -7,7 +7,7 @@ import { streamLines } from "../src/lineStream";
 import { scanPassA, scanPassB } from "../src/logParser";
 import { syncPublish } from "../src/publish";
 import { forMode, type GScannerConfig } from "../src/scanConfig";
-import { type CheckRow, insertCheckRows, insertScan, isKnownGood } from "../src/store";
+import { type CheckRow, insertCheckRows, insertScan, isKnownGood, refreshPoolForIPs } from "../src/store";
 import type { Scan } from "../src/types";
 import type { Env } from "../src/env";
 
@@ -105,8 +105,14 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 		return good;
 	}
 
+	// Tracks every IP this run wrote an ip_checks row for (across both
+	// passes), so ip_pool only gets recomputed for the IPs that could have
+	// actually changed -- see refreshPoolForIPs's module comment.
+	const touchedIPs = new Set<string>(passA.results.keys());
+
 	let pending: CheckRow[] = [];
 	await scanPassB(streamLines(openLogStream()), tzOffsetMinutes, checkKnownGood, async (row) => {
+		touchedIPs.add(row.ip);
 		pending.push({
 			scanId,
 			ip: row.ip,
@@ -124,6 +130,8 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 		}
 	});
 	if (pending.length > 0) await insertCheckRows(env.DB, pending);
+
+	await refreshPoolForIPs(env.DB, [...touchedIPs]);
 
 	// A bulk ingest can shift the top set a lot; reconcile published DNS
 	// records after responding so a slow Cloudflare API call doesn't add
