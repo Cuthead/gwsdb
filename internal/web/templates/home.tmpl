@@ -27,6 +27,48 @@
 
 <p>The table below lists tracked Google Web Server (GWS) IP addresses and their reachability status.</p>
 
+{{if .Bot}}
+{{/* Crawler/archiver path (see isCrawlerUA in server.go): the whole list
+     server-rendered, self-contained, no JS -- so a one-shot fetcher and an
+     archived snapshot both get real content instead of an empty shell. */}}
+{{if .IPs}}
+<div class="gwsdb-scroll">
+<table border="1" cellpadding="4" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE">
+<td><b>IP Address</b></td>
+<td><b>PTR</b></td>
+<td><b>Country</b></td>
+<td><b>Status</b></td>
+<td><b>First Seen</b></td>
+<td><b>Last Reachable</b></td>
+<td><b>Last RTT</b></td>
+</tr>
+{{range .IPs}}
+<tr>
+<td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
+<td>{{if .PTRList}}<tt>{{range $i, $h := .PTRList}}{{if $i}}<br>{{end}}<a href="/query?ip={{$h}}">{{$h}}</a>{{end}}</tt>{{else}}-{{end}}</td>
+<td>{{if .CountryCode}}<img src="/static/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
+<td>{{if eq .Status "Reachable"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td>
+<td>{{.FirstSeen}}</td>
+<td>{{.LastSeen}}</td>
+<td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td>
+</tr>
+{{end}}
+</table>
+</div>
+{{else}}
+<p><i>No data yet. Please run a scan and import the results first.</i></p>
+{{end}}
+
+<hr>
+<table border="0" cellpadding="2" cellspacing="0">
+<tr><td colspan="2"><b>Statistics</b></td></tr>
+<tr><td>Total Known IPs</td><td>{{.Stats.TotalKnownIPs}}</td></tr>
+<tr><td>Total Scans</td><td>{{.Stats.TotalScans}}</td></tr>
+<tr><td>Last Scan</td><td>{{.LastScanAt}}{{if .ScanMode}} ({{.ScanMode}}){{end}}</td></tr>
+</table>
+{{else}}
+
 <noscript><p><i>This page needs JavaScript enabled -- the IP list is fetched and rendered client-side so repeat visits can be served from a local cache instead of re-querying the server.</i></p></noscript>
 
 <p id="poolStatus">Loading…</p>
@@ -86,6 +128,7 @@
 <tr><td>Total Scans</td><td id="totalScans">-</td></tr>
 <tr><td>Last Scan</td><td id="lastScan">-</td></tr>
 </table>
+{{end}}
 
 </font>
 </td>

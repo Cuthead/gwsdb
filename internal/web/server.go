@@ -234,6 +234,43 @@ type ipRow struct {
 
 type homeData struct {
 	Title string
+
+	// Bot and the fields below are only populated for the crawler/archiver
+	// path (see isCrawlerUA): a full server-rendered table, so a one-shot
+	// fetcher that never runs home.js's client-side render still gets the
+	// list, and an archived snapshot's HTML is self-contained rather than
+	// depending on a live /api/pool fetch at replay time.
+	Bot        bool
+	IPs        []ipRow
+	Count      int
+	ScanMode   string
+	Stats      store.Stats
+	LastScanAt string
+}
+
+// crawlerUAs are substrings (matched case-insensitively) identifying
+// well-known bots and web archivers. These skip the client-side
+// fetch-and-cache path (see handleHome) for two reasons: search/social
+// crawlers commonly don't execute JS at all, and an archiver's JS -- if it
+// does run -- would replay later against a live /api/pool that may no
+// longer reflect (or even reach) the state at capture time, leaving the
+// archived snapshot showing a blank shell instead of the list it captured.
+var crawlerUAs = []string{
+	"bot", "crawl", "spider", "slurp", "archiver", "archive.org",
+	"archive.ph", "archive.today", "heritrix", "facebookexternalhit",
+	"embedly", "quora link preview", "outbrain", "pinterest", "whatsapp",
+	"telegrambot",
+}
+
+// isCrawlerUA reports whether ua identifies a known bot or web archiver.
+func isCrawlerUA(ua string) bool {
+	ua = strings.ToLower(ua)
+	for _, s := range crawlerUAs {
+		if strings.Contains(ua, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // poolResponse is the JSON body of GET /api/pool: the home page's entire
@@ -254,7 +291,95 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.render(w, "home.tmpl", homeData{Title: "Home"})
+
+	if !isCrawlerUA(r.UserAgent()) {
+		s.render(w, "home.tmpl", homeData{Title: "Home"})
+		return
+	}
+
+	// Crawler/archiver path: full server-rendered table, gated on the same
+	// cheap PoolVersion an ETag so a repeat crawl (Googlebot recrawls
+	// periodically; IA's Save Page Now can be re-run) costs nothing beyond
+	// that one query when nothing has changed since the last visit.
+	version, err := s.st.PoolVersion()
+	if err != nil {
+		log.Printf("home: PoolVersion: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	etag := fmt.Sprintf(`"pool-%d"`, version)
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	ips, scanMode, stats, err := s.loadPool()
+	if err != nil {
+		log.Printf("home: loadPool: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	s.render(w, "home.tmpl", homeData{
+		Title:      "Home",
+		Bot:        true,
+		IPs:        ips,
+		Count:      len(ips),
+		ScanMode:   scanMode,
+		Stats:      stats,
+		LastScanAt: formatTime(stats.LastScanAt),
+	})
+}
+
+// loadPool runs the queries behind both the crawler-facing server render
+// (handleHome) and /api/pool: the full known-IP list plus the summary stats.
+func (s *Server) loadPool() ([]ipRow, string, store.Stats, error) {
+	known, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
+		SortBy:   "last_seen",
+		SortDesc: true,
+	})
+	if err != nil {
+		return nil, "", store.Stats{}, fmt.Errorf("ListKnownIPs: %w", err)
+	}
+
+	var ips []ipRow
+	for _, st := range known {
+		hostnames := store.SplitStrings(st.PTRHostname)
+		row := ipRow{
+			IP:        st.IP,
+			PTR:       strings.Join(hostnames, "\n"),
+			PTRList:   hostnames,
+			FirstSeen: formatTime(st.FirstSeen),
+			LastSeen:  formatTime(st.LastSeen),
+			LastRTTMs: st.LastRTTMs,
+		}
+		if len(hostnames) > 0 {
+			loc := geo.DecodeBest(hostnames)
+			row.Country = loc.Country
+			row.CountryCode = geo.CountryCode(loc.Country)
+		}
+		switch {
+		case !st.HasCheck:
+			row.Status = "-"
+		case st.LastCheckOK:
+			row.Status = "Reachable"
+		default:
+			row.Status = "Unreachable"
+		}
+		ips = append(ips, row)
+	}
+
+	var scanMode string
+	if sc, err := s.st.LatestScan(""); err == nil && sc != nil {
+		scanMode = sc.ScanMode
+	}
+
+	stats, err := s.st.Overview()
+	if err != nil {
+		return nil, "", store.Stats{}, fmt.Errorf("Overview: %w", err)
+	}
+	return ips, scanMode, stats, nil
 }
 
 // handleAPIPoolVersion reports the current PoolVersion so the home page's JS
@@ -285,57 +410,22 @@ func (s *Server) handleAPIPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	known, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
-		SortBy:   "last_seen",
-		SortDesc: true,
-	})
+	ips, scanMode, stats, err := s.loadPool()
 	if err != nil {
-		log.Printf("api/pool: ListKnownIPs: %v", err)
+		log.Printf("api/pool: loadPool: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	resp := poolResponse{Version: version}
-	for _, st := range known {
-		hostnames := store.SplitStrings(st.PTRHostname)
-		row := ipRow{
-			IP:        st.IP,
-			PTR:       strings.Join(hostnames, "\n"),
-			PTRList:   hostnames,
-			FirstSeen: formatTime(st.FirstSeen),
-			LastSeen:  formatTime(st.LastSeen),
-			LastRTTMs: st.LastRTTMs,
-		}
-		if len(hostnames) > 0 {
-			loc := geo.DecodeBest(hostnames)
-			row.Country = loc.Country
-			row.CountryCode = geo.CountryCode(loc.Country)
-		}
-		switch {
-		case !st.HasCheck:
-			row.Status = "-"
-		case st.LastCheckOK:
-			row.Status = "Reachable"
-		default:
-			row.Status = "Unreachable"
-		}
-		resp.IPs = append(resp.IPs, row)
+	resp := poolResponse{
+		Version:       version,
+		IPs:           ips,
+		Count:         len(ips),
+		ScanMode:      scanMode,
+		TotalKnownIPs: stats.TotalKnownIPs,
+		TotalScans:    stats.TotalScans,
+		LastScanAt:    formatTime(stats.LastScanAt),
 	}
-	resp.Count = len(resp.IPs)
-
-	if sc, err := s.st.LatestScan(""); err == nil && sc != nil {
-		resp.ScanMode = sc.ScanMode
-	}
-
-	stats, err := s.st.Overview()
-	if err != nil {
-		log.Printf("api/pool: Overview: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	resp.TotalKnownIPs = stats.TotalKnownIPs
-	resp.TotalScans = stats.TotalScans
-	resp.LastScanAt = formatTime(stats.LastScanAt)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
