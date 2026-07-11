@@ -4,3 +4,9 @@
 *.sqlite3-shm
 *.user.json
 /config.json
+
+# Cloudflare Workers / D1
+node_modules/
+.wrangler/
+.dev.vars
+worker-configuration.d.ts

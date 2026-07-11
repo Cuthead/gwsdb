@@ -1,0 +1,31 @@
+{
+  "name": "gwsdb",
+  "version": "1.0.0",
+  "description": "Cloudflare Pages + Functions + D1 backend for processing gscan_quic results and presenting Google Web Server IP addresses.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev ./public",
+    "deploy": "wrangler pages deploy ./public",
+    "types": "wrangler types",
+    "db:migrations:apply:local": "wrangler d1 migrations apply gwsdb --local",
+    "db:migrations:apply:remote": "wrangler d1 migrations apply gwsdb --remote"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@githubc:Cuthead/gwsdb.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260711.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.110.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "sharp@0.34.5": true,
+    "workerd@1.20260708.1": true
+  }
+}

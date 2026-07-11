@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gwsdb",
+  "pages_build_output_dir": "./public",
+  "compatibility_date": "2026-07-01",
+  "observability": {
+    "enabled": true
+  },
+  // /ingest decompresses + regex-scans a ~100MB scan log in two streaming
+  // passes (see src/logParser.ts); that's well past the Pages Functions Free
+  // plan's 10ms CPU cap, so this requires Workers Paid with cpu_ms raised
+  // like this.
+  "limits": {
+    "cpu_ms": 300000
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gwsdb",
+      "database_id": "d4e3df1f-07d5-4924-be21-5574125ef400",
+      "migrations_dir": "./migrations"
+    }
+  ]
+}
