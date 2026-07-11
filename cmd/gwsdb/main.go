@@ -47,7 +47,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `gwsdb - GWS Database
 
 Usage:
-  gwsdb ingest -db PATH -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]
+  gwsdb ingest -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
   gwsdb delete-scan -db PATH -id N
   gwsdb recheck -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, no queue/D1)
   gwsdb recheck -worker [-max 200] [-timeout 10s]            (pull-model: drain the due recheck_queue backlog via $GWSDB_API/$GWSDB_INGEST_TOKEN)`)
@@ -55,13 +55,13 @@ Usage:
 
 func runIngest(args []string) {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
-	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
 	scannerConfigPath := fs.String("scanner-config", "", "path to the gscan_quic config.json/config.user.json used for the scan")
 	scanDir := fs.String("scanner-dir", "", "dir gscan_quic ran in; base for relative OutputFile paths (defaults to -scanner-config's dir)")
 	logPath := fs.String("log", "", "path to the captured gscan_quic stdout log (optional)")
 	mode := fs.String("mode", "", "scan mode to ingest (SNI/QUIC/TLS/PING); defaults to the config's ScanMode")
 	output := fs.String("output", "", "override path to the scan output IP list; defaults to the config's OutputFile")
 	logOnly := fs.Bool("log-only", false, "ignore the output file even if present; derive hits from -log only (use when a later scan overwrote the output file at this path)")
+	timeout := fs.Duration("timeout", 30*time.Second, "HTTP timeout for the known-good fetch + submit round trip")
 	fs.Parse(args)
 
 	if *scannerConfigPath == "" {
@@ -70,13 +70,7 @@ func runIngest(args []string) {
 		os.Exit(2)
 	}
 
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		log.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	scanID, err := ingest.Run(st, ingest.Options{
+	parsed, err := ingest.Parse(ingest.Options{
 		ConfigPath: *scannerConfigPath,
 		ScanDir:    *scanDir,
 		LogPath:    *logPath,
@@ -86,6 +80,27 @@ func runIngest(args []string) {
 	})
 	if err != nil {
 		log.Fatalf("ingest: %v", err)
+	}
+
+	apiBase := requireEnv("GWSDB_API")
+	token := requireEnv("GWSDB_INGEST_TOKEN")
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	// Fetched once per run rather than checked per distinct failing IP --
+	// gscan_quic logs every attempt at LogLevel: 5, so a scan can produce
+	// tens of thousands of failure checks even though only a few hundred
+	// IPs are ever known-good. See FilterChecks.
+	knownGood, err := ingest.FetchKnownGood(ctx, apiBase, token)
+	if err != nil {
+		log.Fatalf("ingest: fetch known-good: %v", err)
+	}
+	filtered := ingest.FilterChecks(parsed.Results, parsed.Checks, knownGood, time.Now().UTC())
+
+	scanID, err := ingest.Submit(ctx, apiBase, token, parsed.Scan, filtered)
+	if err != nil {
+		log.Fatalf("ingest: submit: %v", err)
 	}
 	log.Printf("ingested scan #%d", scanID)
 }
@@ -211,7 +226,7 @@ func runRecheckWorker(maxPerRun int, probeTimeout time.Duration) {
 func requireEnv(name string) string {
 	v := os.Getenv(name)
 	if v == "" {
-		log.Fatalf("recheck: %s is required", name)
+		log.Fatalf("%s is required", name)
 	}
 	return v
 }

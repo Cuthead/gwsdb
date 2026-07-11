@@ -6,12 +6,13 @@
   "observability": {
     "enabled": true
   },
-  // /ingest decompresses + regex-scans a ~100MB scan log in two streaming
-  // passes (see src/logParser.ts); that's well past the Pages Functions Free
-  // plan's 10ms CPU cap, so this requires Workers Paid with cpu_ms raised
-  // like this.
+  // Log parsing now happens on the China box (internal/ingest); /ingest is
+  // just JSON parsing + D1 batch inserts. Measured 13-14ms CPU per request
+  // (wrangler pages deployment tail) -- just over the Pages Functions Free
+  // plan's 10ms cap, so this still requires Workers Paid, just nowhere near
+  // the old streaming-decompression-and-regex requirement.
   "limits": {
-    "cpu_ms": 300000
+    "cpu_ms": 50
   },
   // DNS publish (src/publish.ts) -- reconciles A/AAAA records at this name
   // to the store's current top IPs. CLOUDFLARE_DNS_API_TOKEN is a separate

@@ -1,13 +1,12 @@
-// D1-facing primitives used by the streaming ingest path (src/index.ts).
-// Unlike internal/store/queries.go's SaveScan, this isn't one function
-// wrapping everything in a single transaction -- D1's atomicity primitive
-// (env.DB.batch()) requires every statement to be bound upfront in one call,
-// which doesn't fit a pipeline that streams a ~100MB log through two passes.
-// See src/logParser.ts's module comment for why two passes are needed, and
-// src/index.ts for how these pieces are wired together. The trade-off: a
-// crash partway through can leave a scans row with fewer ip_checks rows
-// than a fully-succeeded run would have, rather than Go's all-or-nothing
-// guarantee -- acceptable for phase 1, revisit if it bites in practice.
+// D1-facing primitives used by functions/ingest.ts. Unlike
+// internal/store/queries.go's SaveScan, insertScan/insertCheckRows aren't
+// one function wrapping everything in a single transaction -- D1's
+// atomicity primitive (env.DB.batch()) requires every statement to be bound
+// upfront in one call, and a scan's check rows are chunked across multiple
+// batch() calls (MAX_BATCH). The trade-off: a crash partway through can
+// leave a scans row with fewer ip_checks rows than a fully-succeeded run
+// would have, rather than Go's all-or-nothing guarantee -- acceptable so
+// far, revisit if it bites in practice.
 import type {
 	ASNCacheEntry,
 	HostCacheEntry,
@@ -183,6 +182,17 @@ export async function refreshPoolForIPs(db: D1Database, ips: string[]): Promise<
 export async function isKnownGood(db: D1Database, ip: string): Promise<boolean> {
 	const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM ip_checks WHERE ip = ? AND ok = 1) AS e`).bind(ip).first<{ e: number }>();
 	return row?.e === 1;
+}
+
+// allKnownGoodIPs returns every IP in the tracked pool -- the China box's
+// ingest flow fetches this once per run to filter a scan's failures down to
+// only IPs already known reachable (mirroring Go's old inline SaveScan gate)
+// before ever sending them to Cloudflare, rather than paying for a D1 lookup
+// per distinct failing IP in the log (which, at gscan_quic's LogLevel: 5,
+// can be tens of thousands per scan).
+export async function allKnownGoodIPs(db: D1Database): Promise<string[]> {
+	const { results } = await db.prepare(`SELECT ip FROM ip_pool`).all<{ ip: string }>();
+	return results.map((r) => r.ip);
 }
 
 // topIPsForPublish returns up to limit IPs of the given address family

@@ -135,8 +135,7 @@ ${footerHTML(opts.build)}
 // formatTime renders a Date the way internal/web/server.go's formatTime
 // does ("-" for null, otherwise "YYYY-MM-DD HH:mm:ss"), except in UTC
 // rather than the Go binary's host-local time zone -- a Worker has no
-// meaningful "local" time zone of its own (see src/logParser.ts's
-// parseLogTimestamp comment for the same issue on the ingest side).
+// meaningful "local" time zone of its own.
 export function formatTime(d: Date | null): string {
 	if (!d) return "-";
 	const pad = (n: number) => String(n).padStart(2, "0");

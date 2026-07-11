@@ -34,15 +34,28 @@ var foundRecordRE = regexp.MustCompile(`Found a record: IP=(\S+), RTT=(\S+)`)
 var failRecordRE = regexp.MustCompile(`Tested IP=(\S+) RESULT=fail(?: REASON=(\S+))?(?: DETAIL=(.*))?`)
 var summaryRE = regexp.MustCompile(`Scanned (\d+) IP in ([^,]+), found (\d+) records`)
 
-// Run parses the artifacts described by opts and stores them as one Scan.
-func Run(st *store.Store, opts Options) (int64, error) {
+// Parsed is everything one ingest run assembled from its artifacts, ready
+// to be filtered (FilterChecks) and submitted (client.go's Submit) -- or,
+// for local/manual use, saved directly via store.Store.SaveScan.
+type Parsed struct {
+	Scan    *store.Scan
+	Results []store.ScanResult
+	Checks  []store.IPCheck // every attempted IP, success and failure alike -- not yet gated
+}
+
+// Parse reads the artifacts described by opts and assembles one Scan, its
+// output-file results, and every check the log recorded -- pure, no store
+// access. Checks aren't gated against known-good status here; that's
+// FilterChecks' job, since it needs a known-good set from wherever the
+// caller's data actually lives (D1, for the Cloudflare-hosted store).
+func Parse(opts Options) (*Parsed, error) {
 	raw, err := os.ReadFile(opts.ConfigPath)
 	if err != nil {
-		return 0, fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var cfg GScannerConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return 0, fmt.Errorf("parse config: %w", err)
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
 	mode := opts.ScanMode
@@ -50,11 +63,11 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		mode = cfg.ScanMode
 	}
 	if mode == "" {
-		return 0, fmt.Errorf("scan mode not set in config or options")
+		return nil, fmt.Errorf("scan mode not set in config or options")
 	}
 	sub := cfg.ForMode(mode)
 	if sub == nil {
-		return 0, fmt.Errorf("unknown scan mode %q", mode)
+		return nil, fmt.Errorf("unknown scan mode %q", mode)
 	}
 	if strings.EqualFold(mode, "sni") && sub.HTTPMethod == "" {
 		// gscan_quic's testSni (sni.go) is the only mode that actually reads
@@ -63,7 +76,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	}
 
 	if opts.LogOnly && opts.LogPath == "" {
-		return 0, fmt.Errorf("log-only ingest requires a log path")
+		return nil, fmt.Errorf("log-only ingest requires a log path")
 	}
 
 	outputPath := opts.OutputPath
@@ -74,7 +87,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		outputPath = ""
 	}
 	if outputPath == "" && opts.LogPath == "" {
-		return 0, fmt.Errorf("no output file for mode %q and no log path given", mode)
+		return nil, fmt.Errorf("no output file for mode %q and no log path given", mode)
 	}
 	if outputPath != "" && !filepath.IsAbs(outputPath) {
 		scanDir := opts.ScanDir
@@ -89,7 +102,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 	if opts.LogPath != "" {
 		logBytes, err := os.ReadFile(opts.LogPath)
 		if err != nil {
-			return 0, fmt.Errorf("read log: %w", err)
+			return nil, fmt.Errorf("read log: %w", err)
 		}
 		sum = parseLog(string(logBytes))
 
@@ -103,7 +116,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		ips, err = readOutputIPs(outputPath, sub.OutputSeparator)
 		if err != nil {
 			if !os.IsNotExist(err) || opts.LogPath == "" {
-				return 0, fmt.Errorf("read output file: %w", err)
+				return nil, fmt.Errorf("read output file: %w", err)
 			}
 			log.Printf("output file %s not found, falling back to log-derived hit list", outputPath)
 			outputPath = ""
@@ -127,7 +140,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 
 	configJSON, err := store.MarshalConfig(sub)
 	if err != nil {
-		return 0, fmt.Errorf("marshal config: %w", err)
+		return nil, fmt.Errorf("marshal config: %w", err)
 	}
 
 	scan := &store.Scan{
@@ -148,7 +161,7 @@ func Run(st *store.Store, opts Options) (int64, error) {
 		FoundCount:       foundCount,
 	}
 
-	return st.SaveScan(scan, results, sum.Checks)
+	return &Parsed{Scan: scan, Results: results, Checks: sum.Checks}, nil
 }
 
 // SanitizeNetErr strips the local (source) address from Go net error strings
