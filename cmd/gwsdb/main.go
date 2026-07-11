@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -63,7 +64,8 @@ Usage:
   gwsdb serve  -db PATH [-addr :8080] [-config config.json]
   gwsdb ingest -db PATH -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH] [-config config.json]
   gwsdb delete-scan -db PATH -id N
-  gwsdb recheck -db PATH -ip IP [-timeout 10s] [-config config.json]`)
+  gwsdb recheck -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, no queue/D1)
+  gwsdb recheck -worker [-max 200] [-timeout 10s]            (pull-model: drain the due recheck_queue backlog via $GWSDB_API/$GWSDB_INGEST_TOKEN)`)
 }
 
 // buildPublisher loads gwsdb's config.json from configPath and returns a
@@ -126,7 +128,6 @@ func runServe(args []string) {
 	log.Printf("DNS resolution (PTR/host/ASN) via DoH: %s", dohURL)
 
 	go srv.StartPTRRefresher(15 * time.Second)
-	go srv.StartRecheckWorker(15 * time.Second)
 
 	log.Printf("gwsdb serving on %s (db=%s)", *addr, *dbPath)
 	if err := http.ListenAndServe(*addr, srv.Handler()); err != nil {
@@ -213,49 +214,106 @@ func runDeleteScan(args []string) {
 	log.Printf("deleted scan #%d", *id)
 }
 
+// recheckDefaultMaxPerRun caps how many queue items one "gwsdb recheck
+// -worker" invocation drains, mirroring the Cloudflare-side cron-ptr-refresh
+// project's per-run cap -- a large backlog can't block a single cron tick
+// forever; any remainder is picked up on the next invocation.
+const recheckDefaultMaxPerRun = 200
+
 func runRecheck(args []string) {
 	fs := flag.NewFlagSet("recheck", flag.ExitOnError)
-	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
-	ip := fs.String("ip", "", "IP address to re-test")
+	ip := fs.String("ip", "", "ad-hoc mode: IP address to re-test once, printing OK/FAIL -- no queue, no D1")
+	scannerConfigPath := fs.String("scanner-config", "", "ad-hoc mode: path to the local gscan_quic config.json/config.user.json to probe with")
+	worker := fs.Bool("worker", false, "pull-model mode: drain the due backlog from the Cloudflare-hosted recheck_queue via $GWSDB_API/$GWSDB_INGEST_TOKEN")
+	maxPerRun := fs.Int("max", recheckDefaultMaxPerRun, "worker mode: cap on items drained in one invocation")
 	timeout := fs.Duration("timeout", 10*time.Second, "probe timeout")
-	configPath := fs.String("config", "config.json", "path to gwsdb's config.json for post-recheck DNS publish")
 	fs.Parse(args)
 
-	if *ip == "" {
-		fmt.Fprintln(os.Stderr, "recheck: -ip is required")
+	switch {
+	case *ip != "" && *worker:
+		fmt.Fprintln(os.Stderr, "recheck: -ip and -worker are mutually exclusive")
+		fs.Usage()
+		os.Exit(2)
+	case *ip != "":
+		runRecheckAdHoc(*ip, *scannerConfigPath, *timeout)
+	case *worker:
+		runRecheckWorker(*maxPerRun, *timeout)
+	default:
+		fmt.Fprintln(os.Stderr, "recheck: exactly one of -ip or -worker is required")
 		fs.Usage()
 		os.Exit(2)
 	}
-	if net.ParseIP(*ip) == nil {
-		log.Fatalf("recheck: invalid ip %q", *ip)
+}
+
+// runRecheckAdHoc is a manual ops diagnostic: probe one IP with the scan
+// config gscan_quic already has on disk, print the result, and exit. It
+// doesn't touch recheck_queue or D1 -- there's no local store on the China
+// box to read/write anymore.
+func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
+	if net.ParseIP(ip) == nil {
+		log.Fatalf("recheck: invalid ip %q", ip)
+	}
+	if scannerConfigPath == "" {
+		log.Fatal("recheck: -scanner-config is required with -ip")
 	}
 
-	st, err := store.Open(*dbPath)
+	raw, err := os.ReadFile(scannerConfigPath)
 	if err != nil {
-		log.Fatalf("open store: %v", err)
+		log.Fatalf("recheck: read scanner config: %v", err)
 	}
-	defer st.Close()
+	var gcfg ingest.GScannerConfig
+	if err := json.Unmarshal(raw, &gcfg); err != nil {
+		log.Fatalf("recheck: parse scanner config: %v", err)
+	}
+	cfg := gcfg.ForMode(recheck.DefaultScanMode)
+	if cfg == nil {
+		log.Fatalf("recheck: scanner config has no %s block", recheck.DefaultScanMode)
+	}
 
-	result, err := recheck.RunAndSave(st, *ip, recheck.DefaultScanMode, *timeout)
-	if err != nil {
-		log.Fatalf("recheck: %v", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	result := recheck.CheckSNI(ctx, ip, cfg)
 	if result.OK {
-		fmt.Printf("OK ip=%s rtt=%dms\n", *ip, result.RTTMs)
+		fmt.Printf("OK ip=%s rtt=%dms\n", ip, result.RTTMs)
 	} else {
-		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", *ip, result.Reason, result.Detail)
+		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", ip, result.Reason, result.Detail)
 	}
+}
 
-	// A recheck changed this IP's status, so the top set may have shifted.
-	// Reconcile the published records in a detached child process so this
-	// command exits immediately instead of blocking on the Cloudflare API.
-	if cfg, err := config.Load(*configPath); err != nil {
-		log.Printf("recheck: load config: %v", err)
-	} else if cfg.DNS.Name != "" {
-		if err := spawnDetachedPublish(*dbPath, *configPath); err != nil {
-			log.Printf("recheck: spawn publish: %v", err)
+// runRecheckWorker drains the due recheck_queue backlog from the
+// Cloudflare-hosted API, one item at a time via recheck.PullAndRun, until
+// it's empty or maxPerRun is hit -- meant to be invoked by cron every few
+// minutes (see scripts/recheck_and_submit.sh), not run as a long-lived
+// daemon.
+func runRecheckWorker(maxPerRun int, probeTimeout time.Duration) {
+	apiBase := requireEnv("GWSDB_API")
+	token := requireEnv("GWSDB_INGEST_TOKEN")
+
+	ctx := context.Background()
+	processed := 0
+	for ; processed < maxPerRun; processed++ {
+		drained, result, err := recheck.PullAndRun(ctx, apiBase, token, probeTimeout)
+		if err != nil {
+			log.Fatalf("recheck: %v", err)
+		}
+		if drained {
+			break
+		}
+		if result.OK {
+			log.Printf("recheck: OK rtt=%dms", result.RTTMs)
+		} else {
+			log.Printf("recheck: FAIL reason=%s detail=%s", result.Reason, result.Detail)
 		}
 	}
+	log.Printf("recheck: processed %d item(s)", processed)
+}
+
+func requireEnv(name string) string {
+	v := os.Getenv(name)
+	if v == "" {
+		log.Fatalf("recheck: %s is required", name)
+	}
+	return v
 }
 
 // spawnDetachedPublish starts "gwsdb dns-sync" in a new session so it outlives

@@ -15,6 +15,7 @@ import type {
 	IPReport,
 	IPStatus,
 	PTRCacheEntry,
+	RecheckQueueItem,
 	Scan,
 	ScanRow,
 	Stats,
@@ -641,5 +642,119 @@ export async function enqueueRecheck(db: D1Database, reportId: number, ip: strin
 	await db
 		.prepare(`INSERT OR IGNORE INTO recheck_queue (report_id, ip, created_at, scheduled_at) VALUES (?, ?, ?, ?)`)
 		.bind(reportId, ip, toSQLiteDateTime(createdAt), toSQLiteDateTime(scheduledAt))
+		.run();
+}
+
+// --- Recheck pull-model: the China box's worker fetches its next probe
+// target here and reports the outcome back through saveRecheckResult --
+// ports internal/store/queries.go's NextPendingRecheck/MarkRecheckProcessed/
+// PruneRecheckQueue/LatestScanConfig/SaveRecheck. ---
+
+interface RecheckQueueRow {
+	id: number;
+	report_id: number;
+	ip: string;
+	created_at: string;
+	scheduled_at: string | null;
+}
+
+// nextPendingRecheck returns the oldest not-yet-processed recheck_queue entry
+// whose scheduled_at has arrived, or null if none are ready yet.
+//
+// scheduled_at is compared via SQLite's own datetime() on both sides (rather
+// than a bound JS-formatted "now" string) for the same reason
+// nextIPForPTRRefresh does: stored values here are ISO strings
+// (toISOString(), "YYYY-MM-DDTHH:MM:SS.sssZ") but datetime('now') normalizes
+// to "YYYY-MM-DD HH:MM:SS" (space-separated) -- comparing those as raw
+// strings puts the ISO value (with 'T', 0x54) after the datetime() value
+// (with ' ', 0x20) regardless of actual times, so scheduled_at would almost
+// never look due. Wrapping scheduled_at in datetime() too normalizes both
+// sides to the same format before comparing.
+export async function nextPendingRecheck(db: D1Database): Promise<RecheckQueueItem | null> {
+	const row = await db
+		.prepare(
+			`SELECT id, report_id, ip, created_at, scheduled_at FROM recheck_queue
+			WHERE processed_at IS NULL AND (scheduled_at IS NULL OR datetime(scheduled_at) <= datetime('now'))
+			ORDER BY created_at ASC LIMIT 1`,
+		)
+		.first<RecheckQueueRow>();
+	if (!row) return null;
+	return {
+		id: row.id,
+		reportId: row.report_id,
+		ip: row.ip,
+		createdAt: fromSQLiteDateTime(row.created_at)!,
+		scheduledAt: fromSQLiteDateTime(row.scheduled_at),
+	};
+}
+
+// markRecheckProcessed records the outcome of a recheck attempt so it is not
+// picked up again.
+export async function markRecheckProcessed(db: D1Database, id: number, ok: boolean, processedAt: Date): Promise<void> {
+	await db
+		.prepare(`UPDATE recheck_queue SET processed_at = ?, ok = ? WHERE id = ?`)
+		.bind(toSQLiteDateTime(processedAt), ok ? 1 : 0, id)
+		.run();
+}
+
+// pruneRecheckQueue deletes processed recheck_queue rows older than
+// retentionDays, so the table doesn't grow unboundedly with completed work.
+// Pending (unprocessed) rows are never touched.
+export async function pruneRecheckQueue(db: D1Database, retentionDays: number): Promise<void> {
+	await db
+		.prepare(`DELETE FROM recheck_queue WHERE processed_at IS NOT NULL AND processed_at < datetime('now', '-' || ? || ' days')`)
+		.bind(retentionDays)
+		.run();
+}
+
+// latestScanConfig returns the id and config_json of the most recent scan
+// for scanMode, or null if none exists yet.
+export async function latestScanConfig(db: D1Database, scanMode: string): Promise<{ scanId: number; configJSON: string } | null> {
+	const row = await db
+		.prepare(`SELECT id, config_json FROM scans WHERE scan_mode = ? ORDER BY started_at DESC, id DESC LIMIT 1`)
+		.bind(scanMode)
+		.first<{ id: number; config_json: string | null }>();
+	if (!row || !row.config_json) return null;
+	return { scanId: row.id, configJSON: row.config_json };
+}
+
+export interface RecheckResult {
+	ip: string;
+	ok: boolean;
+	rttMs: number | null;
+	reason: string | null;
+	detail: string | null;
+	checkedAt: Date;
+	scanMode: string;
+	configScanId: number | null;
+}
+
+// saveRecheckResult records the outcome of a single report-triggered recheck
+// probe: an ip_checks row with no owning scan (scan_id NULL, config_scan_id
+// pointing at the scan whose config the probe used) -- ports
+// internal/store/queries.go's SaveRecheck exactly, including its asymmetric
+// branches. A failure is only recorded if the IP has some prior ok=1
+// history (isKnownGood) -- probing arbitrary reported IPs can't grow
+// permanent state for IPs nobody has ever seen reachable.
+export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promise<void> {
+	if (r.ok) {
+		await db
+			.prepare(
+				`INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+				VALUES (NULL, ?, ?, 1, ?, NULL, NULL, ?, ?)`,
+			)
+			.bind(r.configScanId, r.ip, r.rttMs, toSQLiteDateTime(r.checkedAt), r.scanMode)
+			.run();
+		return;
+	}
+
+	if (!(await isKnownGood(db, r.ip))) return;
+
+	await db
+		.prepare(
+			`INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+			VALUES (NULL, ?, ?, 0, NULL, ?, ?, ?, ?)`,
+		)
+		.bind(r.configScanId, r.ip, r.reason, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 		.run();
 }

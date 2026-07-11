@@ -4,58 +4,59 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
-	"github.com/cuthead/gwsdb/internal/store"
 )
 
-// DefaultScanMode is the only scan mode RunAndSave currently knows how to
-// probe -- CheckSNI ports gscan_quic's SNI-specific logic.
+// DefaultScanMode is the only scan mode the pull-model worker currently
+// knows how to probe -- CheckSNI ports gscan_quic's SNI-specific logic. Must
+// match the Cloudflare side's functions/recheck/next.ts DEFAULT_SCAN_MODE.
 const DefaultScanMode = "SNI"
 
-// RunAndSave re-tests ip using the config of the most recent scanMode scan on
-// file, then records the outcome via SaveRecheck: an ip_checks history row
-// with no owning scan. No scans row is created -- the scans table only
-// records real scanner runs ingested via the CLI.
-// Shared by the recheck_queue background worker and the "gwsdb recheck" CLI
-// command.
+// PullAndRun fetches the next due recheck_queue item from the
+// Cloudflare-hosted API (GET /recheck/next), probes it with the unchanged
+// CheckSNI (the part that must physically run on real China-based network
+// infrastructure -- Cloudflare's edge doesn't sit behind the GFW and can't
+// produce a meaningful result), and reports the outcome back
+// (POST /recheck/result). Storage now lives entirely in Cloudflare D1 --
+// there is no local *store.Store on the China box to read/write directly,
+// unlike the pre-migration in-process worker this replaces.
 //
-// The returned error is only for infrastructure failures (no scan config on
-// file, corrupt config JSON, DB write failure) -- a failed probe is a normal
-// Result (OK: false), not an error.
-func RunAndSave(st *store.Store, ip, scanMode string, probeTimeout time.Duration) (Result, error) {
-	scanMode = strings.ToUpper(scanMode)
-
-	configScanID, configJSON, err := st.LatestScanConfig(scanMode)
+// drained is true when there was nothing due to pull, so the caller's
+// drain-the-backlog loop knows to stop. err is only for infrastructure
+// failures (network/API errors, corrupt config JSON) -- a failed probe is a
+// normal Result (OK: false), not an error.
+func PullAndRun(ctx context.Context, apiBase, token string, probeTimeout time.Duration) (drained bool, result Result, err error) {
+	item, err := FetchNext(ctx, apiBase, token)
 	if err != nil {
-		return Result{}, fmt.Errorf("LatestScanConfig: %w", err)
+		return false, Result{}, fmt.Errorf("FetchNext: %w", err)
 	}
-	if configJSON == "" {
-		return Result{}, fmt.Errorf("no %s scan on file yet", scanMode)
+	if item == nil {
+		return true, Result{}, nil
 	}
+
 	var cfg ingest.ScanConfig
-	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-		return Result{}, fmt.Errorf("unmarshal latest %s scan config: %w", scanMode, err)
+	if err := json.Unmarshal([]byte(item.ConfigJSON), &cfg); err != nil {
+		return false, Result{}, fmt.Errorf("unmarshal scan config for #%d %s: %w", item.ID, item.IP, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
-	defer cancel()
-	result := CheckSNI(ctx, ip, &cfg)
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	result = CheckSNI(probeCtx, item.IP, &cfg)
+	cancel()
 
-	check := store.IPCheck{
-		IP:           ip,
+	if err := Submit(ctx, apiBase, token, SubmitResult{
+		ID:           item.ID,
+		IP:           item.IP,
 		OK:           result.OK,
 		RTTMs:        result.RTTMs,
 		Reason:       result.Reason,
 		Detail:       result.Detail,
+		ScanMode:     item.ScanMode,
+		ConfigScanID: item.ConfigScanID,
 		CheckedAt:    time.Now().UTC(),
-		ScanMode:     scanMode,
-		ConfigScanID: configScanID,
+	}); err != nil {
+		return false, Result{}, fmt.Errorf("Submit #%d %s: %w", item.ID, item.IP, err)
 	}
-	if err := st.SaveRecheck(check); err != nil {
-		return Result{}, fmt.Errorf("SaveRecheck: %w", err)
-	}
-	return result, nil
+	return false, result, nil
 }

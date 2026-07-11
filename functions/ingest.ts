@@ -2,6 +2,7 @@
 // that exact path (functions/ingest.ts -> /ingest). See src/logParser.ts's
 // module comment for why ingest is a two-pass streaming read over the
 // decompressed log rather than a single Response.text() call.
+import { checkBearerAuth } from "../src/auth";
 import { streamLines } from "../src/lineStream";
 import { scanPassA, scanPassB } from "../src/logParser";
 import { forMode, type GScannerConfig } from "../src/scanConfig";
@@ -11,26 +12,10 @@ import type { Env } from "../src/env";
 
 const DEFAULT_FLUSH_SIZE = 500;
 
-function timingSafeEqual(a: string, b: string): boolean {
-	const enc = new TextEncoder();
-	const aBytes = enc.encode(a);
-	const bBytes = enc.encode(b);
-	if (aBytes.length !== bBytes.length) return false;
-	let diff = 0;
-	for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i]! ^ bBytes[i]!;
-	return diff === 0;
-}
-
-function checkAuth(request: Request, env: Env): boolean {
-	const auth = request.headers.get("Authorization") ?? "";
-	if (!auth.startsWith("Bearer ")) return false;
-	return timingSafeEqual(auth.slice("Bearer ".length), env.INGEST_TOKEN);
-}
-
 export const onRequestPost: PagesFunction<Env> = async (context) => {
 	const { request, env } = context;
 
-	if (!checkAuth(request, env)) {
+	if (!checkBearerAuth(request, env)) {
 		return new Response("unauthorized", { status: 401 });
 	}
 

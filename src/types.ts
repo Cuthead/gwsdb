@@ -112,3 +112,13 @@ export interface IPCheckHistoryRow {
 	verifyCommonName: string;
 	validStatusCode: number;
 }
+
+// RecheckQueueItem is a pending recheck_queue row, returned by
+// nextPendingRecheck to the China box's pull-model worker.
+export interface RecheckQueueItem {
+	id: number;
+	reportId: number;
+	ip: string;
+	createdAt: Date;
+	scheduledAt: Date | null;
+}
