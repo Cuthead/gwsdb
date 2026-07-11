@@ -8,16 +8,14 @@
 # China-based network infrastructure (Cloudflare's edge doesn't sit behind
 # the GFW), but storage lives on Cloudflare.
 #
-# Required env vars:
-#   GWSDB_API            base URL of the deployed Pages project, e.g. https://gwsdb.pages.dev
-#   GWSDB_INGEST_TOKEN    bearer token matching the Pages project's INGEST_TOKEN secret
+# GWSDB_API/GWSDB_INGEST_TOKEN aren't required here -- `gwsdb` itself reads
+# them from the environment or, if unset, from ~/.config/gwsdb/env (see
+# `gwsdb -h`), so there's nowhere else they need to be exported.
 set -euo pipefail
 
 SCANNER_DIR="${GWSDB_SCANNER_DIR:-$HOME/gscan_quic}"
 SCANNER_CONFIG="${GWSDB_SCAN_CONFIG:-$SCANNER_DIR/config.user.json}"
 BIN_DIR="${GWSDB_BIN_DIR:-$HOME/gwsdb}"
-: "${GWSDB_API:?GWSDB_API (Pages project base URL) is required}"
-: "${GWSDB_INGEST_TOKEN:?GWSDB_INGEST_TOKEN is required}"
 
 LOG_DIR="$SCANNER_DIR/scan_logs"
 mkdir -p "$LOG_DIR"

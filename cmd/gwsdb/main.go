@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -14,6 +15,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
@@ -22,6 +25,8 @@ import (
 )
 
 func main() {
+	loadEnvFile(envFilePath())
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -49,8 +54,12 @@ func usage() {
 Usage:
   gwsdb ingest -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
   gwsdb delete-scan -db PATH -id N
-  gwsdb recheck -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, no queue/D1)
-  gwsdb recheck -worker [-max 200] [-timeout 10s]            (pull-model: drain the due recheck_queue backlog via $GWSDB_API/$GWSDB_INGEST_TOKEN)`)
+  gwsdb recheck -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it -- no queue involved)
+  gwsdb recheck -worker [-max 200] [-timeout 10s]            (pull-model: drain the due recheck_queue backlog via $GWSDB_API/$GWSDB_INGEST_TOKEN)
+
+GWSDB_API/GWSDB_INGEST_TOKEN can also come from a KEY=VALUE file instead of
+being exported by hand: ~/.config/gwsdb/env by default, or $GWSDB_ENV_FILE.
+chmod 600 it -- it holds a bearer token.`)
 }
 
 func runIngest(args []string) {
@@ -137,7 +146,7 @@ const recheckDefaultMaxPerRun = 200
 
 func runRecheck(args []string) {
 	fs := flag.NewFlagSet("recheck", flag.ExitOnError)
-	ip := fs.String("ip", "", "ad-hoc mode: IP address to re-test once, printing OK/FAIL -- no queue, no D1")
+	ip := fs.String("ip", "", "ad-hoc mode: IP address to re-test once, printing OK/FAIL and submitting the result -- no queue involved")
 	scannerConfigPath := fs.String("scanner-config", "", "ad-hoc mode: path to the local gscan_quic config.json/config.user.json to probe with")
 	worker := fs.Bool("worker", false, "pull-model mode: drain the due backlog from the Cloudflare-hosted recheck_queue via $GWSDB_API/$GWSDB_INGEST_TOKEN")
 	maxPerRun := fs.Int("max", recheckDefaultMaxPerRun, "worker mode: cap on items drained in one invocation")
@@ -161,9 +170,12 @@ func runRecheck(args []string) {
 }
 
 // runRecheckAdHoc is a manual ops diagnostic: probe one IP with the scan
-// config gscan_quic already has on disk, print the result, and exit. It
-// doesn't touch recheck_queue or D1 -- there's no local store on the China
-// box to read/write anymore.
+// config gscan_quic already has on disk, print the result, and submit it to
+// Cloudflare -- same as the old Go CLI's "gwsdb recheck -ip" (which wrote
+// straight to the store), except now over HTTP since there's no local store
+// on the China box anymore. Doesn't touch recheck_queue -- there's no queue
+// item behind an ad-hoc probe, so it submits with id 0 (see
+// functions/recheck/result.ts), which just skips markRecheckProcessed.
 func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 	if net.ParseIP(ip) == nil {
 		log.Fatalf("recheck: invalid ip %q", ip)
@@ -185,13 +197,32 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 		log.Fatalf("recheck: scanner config has no %s block", recheck.DefaultScanMode)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	result := recheck.CheckSNI(ctx, ip, cfg)
+	apiBase := requireEnv("GWSDB_API")
+	token := requireEnv("GWSDB_INGEST_TOKEN")
+
+	// timeout bounds only the probe (matching -timeout's documented meaning
+	// and PullAndRun's shape) -- Submit gets its own budget below so a slow
+	// probe can't starve the HTTP call that reports its result.
+	ctx := context.Background()
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	result := recheck.CheckSNI(probeCtx, ip, cfg)
+	cancel()
 	if result.OK {
 		fmt.Printf("OK ip=%s rtt=%dms\n", ip, result.RTTMs)
 	} else {
 		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", ip, result.Reason, result.Detail)
+	}
+
+	if err := recheck.Submit(ctx, apiBase, token, recheck.SubmitResult{
+		IP:        ip,
+		OK:        result.OK,
+		RTTMs:     result.RTTMs,
+		Reason:    result.Reason,
+		Detail:    result.Detail,
+		ScanMode:  recheck.DefaultScanMode,
+		CheckedAt: time.Now().UTC(),
+	}); err != nil {
+		log.Fatalf("recheck: submit: %v", err)
 	}
 }
 
@@ -229,4 +260,59 @@ func requireEnv(name string) string {
 		log.Fatalf("%s is required", name)
 	}
 	return v
+}
+
+// envFilePath returns where to look for a KEY=VALUE file holding
+// GWSDB_API/GWSDB_INGEST_TOKEN, so they don't need to be exported by hand
+// (or pasted anywhere) before every invocation: $GWSDB_ENV_FILE if set,
+// otherwise ~/.config/gwsdb/env. chmod 600 it -- it holds a bearer token.
+// gwsdb only ever reads this file, never writes it.
+func envFilePath() string {
+	if p := os.Getenv("GWSDB_ENV_FILE"); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "gwsdb", "env")
+}
+
+// loadEnvFile reads simple KEY=VALUE lines from path (blank lines and lines
+// starting with # ignored) into the process environment. A variable already
+// set in the real environment wins -- the file is a convenience default,
+// not an override. A missing file is not an error.
+func loadEnvFile(path string) {
+	if path == "" {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	if info, err := f.Stat(); err == nil && info.Mode().Perm()&0o077 != 0 {
+		log.Printf("warning: %s is readable by others (mode %o) -- chmod 600 it, it holds a bearer token", path, info.Mode().Perm())
+	}
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if _, alreadySet := os.LookupEnv(key); alreadySet {
+			continue
+		}
+		os.Setenv(key, strings.TrimSpace(value))
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("warning: reading %s: %v", path, err)
+	}
 }

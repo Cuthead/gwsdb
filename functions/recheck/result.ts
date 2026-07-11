@@ -1,10 +1,12 @@
-// Pages Function for POST /recheck/result -- the China box's pull-model
-// worker (gwsdb recheck -worker) submits a probe outcome here after fetching
-// it from GET /recheck/next. Ports internal/web/recheck.go's (now-deleted)
-// processNextRecheck: saves the ip_checks row, marks the queue entry
-// processed, prunes old processed entries, and reconciles published DNS
-// records -- all four happened on every tick of Go's original worker loop,
-// so they happen on every submitted result here too.
+// Pages Function for POST /recheck/result -- submitted either by the China
+// box's pull-model worker (gwsdb recheck -worker) after fetching an item
+// from GET /recheck/next (id > 0, a real recheck_queue row), or by ad-hoc
+// manual probes (gwsdb recheck -ip, id 0 -- no queue item to mark
+// processed, matching the old Go CLI's "gwsdb recheck -ip" behavior, which
+// always wrote its result straight to the store with no queue involved).
+// Ports internal/web/recheck.go's (now-deleted) processNextRecheck: saves
+// the ip_checks row, marks the queue entry processed (skipped for id 0),
+// prunes old processed entries, and reconciles published DNS records.
 import { checkBearerAuth } from "../../src/auth";
 import { syncPublish } from "../../src/publish";
 import { markRecheckProcessed, pruneRecheckQueue, refreshPoolForIPs, saveRecheckResult } from "../../src/store";
@@ -56,10 +58,10 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		detail: body.detail ?? null,
 		checkedAt,
 		scanMode: body.scanMode,
-		configScanId: body.configScanId ?? null,
+		configScanId: body.configScanId || null, // 0 means "no D1 scan config" (ad-hoc probes use a local config file, not a stored scan) -- never a real scan id, which starts at 1
 	});
 	await refreshPoolForIPs(env.DB, [body.ip]);
-	await markRecheckProcessed(env.DB, body.id, body.ok, checkedAt);
+	if (body.id > 0) await markRecheckProcessed(env.DB, body.id, body.ok, checkedAt);
 	await pruneRecheckQueue(env.DB, RECHECK_QUEUE_RETENTION_DAYS);
 
 	// A recheck just changed this IP's status, so the top set may have

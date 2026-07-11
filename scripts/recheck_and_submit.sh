@@ -7,13 +7,11 @@
 # edge doesn't sit behind the GFW), but storage and queue coordination now
 # live on Cloudflare.
 #
-# Required env vars:
-#   GWSDB_API            base URL of the deployed Pages project, e.g. https://gwsdb.pages.dev
-#   GWSDB_INGEST_TOKEN    bearer token matching the Pages project's INGEST_TOKEN secret
+# GWSDB_API/GWSDB_INGEST_TOKEN aren't required here -- `gwsdb` itself reads
+# them from the environment or, if unset, from ~/.config/gwsdb/env (see
+# `gwsdb -h`), so there's nowhere else they need to be exported.
 set -euo pipefail
 
 BIN_DIR="${GWSDB_BIN_DIR:-$HOME/gwsdb}"
-: "${GWSDB_API:?GWSDB_API (Pages project base URL) is required}"
-: "${GWSDB_INGEST_TOKEN:?GWSDB_INGEST_TOKEN is required}"
 
 "$BIN_DIR/gwsdb" recheck -worker
