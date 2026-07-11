@@ -7,7 +7,7 @@
 // since running the same "one per tick" shape on a 15-minute cron would
 // take forever to converge on a real backlog.
 import { resolveAndCachePTR } from "../src/dnsCache";
-import { nextIPForPTRRefresh } from "../src/store";
+import { pendingIPsForPTRRefresh } from "../src/store";
 
 interface Env {
 	DB: D1Database;
@@ -24,12 +24,14 @@ const MAX_REFRESHED_PER_RUN = 200;
 export default {
 	async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
 		const dohUrl = env.DOH_JSON_URL || DEFAULT_DOH_URL;
-		let refreshed = 0;
-		for (; refreshed < MAX_REFRESHED_PER_RUN; refreshed++) {
-			const ip = await nextIPForPTRRefresh(env.DB);
-			if (!ip) break;
+		// Fetched once per tick, not once per IP -- ip_pool is a view
+		// recomputed from scratch on every query against it, so looping a
+		// LIMIT-1 query per IP here previously meant recomputing the whole
+		// view up to MAX_REFRESHED_PER_RUN times a tick.
+		const ips = await pendingIPsForPTRRefresh(env.DB, MAX_REFRESHED_PER_RUN);
+		for (const ip of ips) {
 			await resolveAndCachePTR(env.DB, ip, PTR_TIMEOUT_MS, dohUrl);
 		}
-		console.log(`ptr-refresh: refreshed ${refreshed} IP(s)`);
+		console.log(`ptr-refresh: refreshed ${ips.length} IP(s)`);
 	},
 } satisfies ExportedHandler<Env>;

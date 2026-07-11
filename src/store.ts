@@ -394,9 +394,16 @@ export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
 		.run();
 }
 
-// nextIPForPTRRefresh returns one IP from ip_pool whose ptr_cache entry is
-// missing or past its observed DNS TTL, preferring never-checked IPs first,
-// then the stalest. Returns null if every known IP has a fresh cache entry.
+// pendingIPsForPTRRefresh returns up to limit IPs from ip_pool whose
+// ptr_cache entry is missing or past its observed DNS TTL, preferring
+// never-checked IPs first, then the stalest. ip_pool is a view recomputed
+// (window functions over all of ip_checks) on every query against it, so
+// this fetches the whole batch a cron tick needs in one call rather than
+// being called once per IP in a loop -- cron-ptr-refresh used to do the
+// latter (LIMIT 1, called up to 200x per tick), which meant recomputing the
+// entire view up to 200 times per tick; D1 query analytics showed this one
+// query alone at ~75% of total runtime with a >60:1 rows-read-to-rows-
+// returned ratio. Returns [] if every known IP has a fresh cache entry.
 //
 // Both sides of the staleness comparison go through SQLite's own datetime()
 // (rather than binding a JS-formatted "now" string) so their TEXT output is
@@ -407,18 +414,19 @@ export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
 // 'T' (0x54), "<datetime() output> < <toISOString() output>" is true for
 // any same-day pair regardless of the actual times, making every row look
 // perpetually stale.
-export async function nextIPForPTRRefresh(db: D1Database): Promise<string | null> {
-	const row = await db
+export async function pendingIPsForPTRRefresh(db: D1Database, limit: number): Promise<string[]> {
+	const { results } = await db
 		.prepare(
 			`SELECT i.ip
 			FROM ip_pool i
 			LEFT JOIN ptr_cache p ON p.ip = i.ip
 			WHERE p.ip IS NULL OR datetime(p.checked_at, '+' || p.ttl_seconds || ' seconds') < datetime('now')
 			ORDER BY (p.checked_at IS NULL) DESC, p.checked_at ASC
-			LIMIT 1`,
+			LIMIT ?`,
 		)
-		.first<{ ip: string }>();
-	return row?.ip ?? null;
+		.bind(limit)
+		.all<{ ip: string }>();
+	return results.map((r) => r.ip);
 }
 
 interface HostCacheRow {
@@ -682,7 +690,7 @@ interface RecheckQueueRow {
 //
 // scheduled_at is compared via SQLite's own datetime() on both sides (rather
 // than a bound JS-formatted "now" string) for the same reason
-// nextIPForPTRRefresh does: stored values here are ISO strings
+// pendingIPsForPTRRefresh does: stored values here are ISO strings
 // (toISOString(), "YYYY-MM-DDTHH:MM:SS.sssZ") but datetime('now') normalizes
 // to "YYYY-MM-DD HH:MM:SS" (space-separated) -- comparing those as raw
 // strings puts the ISO value (with 'T', 0x54) after the datetime() value
