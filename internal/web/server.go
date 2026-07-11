@@ -222,8 +222,7 @@ const maxScansListed = 500
 
 type ipRow struct {
 	IP          string   `json:"ip"`
-	PTR         string   `json:"ptr"`         // cached PTR hostname(s), newline-joined, "" if never looked up; kept for client-side search matching
-	PTRList     []string `json:"ptrList"`     // same hostnames, for rendering one linked entry per PTR record
+	PTRList     []string `json:"ptrList"` // PTR hostname(s), "" if never looked up; rendered as one linked entry per record
 	Country     string   `json:"country"`     // best-effort, decoded from PTR, "" if unknown
 	CountryCode string   `json:"countryCode"` // ISO 3166-1 alpha-2, "" if unknown
 	Status      string   `json:"status"`      // "Reachable" / "Unreachable" / "-" (never explicitly re-checked)
@@ -340,7 +339,6 @@ func (s *Server) loadPool() ([]ipRow, string, store.Stats, error) {
 		hostnames := store.SplitStrings(st.PTRHostname)
 		row := ipRow{
 			IP:        st.IP,
-			PTR:       strings.Join(hostnames, "\n"),
 			PTRList:   hostnames,
 			FirstSeen: formatTime(st.FirstSeen),
 			LastSeen:  formatTime(st.LastSeen),

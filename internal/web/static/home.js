@@ -144,7 +144,7 @@
 	function buildRow(ip) {
 		var tr = document.createElement('tr');
 		tr.dataset.ip = ip.ip;
-		tr.dataset.ptr = ip.ptr;
+		tr.dataset.ptr = (ip.ptrList || []).join(' ');
 		tr.dataset.country = ip.country;
 		tr.dataset.status = ip.status;
 		tr.dataset.firstSeen = ip.firstSeen;
