@@ -13,6 +13,15 @@
   "limits": {
     "cpu_ms": 300000
   },
+  // DNS publish (src/publish.ts) -- reconciles A/AAAA records at this name
+  // to the store's current top IPs. CLOUDFLARE_DNS_API_TOKEN is a separate
+  // secret (wrangler pages secret put), not a var.
+  "vars": {
+    "DNS_PUBLISH_NAME": "google.com.c.0.8.0.d.0.0.0.0.7.4.0.1.0.0.2.ip6.arpa",
+    "DNS_PUBLISH_ZONE_ID": "d58f43cc6d0e6d500e2e8420f51dad30",
+    "DNS_PUBLISH_TTL": "300",
+    "DNS_PUBLISH_LIMIT": "4"
+  },
   "d1_databases": [
     {
       "binding": "DB",

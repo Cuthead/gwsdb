@@ -1,5 +1,9 @@
-// Command gwsdb serves the GWS Database web app and ingests gscan_quic scan
-// results into its SQLite store.
+// Command gwsdb runs the probe-side pieces of the GWS Database that must
+// stay on real China-based network infrastructure: ingesting gscan_quic scan
+// results into D1 (legacy local-sqlite mode, kept for manual debugging) and
+// the recheck_queue pull-model worker. Serving the web UI, DNS publish, and
+// bulk ingest all now live on Cloudflare (Pages Functions + D1) --
+// see AGENTS.md and scripts/scan_and_ingest.sh.
 package main
 
 import (
@@ -9,25 +13,13 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
-	"os/exec"
-	"syscall"
 	"time"
 
-	"github.com/cuthead/gwsdb/internal/config"
 	"github.com/cuthead/gwsdb/internal/ingest"
-	"github.com/cuthead/gwsdb/internal/publish"
 	"github.com/cuthead/gwsdb/internal/recheck"
 	"github.com/cuthead/gwsdb/internal/store"
-	"github.com/cuthead/gwsdb/internal/web"
 )
-
-// defaultDoHURL is used when config.json doesn't set ptrDohUrl. DNS
-// resolution (PTR/host/ASN) has no system-resolver fallback -- it's DoH
-// wire format (RFC 8484) only, since that's the only way to see each
-// record's real DNS TTL for cache staleness.
-const defaultDoHURL = "https://dns.google/dns-query"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -36,18 +28,12 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "serve":
-		runServe(os.Args[2:])
 	case "ingest":
 		runIngest(os.Args[2:])
 	case "delete-scan":
 		runDeleteScan(os.Args[2:])
 	case "recheck":
 		runRecheck(os.Args[2:])
-	case "dns-sync":
-		// Hidden: a one-shot DNS reconcile, spawned detached by recheck so
-		// the recheck process can exit without waiting on the Cloudflare API.
-		runDNSSync(os.Args[2:])
 	case "-h", "-help", "--help":
 		usage()
 	default:
@@ -61,78 +47,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `gwsdb - GWS Database
 
 Usage:
-  gwsdb serve  -db PATH [-addr :8080] [-config config.json]
-  gwsdb ingest -db PATH -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH] [-config config.json]
+  gwsdb ingest -db PATH -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]
   gwsdb delete-scan -db PATH -id N
   gwsdb recheck -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, no queue/D1)
   gwsdb recheck -worker [-max 200] [-timeout 10s]            (pull-model: drain the due recheck_queue backlog via $GWSDB_API/$GWSDB_INGEST_TOKEN)`)
-}
-
-// buildPublisher loads gwsdb's config.json from configPath and returns a
-// Publisher when DNS publishing is configured, or nil when dns.name is unset.
-// Fatal on unreadable config or bad credentials. Shared by serve, ingest and
-// recheck so all three reconcile records after they change the store.
-func buildPublisher(st *store.Store, configPath string) *publish.Publisher {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
-	if cfg.DNS.Name == "" {
-		return nil
-	}
-	pub, err := publish.New(st, publish.Config{
-		APIToken: cfg.DNS.CloudflareAPIToken,
-		ZoneID:   cfg.DNS.CloudflareZoneID,
-		Name:     cfg.DNS.Name,
-		TTL:      cfg.DNS.TTL,
-		Limit:    cfg.DNS.Limit,
-	})
-	if err != nil {
-		log.Fatalf("dns publish: %v", err)
-	}
-	return pub
-}
-
-func runServe(args []string) {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
-	addr := fs.String("addr", ":8080", "address to listen on")
-	configPath := fs.String("config", "config.json", "path to gwsdb's config.json (holds DNS-publish settings)")
-	fs.Parse(args)
-
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		log.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-
-	srv, err := web.New(st)
-	if err != nil {
-		log.Fatalf("build web server: %v", err)
-	}
-
-	if pub := buildPublisher(st, *configPath); pub != nil {
-		srv.SetPublisher(pub)
-		log.Printf("dns publish enabled from %s", *configPath)
-	}
-
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
-	dohURL := cfg.PTRDoHURL
-	if dohURL == "" {
-		dohURL = defaultDoHURL
-	}
-	srv.SetDoHURL(dohURL)
-	log.Printf("DNS resolution (PTR/host/ASN) via DoH: %s", dohURL)
-
-	go srv.StartPTRRefresher(15 * time.Second)
-
-	log.Printf("gwsdb serving on %s (db=%s)", *addr, *dbPath)
-	if err := http.ListenAndServe(*addr, srv.Handler()); err != nil {
-		log.Fatal(err)
-	}
 }
 
 func runIngest(args []string) {
@@ -144,7 +62,6 @@ func runIngest(args []string) {
 	mode := fs.String("mode", "", "scan mode to ingest (SNI/QUIC/TLS/PING); defaults to the config's ScanMode")
 	output := fs.String("output", "", "override path to the scan output IP list; defaults to the config's OutputFile")
 	logOnly := fs.Bool("log-only", false, "ignore the output file even if present; derive hits from -log only (use when a later scan overwrote the output file at this path)")
-	configPath := fs.String("config", "config.json", "path to gwsdb's config.json for post-ingest DNS publish")
 	fs.Parse(args)
 
 	if *scannerConfigPath == "" {
@@ -171,24 +88,7 @@ func runIngest(args []string) {
 		log.Fatalf("ingest: %v", err)
 	}
 	log.Printf("ingested scan #%d", scanID)
-
-	// A bulk ingest can shift the top set a lot; reconcile the published
-	// records once, at the end, rather than per IP. Publish failure doesn't
-	// fail the ingest -- the scan is already saved.
-	if pub := buildPublisher(st, *configPath); pub != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), cliPublishTimeout)
-		defer cancel()
-		if err := pub.Sync(ctx); err != nil {
-			log.Printf("ingest: publish: %v", err)
-		} else {
-			log.Printf("ingest: dns publish synced")
-		}
-	}
 }
-
-// cliPublishTimeout bounds the one-shot DNS reconcile a CLI command runs after
-// it changes the store (ingest, recheck).
-const cliPublishTimeout = 15 * time.Second
 
 func runDeleteScan(args []string) {
 	fs := flag.NewFlagSet("delete-scan", flag.ExitOnError)
@@ -314,43 +214,4 @@ func requireEnv(name string) string {
 		log.Fatalf("recheck: %s is required", name)
 	}
 	return v
-}
-
-// spawnDetachedPublish starts "gwsdb dns-sync" in a new session so it outlives
-// this process, and returns without waiting. A slow Cloudflare API therefore
-// can't delay the caller's exit.
-func spawnDetachedPublish(dbPath, configPath string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "dns-sync", "-db", dbPath, "-config", configPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return cmd.Start()
-}
-
-// runDNSSync is the hidden dns-sync subcommand: build the publisher from config
-// and run one reconcile. Spawned detached by recheck so publishing doesn't
-// block the recheck's exit.
-func runDNSSync(args []string) {
-	fs := flag.NewFlagSet("dns-sync", flag.ExitOnError)
-	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
-	configPath := fs.String("config", "config.json", "path to gwsdb's config.json")
-	fs.Parse(args)
-
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		log.Fatalf("dns-sync: open store: %v", err)
-	}
-	defer st.Close()
-
-	pub := buildPublisher(st, *configPath)
-	if pub == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), cliPublishTimeout)
-	defer cancel()
-	if err := pub.Sync(ctx); err != nil {
-		log.Printf("dns-sync: %v", err)
-	}
 }

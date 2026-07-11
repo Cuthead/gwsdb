@@ -111,6 +111,25 @@ export async function isKnownGood(db: D1Database, ip: string): Promise<boolean> 
 	return row?.e === 1;
 }
 
+// topIPsForPublish returns up to limit IPs of the given address family
+// (4 or 6) to publish as DNS records, most-seen first with lowest RTT
+// breaking ties -- ports internal/store/queries.go's TopIPsForPublish. Only
+// IPs whose most recent check succeeded and that have a measured RTT are
+// returned, so a known-dead or unmeasured IP is never published.
+export async function topIPsForPublish(db: D1Database, family: 4 | 6, limit: number): Promise<string[]> {
+	const isIPv6 = family === 6 ? 1 : 0;
+	const { results } = await db
+		.prepare(
+			`SELECT ip FROM ip_pool
+			WHERE is_ipv6 = ? AND last_check_ok = 1 AND last_rtt_ms IS NOT NULL
+			ORDER BY times_seen DESC, last_rtt_ms ASC
+			LIMIT ?`,
+		)
+		.bind(isIPv6, limit)
+		.all<{ ip: string }>();
+	return results.map((r) => r.ip);
+}
+
 // --- Read-path queries for the home/scans pages (ports of the matching
 // functions in internal/store/queries.go). ---
 

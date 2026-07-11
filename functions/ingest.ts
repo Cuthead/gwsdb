@@ -5,6 +5,7 @@
 import { checkBearerAuth } from "../src/auth";
 import { streamLines } from "../src/lineStream";
 import { scanPassA, scanPassB } from "../src/logParser";
+import { syncPublish } from "../src/publish";
 import { forMode, type GScannerConfig } from "../src/scanConfig";
 import { type CheckRow, insertCheckRows, insertScan, isKnownGood } from "../src/store";
 import type { Scan } from "../src/types";
@@ -20,14 +21,14 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	}
 
 	try {
-		return await handleIngest(request, env);
+		return await handleIngest(request, env, context.waitUntil.bind(context));
 	} catch (err) {
 		console.error("ingest failed:", err);
 		return new Response(`ingest failed: ${(err as Error).message}`, { status: 500 });
 	}
 };
 
-async function handleIngest(request: Request, env: Env): Promise<Response> {
+async function handleIngest(request: Request, env: Env, waitUntil: (promise: Promise<unknown>) => void): Promise<Response> {
 	const form = await request.formData();
 	const configPart = form.get("config");
 	const logPart = form.get("log");
@@ -123,6 +124,12 @@ async function handleIngest(request: Request, env: Env): Promise<Response> {
 		}
 	});
 	if (pending.length > 0) await insertCheckRows(env.DB, pending);
+
+	// A bulk ingest can shift the top set a lot; reconcile published DNS
+	// records after responding so a slow Cloudflare API call doesn't add
+	// latency to the China box's ingest round trip. Publish failure doesn't
+	// fail the ingest -- the scan is already saved.
+	waitUntil(syncPublish(env, env.DB).catch((err) => console.error("ingest: publish:", err)));
 
 	return Response.json({ scanId, scannedCount: scan.ScannedCount, foundCount: scan.FoundCount });
 }

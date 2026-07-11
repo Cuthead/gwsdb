@@ -1,11 +1,12 @@
 // Pages Function for POST /recheck/result -- the China box's pull-model
 // worker (gwsdb recheck -worker) submits a probe outcome here after fetching
-// it from GET /recheck/next. Ports internal/web/recheck.go's
-// processNextRecheck (minus the in-process loop/DNS-publish, which stays
-// deferred): saves the ip_checks row, marks the queue entry processed, and
-// prunes old processed entries -- all three happened on every tick of Go's
-// original worker loop, so they happen on every submitted result here too.
+// it from GET /recheck/next. Ports internal/web/recheck.go's (now-deleted)
+// processNextRecheck: saves the ip_checks row, marks the queue entry
+// processed, prunes old processed entries, and reconciles published DNS
+// records -- all four happened on every tick of Go's original worker loop,
+// so they happen on every submitted result here too.
 import { checkBearerAuth } from "../../src/auth";
+import { syncPublish } from "../../src/publish";
 import { markRecheckProcessed, pruneRecheckQueue, saveRecheckResult } from "../../src/store";
 import type { Env } from "../../src/env";
 
@@ -59,6 +60,12 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	});
 	await markRecheckProcessed(env.DB, body.id, body.ok, checkedAt);
 	await pruneRecheckQueue(env.DB, RECHECK_QUEUE_RETENTION_DAYS);
+
+	// A recheck just changed this IP's status, so the top set may have
+	// shifted. Reconcile after responding so a slow Cloudflare API call
+	// doesn't add latency to the China box's submit round trip; publish
+	// failure doesn't fail the recheck -- the result is already saved.
+	context.waitUntil(syncPublish(env, env.DB).catch((err) => console.error("recheck: publish:", err)));
 
 	return Response.json({});
 };
