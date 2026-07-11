@@ -1,3 +1,5 @@
+// @license magnet:?xt=urn:btih:1f739d935676111cfff4b4693e3816e664797050&dn=gpl-3.0.txt GPL-3.0
+
 // Fetches the known-IP pool from /api/pool, caches it in localStorage, and
 // renders + provides client-side search/sort/filter/pagination over it.
 //
@@ -299,3 +301,4 @@
 		init();
 	}
 })();
+// @license-end
