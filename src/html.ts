@@ -72,12 +72,23 @@ function footerHTML(build: BuildInfo): string {
 	return `<a href="${repoURL}">gwsdb</a>`;
 }
 
+// NAV_EN/NAV_ZH are the two nav-bar variants used across the site.
+// report_confirm.tmpl is Chinese (<html lang="zh">, "首页/查询/扫描记录") while
+// every other page is English -- documented as intentional per-page i18n in
+// AGENTS.md, not a bug to normalize away.
+const NAV_EN = { home: "Home", query: "Query", scans: "Scans" };
+const NAV_ZH = { home: "首页", query: "查询", scans: "扫描记录" };
+
 // pageShell wraps body in the same table-based chrome (title bar, nav,
-// footer) shared by home.tmpl/scans.tmpl. extraHead is injected verbatim
-// into <head> (e.g. home.tmpl's <noscript> refresh meta tag).
-export function pageShell(opts: { title: string; body: string; build: BuildInfo; extraHead?: string }): string {
+// footer) shared by home.tmpl/scans.tmpl/query.tmpl. extraHead is injected
+// verbatim into <head> (e.g. home.tmpl's <noscript> refresh meta tag).
+// lang defaults to "en" (NAV_EN); pass "zh" for report_confirm's Chinese
+// chrome (NAV_ZH).
+export function pageShell(opts: { title: string; body: string; build: BuildInfo; extraHead?: string; lang?: "en" | "zh" }): string {
+	const lang = opts.lang ?? "en";
+	const nav = lang === "zh" ? NAV_ZH : NAV_EN;
 	return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${lang}">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -94,9 +105,9 @@ ${opts.extraHead ?? ""}
 <tr bgcolor="#DDDDDD">
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
-<a href="/">Home</a> |
-<a href="/query">Query</a> |
-<a href="/scans">Scans</a>
+<a href="/">${nav.home}</a> |
+<a href="/query">${nav.query}</a> |
+<a href="/scans">${nav.scans}</a>
 </font>
 </td>
 </tr>

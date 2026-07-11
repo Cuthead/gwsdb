@@ -8,7 +8,24 @@
 // crash partway through can leave a scans row with fewer ip_checks rows
 // than a fully-succeeded run would have, rather than Go's all-or-nothing
 // guarantee -- acceptable for phase 1, revisit if it bites in practice.
-import type { IPStatus, Scan, ScanRow, Stats } from "./types";
+import type {
+	ASNCacheEntry,
+	HostCacheEntry,
+	IPCheckHistoryRow,
+	IPReport,
+	IPStatus,
+	PTRCacheEntry,
+	Scan,
+	ScanRow,
+	Stats,
+} from "./types";
+
+// joinStrings packs multiple values for storage in a single "; "-joined
+// TEXT column (ptr_cache.ptr_hostname, host_cache.ipv4/ipv6) -- mirrors
+// store.JoinStrings.
+function joinStrings(values: string[]): string {
+	return values.join("; ");
+}
 
 const MAX_BATCH = 500; // comfortably under D1's 1,000/batch free-tier cap
 
@@ -307,4 +324,322 @@ export async function listScans(db: D1Database, limit: number): Promise<ScanRow[
 		.bind(limit)
 		.all<ScanQueryRow>();
 	return results.map(rowToScan);
+}
+
+// --- PTR / host / ASN caches, IP history, community reports, recheck
+// queue -- ports of the matching functions in internal/store/queries.go,
+// used by functions/query.ts, functions/report.ts, and (PTR only)
+// cron-ptr-refresh/index.ts. ---
+
+interface PTRCacheRow {
+	ip: string;
+	ptr_hostname: string | null;
+	lookup_ok: number;
+	ttl_seconds: number;
+	checked_at: string;
+}
+
+// getPTR returns a cached PTR/geo lookup for ip if present and not past its
+// observed DNS TTL (checked_at + ttl_seconds).
+export async function getPTR(db: D1Database, ip: string): Promise<PTRCacheEntry | null> {
+	const row = await db
+		.prepare(`SELECT ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at FROM ptr_cache WHERE ip = ?`)
+		.bind(ip)
+		.first<PTRCacheRow>();
+	if (!row) return null;
+	const checkedAt = fromSQLiteDateTime(row.checked_at)!;
+	if (Date.now() - checkedAt.getTime() > row.ttl_seconds * 1000) return null;
+	return {
+		ip: row.ip,
+		ptrHostnames: splitStrings(row.ptr_hostname ?? ""),
+		lookupOk: row.lookup_ok !== 0,
+		ttlSeconds: row.ttl_seconds,
+		checkedAt,
+	};
+}
+
+// savePTR upserts a PTR lookup result into the cache.
+export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(ip) DO UPDATE SET
+				ptr_hostname = excluded.ptr_hostname,
+				lookup_ok    = excluded.lookup_ok,
+				ttl_seconds  = excluded.ttl_seconds,
+				checked_at   = excluded.checked_at`,
+		)
+		.bind(e.ip, joinStrings(e.ptrHostnames), e.lookupOk ? 1 : 0, e.ttlSeconds, toSQLiteDateTime(e.checkedAt))
+		.run();
+}
+
+// nextIPForPTRRefresh returns one IP from ip_pool whose ptr_cache entry is
+// missing or past its observed DNS TTL, preferring never-checked IPs first,
+// then the stalest. Returns null if every known IP has a fresh cache entry.
+//
+// Both sides of the staleness comparison go through SQLite's own datetime()
+// (rather than binding a JS-formatted "now" string) so their TEXT output is
+// guaranteed to be in the same format -- datetime() always normalizes to
+// "YYYY-MM-DD HH:MM:SS" (space-separated, no fractional seconds), while
+// Date#toISOString() produces "YYYY-MM-DDTHH:MM:SS.sssZ". Comparing those
+// two formats as plain strings is a footgun: since ' ' (0x20) sorts before
+// 'T' (0x54), "<datetime() output> < <toISOString() output>" is true for
+// any same-day pair regardless of the actual times, making every row look
+// perpetually stale.
+export async function nextIPForPTRRefresh(db: D1Database): Promise<string | null> {
+	const row = await db
+		.prepare(
+			`SELECT i.ip
+			FROM ip_pool i
+			LEFT JOIN ptr_cache p ON p.ip = i.ip
+			WHERE p.ip IS NULL OR datetime(p.checked_at, '+' || p.ttl_seconds || ' seconds') < datetime('now')
+			ORDER BY (p.checked_at IS NULL) DESC, p.checked_at ASC
+			LIMIT 1`,
+		)
+		.first<{ ip: string }>();
+	return row?.ip ?? null;
+}
+
+interface HostCacheRow {
+	hostname: string;
+	ipv4: string | null;
+	ipv6: string | null;
+	lookup_ok: number;
+	ttl_seconds: number;
+	checked_at: string;
+}
+
+// getHost returns a cached forward A/AAAA lookup for hostname if present
+// and not past its observed DNS TTL (see getPTR).
+export async function getHost(db: D1Database, hostname: string): Promise<HostCacheEntry | null> {
+	const row = await db
+		.prepare(`SELECT hostname, ipv4, ipv6, lookup_ok, ttl_seconds, checked_at FROM host_cache WHERE hostname = ?`)
+		.bind(hostname)
+		.first<HostCacheRow>();
+	if (!row) return null;
+	const checkedAt = fromSQLiteDateTime(row.checked_at)!;
+	if (Date.now() - checkedAt.getTime() > row.ttl_seconds * 1000) return null;
+	return {
+		hostname: row.hostname,
+		ipv4: splitStrings(row.ipv4 ?? ""),
+		ipv6: splitStrings(row.ipv6 ?? ""),
+		lookupOk: row.lookup_ok !== 0,
+		ttlSeconds: row.ttl_seconds,
+		checkedAt,
+	};
+}
+
+// saveHost upserts a forward A/AAAA lookup result into the cache.
+export async function saveHost(db: D1Database, e: HostCacheEntry): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO host_cache (hostname, ipv4, ipv6, lookup_ok, ttl_seconds, checked_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(hostname) DO UPDATE SET
+				ipv4        = excluded.ipv4,
+				ipv6        = excluded.ipv6,
+				lookup_ok   = excluded.lookup_ok,
+				ttl_seconds = excluded.ttl_seconds,
+				checked_at  = excluded.checked_at`,
+		)
+		.bind(
+			e.hostname,
+			joinStrings(e.ipv4),
+			joinStrings(e.ipv6),
+			e.lookupOk ? 1 : 0,
+			e.ttlSeconds,
+			toSQLiteDateTime(e.checkedAt),
+		)
+		.run();
+}
+
+interface ASNCacheRow {
+	ip: string;
+	asn: number | null;
+	as_name: string | null;
+	prefix: string | null;
+	country: string | null;
+	lookup_ok: number;
+	ttl_seconds: number;
+	checked_at: string;
+}
+
+// getASN returns a cached ASN/prefix lookup for ip if present and not past
+// its observed DNS TTL (see getPTR).
+export async function getASN(db: D1Database, ip: string): Promise<ASNCacheEntry | null> {
+	const row = await db
+		.prepare(`SELECT ip, asn, as_name, prefix, country, lookup_ok, ttl_seconds, checked_at FROM asn_cache WHERE ip = ?`)
+		.bind(ip)
+		.first<ASNCacheRow>();
+	if (!row) return null;
+	const checkedAt = fromSQLiteDateTime(row.checked_at)!;
+	if (Date.now() - checkedAt.getTime() > row.ttl_seconds * 1000) return null;
+	return {
+		ip: row.ip,
+		asn: row.asn ?? 0,
+		asName: row.as_name ?? "",
+		prefix: row.prefix ?? "",
+		country: row.country ?? "",
+		lookupOk: row.lookup_ok !== 0,
+		ttlSeconds: row.ttl_seconds,
+		checkedAt,
+	};
+}
+
+// saveASN upserts an ASN/prefix lookup result into the cache.
+export async function saveASN(db: D1Database, e: ASNCacheEntry): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO asn_cache (ip, asn, as_name, prefix, country, lookup_ok, ttl_seconds, checked_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(ip) DO UPDATE SET
+				asn         = excluded.asn,
+				as_name     = excluded.as_name,
+				prefix      = excluded.prefix,
+				country     = excluded.country,
+				lookup_ok   = excluded.lookup_ok,
+				ttl_seconds = excluded.ttl_seconds,
+				checked_at  = excluded.checked_at`,
+		)
+		.bind(
+			e.ip,
+			e.asn || null,
+			e.asName || null,
+			e.prefix || null,
+			e.country || null,
+			e.lookupOk ? 1 : 0,
+			e.ttlSeconds,
+			toSQLiteDateTime(e.checkedAt),
+		)
+		.run();
+}
+
+interface IPHistoryRow {
+	ip: string;
+	ok: number;
+	rtt_ms: number | null;
+	reason: string | null;
+	detail: string | null;
+	checked_at: string | null;
+	scan_id: number | null;
+	config_scan_id: number | null;
+	scan_mode: string | null;
+	server_name: string | null;
+	http_path: string | null;
+	http_method: string | null;
+	http_verify_hosts: string | null;
+	verify_common_name: string | null;
+	valid_status_code: number | null;
+}
+
+// ipHistory returns ip's most recent pass/fail checks, newest first, each
+// joined against its owning (or, for rechecks, config) scan for the
+// request-context columns.
+export async function ipHistory(db: D1Database, ip: string, limit: number): Promise<IPCheckHistoryRow[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT
+				c.ip, c.ok, c.rtt_ms, c.reason, c.detail, c.checked_at, c.scan_id, c.config_scan_id,
+				s.scan_mode, s.server_name, s.http_path, s.http_method, s.http_verify_hosts, s.verify_common_name, s.valid_status_code
+			FROM ip_checks c
+			LEFT JOIN scans s ON s.id = COALESCE(c.scan_id, c.config_scan_id)
+			WHERE c.ip = ?
+			ORDER BY c.checked_at DESC LIMIT ?`,
+		)
+		.bind(ip, limit)
+		.all<IPHistoryRow>();
+	return results.map((row) => ({
+		ip: row.ip,
+		ok: row.ok !== 0,
+		rttMs: row.rtt_ms ?? 0,
+		reason: row.reason ?? "",
+		detail: row.detail ?? "",
+		checkedAt: fromSQLiteDateTime(row.checked_at),
+		recheck: row.scan_id === null,
+		scanMode: row.scan_mode ?? "",
+		serverName: row.server_name ?? "",
+		httpPath: row.http_path ?? "",
+		httpMethod: row.http_method ?? "",
+		httpVerifyHosts: row.http_verify_hosts ?? "",
+		verifyCommonName: row.verify_common_name ?? "",
+		validStatusCode: row.valid_status_code ?? 0,
+	}));
+}
+
+// saveReport records one community report for an IP and returns its id.
+export async function saveReport(db: D1Database, rep: Omit<IPReport, "id">): Promise<number> {
+	const res = await db
+		.prepare(
+			`INSERT INTO ip_reports (ip, verdict, comment, reporter_prefix, reporter_asn, reporter_as_name, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.bind(
+			rep.ip,
+			rep.verdict ? 1 : 0,
+			rep.comment || null,
+			rep.reporterPrefix || null,
+			rep.reporterASN || null,
+			rep.reporterASName || null,
+			toSQLiteDateTime(rep.createdAt),
+		)
+		.run();
+	return res.meta.last_row_id;
+}
+
+interface IPReportRow {
+	id: number;
+	ip: string;
+	verdict: number;
+	comment: string;
+	reporter_prefix: string;
+	reporter_asn: number;
+	reporter_as_name: string;
+	created_at: string;
+}
+
+// listReports returns the most recent reports for ip, newest first. The
+// reporter's full IP is intentionally never selected -- callers should
+// only surface reporterPrefix/reporterASN/reporterASName publicly.
+export async function listReports(db: D1Database, ip: string, limit: number): Promise<IPReport[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT id, ip, verdict, COALESCE(comment, '') AS comment, COALESCE(reporter_prefix, '') AS reporter_prefix,
+				COALESCE(reporter_asn, 0) AS reporter_asn, COALESCE(reporter_as_name, '') AS reporter_as_name, created_at
+			FROM ip_reports WHERE ip = ? ORDER BY created_at DESC LIMIT ?`,
+		)
+		.bind(ip, limit)
+		.all<IPReportRow>();
+	return results.map((row) => ({
+		id: row.id,
+		ip: row.ip,
+		verdict: row.verdict !== 0,
+		comment: row.comment,
+		reporterPrefix: row.reporter_prefix,
+		reporterASN: row.reporter_asn,
+		reporterASName: row.reporter_as_name,
+		createdAt: fromSQLiteDateTime(row.created_at)!,
+	}));
+}
+
+// recheckMinDelayMs/recheckMaxDelayMs bound the random delay applied before
+// a queued recheck becomes eligible for the (deferred, pull-model) worker
+// to pick up -- spreads out probes triggered by a burst of reports instead
+// of firing them all at once.
+const RECHECK_MIN_DELAY_MS = 60_000;
+const RECHECK_MAX_DELAY_MS = 60 * 60_000;
+
+// enqueueRecheck schedules a re-scan of ip for report reportId, eligible to
+// run at a random time 1 minute to 1 hour from now. A no-op if that report
+// was already enqueued (UNIQUE(report_id)), so callers can call it at most
+// once per report without a separate existence check. Only *writes* the
+// queue -- processing it is a later, deferred phase (the recheck
+// pull-model rework).
+export async function enqueueRecheck(db: D1Database, reportId: number, ip: string, createdAt: Date): Promise<void> {
+	const delayMs = RECHECK_MIN_DELAY_MS + Math.random() * (RECHECK_MAX_DELAY_MS - RECHECK_MIN_DELAY_MS);
+	const scheduledAt = new Date(Date.now() + delayMs);
+	await db
+		.prepare(`INSERT OR IGNORE INTO recheck_queue (report_id, ip, created_at, scheduled_at) VALUES (?, ?, ?, ?)`)
+		.bind(reportId, ip, toSQLiteDateTime(createdAt), toSQLiteDateTime(scheduledAt))
+		.run();
 }

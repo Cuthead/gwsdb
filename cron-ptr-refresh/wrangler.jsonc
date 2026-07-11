@@ -1,0 +1,22 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "gwsdb-ptr-refresh",
+  "main": "index.ts",
+  "compatibility_date": "2026-07-01",
+  "observability": {
+    "enabled": true
+  },
+  // Drains the whole ptr_cache refresh backlog per tick (see index.ts) --
+  // 15 minutes is the cadence, not a per-IP interval like the Go original's
+  // 15-second loop (StartPTRRefresher).
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gwsdb",
+      "database_id": "d4e3df1f-07d5-4924-be21-5574125ef400"
+    }
+  ]
+}

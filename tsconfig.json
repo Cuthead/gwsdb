@@ -11,5 +11,5 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src", "functions"]
+  "include": ["src", "functions", "cron-ptr-refresh"]
 }

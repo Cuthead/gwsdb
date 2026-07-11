@@ -8,6 +8,11 @@ export interface Env {
 	// parseLogTimestamp for why this can't just be assumed as the Worker's
 	// own timezone.
 	LOG_TZ_OFFSET_MINUTES?: string;
+	// JSON-form DoH endpoint (Accept: application/dns-json) used for all DNS
+	// resolution (PTR/host/ASN) -- see src/doh.ts. Defaults to
+	// "https://dns.google/resolve" in code if unset, same provider as the Go
+	// original's defaultDoHURL.
+	DOH_JSON_URL?: string;
 	// Injected automatically by Cloudflare Pages at request time (see
 	// src/html.ts's buildInfoFromEnv) -- not set in wrangler.jsonc.
 	CF_PAGES_COMMIT_SHA?: string;
