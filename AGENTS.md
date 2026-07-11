@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex, Cursor, etc
 
 ## What this is
 
-gwsdb ("GWS Database") tracks which Google Web Server IPs are reachable from China. It ingests scan output from an external tool, `gscan_quic` (not in this repo — lives alongside it on the same host, see `scripts/scan_and_ingest.sh`), stores results in SQLite, and serves a deliberately JS-minimal web UI for browsing/querying known IPs and their reachability history.
+gwsdb ("GWS Database") tracks which Google Web Server IPs are reachable from China. It ingests scan output from an external tool, `gscan_quic` (not in this repo — lives alongside it on the same host, see `scripts/scan_and_ingest.sh`), stores results in SQLite, and serves a web UI for browsing/querying known IPs and their reachability history.
 
 ## Commands
 
@@ -49,7 +49,9 @@ New columns on existing tables go through `migrate()` in `internal/store/store.g
 
 **internal/ingest** parses two independent sources of truth for the same scan and reconciles them: the output IP file (`readOutputIPs`, handles both plain-separator and `gop` quoted-comma formats) for the authoritative hit list, and the captured stdout log (`parseLog`, regex-driven) for per-IP RTT, pass/fail reasons, and timestamps. Either can be missing (`-log-only` / no output file) — see `Run()`'s fallback chain. The log only has failure detail if `gscan_quic` was run with `LogLevel: 5`.
 
-**internal/web** is intentionally framework-free, Web 1.0 (see the package doc comment — "deliberately Web 1.0, JS-free" for the backend; a couple of pages now layer small inline `<script>` blocks for client-side search/sort/filter, see `home.tmpl`, rather than reintroducing a JS framework). Templates are embedded via `//go:embed templates/*.tmpl` and parsed once at startup — no hot reload; restart the server after editing a `.tmpl`. Four routes: `/` (home, known-IP list), `/query` (single IP lookup + history + reports), `/report` (POST, two-step confirm before publishing a report), `/scans` (scan history).
+**internal/web** is framework-free (standard library `net/http` + `html/template`, no JS framework). Templates are embedded via `//go:embed templates/*.tmpl` and parsed once at startup — no hot reload; restart the server after editing a `.tmpl`. Routes: `/` (home page shell — the known-IP list itself is fetched client-side, see below), `/api/pool` (JSON: full known-IP list + summary stats), `/api/pool/version` (JSON: cheap `{version}` signal, `store.PoolVersion()` — `MAX(id) FROM ip_checks`), `/query` (single IP lookup + history + reports), `/report` (POST, two-step confirm before publishing a report), `/scans` (scan history).
+
+The home page no longer queries the DB or renders the IP list server-side on every hit — that was wasteful since `ip_pool` became a live view (window functions over all of `ip_checks`) rather than a maintained table (see `ip_pool` above). Instead `/static/home.js` fetches `/api/pool/version` on load, compares it against a cached copy in `localStorage` (`gwsdb_pool_v1`), and only fetches the full `/api/pool` payload — then renders rows client-side via the DOM API (never `innerHTML`, since PTR hostnames/country are derived from live untrusted DNS data) — when the version has moved. Both ingest and recheck write `ip_checks` rows, so `PoolVersion()` bumps on either, and a repeat visit in between is served entirely from `localStorage` with no request to `/api/pool` at all. This means the home page now requires JS to show any data (no more no-JS fallback with visible rows) — CSP's `connect-src 'self'` was added to allow the fetches.
 
 `/query` gates on ASN: an IP is only looked up if Team Cymru's ASN data says it belongs to Google (`isGoogleASN`, substring match on AS name). PTR and ASN lookups are cached in `store` with separate TTLs (`ptrCacheTTL` 30d, `asnCacheTTL` 7d).
 

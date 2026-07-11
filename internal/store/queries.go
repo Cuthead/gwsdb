@@ -282,6 +282,17 @@ func (s *Store) Overview() (Stats, error) {
 	return st, nil
 }
 
+// PoolVersion returns ip_checks' highest row id, a cheap (rowid-indexed)
+// signal that changes whenever ingest or recheck writes a new check --
+// including a recheck, which never touches scans. The home page's
+// client-side cache polls this to decide whether ip_pool needs refetching,
+// instead of recomputing the view on every visit.
+func (s *Store) PoolVersion() (int64, error) {
+	var v int64
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM ip_checks`).Scan(&v)
+	return v, err
+}
+
 // GetPTR returns a cached PTR/geo lookup for ip if present and not past its
 // observed DNS TTL (checked_at + ttl_seconds).
 func (s *Store) GetPTR(ip string) (*PTRCacheEntry, error) {

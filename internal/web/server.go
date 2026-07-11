@@ -1,9 +1,10 @@
-// Package web implements the (deliberately Web 1.0, JS-free) HTTP frontend.
+// Package web implements the HTTP frontend.
 package web
 
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -131,6 +132,8 @@ func New(st *store.Store) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
+	mux.HandleFunc("/api/pool", s.handleAPIPool)
+	mux.HandleFunc("/api/pool/version", s.handleAPIPoolVersion)
 	mux.HandleFunc("/query", s.handleQuery)
 	mux.HandleFunc("/report", s.handleReport)
 	mux.HandleFunc("/scans", s.handleScans)
@@ -141,9 +144,10 @@ func (s *Server) Handler() http.Handler {
 // contentSecurityPolicy locks the pages down to their own origin. Everything
 // the templates need is served from /static/, so there is no 'unsafe-inline'
 // here -- which is why the stylesheet and home.js are separate files rather
-// than inline <style>/<script> blocks with inline event handlers.
+// than inline <style>/<script> blocks with inline event handlers. connect-src
+// allows the home page's JS to fetch /api/pool and /api/pool/version.
 const contentSecurityPolicy = "default-src 'none'; " +
-	"img-src 'self'; style-src 'self'; script-src 'self'; " +
+	"img-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; " +
 	"form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
 // securityHeaders sets the response headers that apply to every route.
@@ -217,24 +221,32 @@ func formatTime(t time.Time) string {
 const maxScansListed = 500
 
 type ipRow struct {
-	IP          string
-	PTR         string   // cached PTR hostname(s), newline-joined, "" if never looked up; kept for client-side search matching
-	PTRList     []string // same hostnames, for rendering one linked entry per PTR record
-	Country     string   // best-effort, decoded from PTR, "" if unknown
-	CountryCode string   // ISO 3166-1 alpha-2, "" if unknown
-	Status      string   // "Reachable" / "Unreachable" / "-" (never explicitly re-checked)
-	FirstSeen   string
-	LastSeen    string
-	LastRTTMs   int
+	IP          string   `json:"ip"`
+	PTR         string   `json:"ptr"`         // cached PTR hostname(s), newline-joined, "" if never looked up; kept for client-side search matching
+	PTRList     []string `json:"ptrList"`     // same hostnames, for rendering one linked entry per PTR record
+	Country     string   `json:"country"`     // best-effort, decoded from PTR, "" if unknown
+	CountryCode string   `json:"countryCode"` // ISO 3166-1 alpha-2, "" if unknown
+	Status      string   `json:"status"`      // "Reachable" / "Unreachable" / "-" (never explicitly re-checked)
+	FirstSeen   string   `json:"firstSeen"`
+	LastSeen    string   `json:"lastSeen"`
+	LastRTTMs   int      `json:"lastRttMs"`
 }
 
 type homeData struct {
-	Title      string
-	IPs        []ipRow
-	Count      int
-	ScanMode   string
-	Stats      store.Stats
-	LastScanAt string
+	Title string
+}
+
+// poolResponse is the JSON body of GET /api/pool: the home page's entire
+// known-IP list plus the summary stats, versioned so the client can cache it
+// and skip refetching until PoolVersion changes (see handleAPIPool).
+type poolResponse struct {
+	Version       int64   `json:"version"`
+	IPs           []ipRow `json:"ips"`
+	Count         int     `json:"count"`
+	ScanMode      string  `json:"scanMode"`
+	TotalKnownIPs int     `json:"totalKnownIPs"`
+	TotalScans    int     `json:"totalScans"`
+	LastScanAt    string  `json:"lastScanAt"`
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -242,21 +254,48 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.render(w, "home.tmpl", homeData{Title: "Home"})
+}
 
-	data := homeData{Title: "Home"}
+// handleAPIPoolVersion reports the current PoolVersion so the home page's JS
+// can decide, with a single cheap query, whether its cached copy of
+// /api/pool is still current.
+func (s *Server) handleAPIPoolVersion(w http.ResponseWriter, r *http.Request) {
+	v, err := s.st.PoolVersion()
+	if err != nil {
+		log.Printf("api/pool/version: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(map[string]int64{"version": v})
+}
 
-	// Search, column sort, the reachable-only filter, and pagination are all
-	// handled client-side in JS over this page's rows, so the full list is
-	// fetched once, unfiltered, in one fixed order (newest first).
+// handleAPIPool serves the full known-IP list and summary stats as JSON.
+// Search, column sort, the reachable-only filter, and pagination are all
+// handled client-side in JS over this data, so it's fetched once, unfiltered,
+// in one fixed order (newest first), and cached in the browser until
+// PoolVersion (see /api/pool/version) moves.
+func (s *Server) handleAPIPool(w http.ResponseWriter, r *http.Request) {
+	version, err := s.st.PoolVersion()
+	if err != nil {
+		log.Printf("api/pool: PoolVersion: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	known, err := s.st.ListKnownIPs(store.ListKnownIPsOptions{
 		SortBy:   "last_seen",
 		SortDesc: true,
 	})
 	if err != nil {
-		log.Printf("home: ListKnownIPs: %v", err)
+		log.Printf("api/pool: ListKnownIPs: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+
+	resp := poolResponse{Version: version}
 	for _, st := range known {
 		hostnames := store.SplitStrings(st.PTRHostname)
 		row := ipRow{
@@ -280,24 +319,29 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		default:
 			row.Status = "Unreachable"
 		}
-		data.IPs = append(data.IPs, row)
+		resp.IPs = append(resp.IPs, row)
 	}
-	data.Count = len(data.IPs)
+	resp.Count = len(resp.IPs)
 
 	if sc, err := s.st.LatestScan(""); err == nil && sc != nil {
-		data.ScanMode = sc.ScanMode
+		resp.ScanMode = sc.ScanMode
 	}
 
 	stats, err := s.st.Overview()
 	if err != nil {
-		log.Printf("home: Overview: %v", err)
+		log.Printf("api/pool: Overview: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	data.Stats = stats
-	data.LastScanAt = formatTime(stats.LastScanAt)
+	resp.TotalKnownIPs = stats.TotalKnownIPs
+	resp.TotalScans = stats.TotalScans
+	resp.LastScanAt = formatTime(stats.LastScanAt)
 
-	s.render(w, "home.tmpl", data)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("api/pool: encode: %v", err)
+	}
 }
 
 type checkRow struct {

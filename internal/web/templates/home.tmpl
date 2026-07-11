@@ -27,8 +27,12 @@
 
 <p>The table below lists tracked Google Web Server (GWS) IP addresses and their reachability status.</p>
 
+<noscript><p><i>This page needs JavaScript enabled -- the IP list is fetched and rendered client-side so repeat visits can be served from a local cache instead of re-querying the server.</i></p></noscript>
+
+<p id="poolStatus">Loading…</p>
+
 <p>
-<span id="visibleCount">{{.Count}}</span> / <span id="familyCount">{{.Count}}</span> match filter
+<span id="visibleCount">0</span> / <span id="familyCount">0</span> match filter
 </p>
 
 <p>
@@ -46,8 +50,7 @@
 </select>
 </p>
 
-{{if .IPs}}
-<div class="gwsdb-scroll">
+<div class="gwsdb-scroll gwsdb-hidden" id="ipTableWrap">
 <table border="1" cellpadding="4" cellspacing="0" width="100%" id="ipTable">
 <tr bgcolor="#EEEEEE">
 <td><b><a href="#" data-sort="ip" data-sort-desc="0">IP Address</a> <span class="arrow" data-col="ip"></span></b></td>
@@ -59,21 +62,10 @@
 <td><b><a href="#" data-sort="rtt" data-sort-desc="1">Last RTT</a> <span class="arrow" data-col="rtt"></span></b></td>
 </tr>
 <tbody id="ipTableBody">
-{{range .IPs}}
-<tr data-ip="{{.IP}}" data-ptr="{{.PTR}}" data-country="{{.Country}}" data-status="{{.Status}}" data-first-seen="{{.FirstSeen}}" data-last-seen="{{.LastSeen}}" data-rtt="{{.LastRTTMs}}">
-<td><tt><a href="/query?ip={{.IP}}">{{.IP}}</a></tt></td>
-<td>{{if .PTRList}}<tt>{{range $i, $h := .PTRList}}{{if $i}}<br>{{end}}<a href="/query?ip={{$h}}">{{$h}}</a>{{end}}</tt>{{else}}-{{end}}</td>
-<td>{{if .CountryCode}}<img src="/static/flags/{{.CountryCode}}.gif" alt="{{.CountryCode}}" title="{{.Country}}" height="11">{{end}} {{if .Country}}{{.Country}}{{else}}-{{end}}</td>
-<td>{{if eq .Status "Reachable"}}<font color="#008000">✓ Reachable</font>{{else if eq .Status "Unreachable"}}<font color="#CC0000">✗ Unreachable</font>{{else}}-{{end}}</td>
-<td>{{.FirstSeen}}</td>
-<td>{{.LastSeen}}</td>
-<td>{{if .LastRTTMs}}{{.LastRTTMs}} ms{{else}}-{{end}}</td>
-</tr>
-{{end}}
 </tbody>
 </table>
 </div>
-<p align="center">
+<p align="center" id="pagerWrap" class="gwsdb-hidden">
 <input type="button" id="prevButton" value="&lt; Prev">
 <span id="pageInfo"></span>
 <input type="button" id="nextButton" value="Next &gt;">
@@ -86,16 +78,13 @@
 </select>
 </p>
 <script src="/static/home.js"></script>
-{{else}}
-<p><i>No data yet. Please run a scan and import the results first.</i></p>
-{{end}}
 
 <hr>
 <table border="0" cellpadding="2" cellspacing="0">
 <tr><td colspan="2"><b>Statistics</b></td></tr>
-<tr><td>Total Known IPs</td><td>{{.Stats.TotalKnownIPs}}</td></tr>
-<tr><td>Total Scans</td><td>{{.Stats.TotalScans}}</td></tr>
-<tr><td>Last Scan</td><td>{{.LastScanAt}}{{if .ScanMode}} ({{.ScanMode}}){{end}}</td></tr>
+<tr><td>Total Known IPs</td><td id="totalKnownIPs">-</td></tr>
+<tr><td>Total Scans</td><td id="totalScans">-</td></tr>
+<tr><td>Last Scan</td><td id="lastScan">-</td></tr>
 </table>
 
 </font>
