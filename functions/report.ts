@@ -68,7 +68,13 @@ async function maybeEnqueueRecheck(
 function renderConfirmBody(opts: {
 	ip: string;
 	verdict: boolean;
-	comment: string;
+	// displayComment is what's shown in the table (blank for an operator-test
+	// submission); formComment is what the hidden field resubmits on confirm
+	// -- these must NOT be the same value for an operator-test submission, or
+	// the token that made it one is lost before the confirm step can see it
+	// again (see onRequestPost's comment on isOperatorTest).
+	displayComment: string;
+	formComment: string;
 	reporterPrefix: string;
 	reporterASN: number;
 	reporterASName: string;
@@ -81,7 +87,7 @@ function renderConfirmBody(opts: {
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>以下内容将被存储并公开显示</b></td></tr>
 <tr><td width="30%">目标IP</td><td><tt>${escapeHTML(opts.ip)}</tt></td></tr>
 <tr><td>结论</td><td>${verdictHTML}</td></tr>
-${opts.comment ? `<tr><td>备注</td><td>${escapeHTML(opts.comment)}</td></tr>` : ""}
+${opts.displayComment ? `<tr><td>备注</td><td>${escapeHTML(opts.displayComment)}</td></tr>` : ""}
 <tr><td>你的前缀</td><td><tt>${opts.reporterPrefix ? escapeHTML(opts.reporterPrefix) : ""}</tt></td></tr>
 <tr><td>你的AS</td><td>${opts.reporterASN ? `AS${opts.reporterASN}${opts.reporterASName ? ` ${escapeHTML(opts.reporterASName)}` : ""}` : ""}</td></tr>
 </table>
@@ -91,7 +97,7 @@ ${opts.comment ? `<tr><td>备注</td><td>${escapeHTML(opts.comment)}</td></tr>` 
 
 <form method="POST" action="/report">
 <input type="hidden" name="ip" value="${escapeHTML(opts.ip)}">
-<input type="hidden" name="comment" value="${escapeHTML(opts.comment)}">
+<input type="hidden" name="comment" value="${escapeHTML(opts.formComment)}">
 <input type="hidden" name="confirm" value="1">
 <button type="submit" name="verdict" value="${opts.verdict ? "usable" : "unusable"}">${opts.verdict ? "确认提交为可用" : "确认提交为不可用"}</button>
 </form>
@@ -135,18 +141,21 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	}
 
 	let comment = String(form.get("comment") ?? "").trim();
+	if (comment.length > MAX_REPORT_COMMENT_LEN) comment = comment.slice(0, MAX_REPORT_COMMENT_LEN);
 
 	// Operator self-test escape hatch: the Go original could submit a report
 	// from inside the LAN (bypassing Cloudflare, no public IP for the reporter
 	// lookup to resolve) to test without publishing its own prefix/AS. There's
 	// no equivalent bypass here -- every request has a real CF-Connecting-IP --
 	// so pasting the ingest token into the comment field opts out of the
-	// reporter lookup instead. The token is compared timing-safely and never
-	// stored or echoed back: comment is cleared immediately so it can't leak
-	// into ip_reports (public) or the confirm page's hidden form field.
+	// reporter lookup instead. Re-derived fresh on *every* request (both the
+	// unconfirmed and confirm=1 POSTs) by comparing the raw comment timing-
+	// safely -- comment itself is deliberately left untouched here (still
+	// carries the token) so the hidden form field can resubmit it and the
+	// confirm=1 request re-detects the same operator-test state; only
+	// display/storage points below use a blanked copy, never this one.
 	const isOperatorTest = timingSafeEqual(comment, env.INGEST_TOKEN);
-	if (isOperatorTest) comment = "";
-	if (comment.length > MAX_REPORT_COMMENT_LEN) comment = comment.slice(0, MAX_REPORT_COMMENT_LEN);
+	const storedComment = isOperatorTest ? "" : comment;
 
 	// The reporter's address is used only to resolve their announced
 	// prefix/AS; it is never persisted.
@@ -172,7 +181,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	if (form.get("confirm") !== "1") {
 		const html = pageShell({
 			title: "确认",
-			body: renderConfirmBody({ ip, verdict, comment, reporterPrefix, reporterASN, reporterASName }),
+			body: renderConfirmBody({ ip, verdict, displayComment: storedComment, formComment: comment, reporterPrefix, reporterASN, reporterASName }),
 			build,
 			lang: "zh",
 		});
@@ -183,7 +192,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	const reportId = await saveReport(env.DB, {
 		ip,
 		verdict,
-		comment,
+		comment: storedComment,
 		reporterPrefix,
 		reporterASN,
 		reporterASName,
