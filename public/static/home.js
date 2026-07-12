@@ -13,6 +13,7 @@
 // each row's PTR hostnames client-side with the same logic the server uses
 // for the no-JS/crawler-rendered page (see geo.js/geoData.ts).
 import { decodeBest, countryCode } from './geo.js';
+import { resolvePTR } from './ptrResolve.js';
 
 (function () {
 	var CACHE_KEY = 'gwsdb_pool_v1';
@@ -146,6 +147,72 @@ import { decodeBest, countryCode } from './geo.js';
 		}
 	}
 
+	// fillPtrCell (re)populates td with ptrList's hostnames, each linking to
+	// /query -- shared by buildRow's initial render and resolveClientPTR's
+	// update once a client-side DoH lookup fills in a previously-empty list.
+	function fillPtrCell(td, ptrList) {
+		td.textContent = '';
+		if (ptrList && ptrList.length) {
+			var ptrTt = document.createElement('tt');
+			ptrList.forEach(function (h, i) {
+				if (i) ptrTt.appendChild(document.createElement('br'));
+				var a = document.createElement('a');
+				a.href = '/query?ip=' + encodeURIComponent(h);
+				a.textContent = h;
+				ptrTt.appendChild(a);
+			});
+			td.appendChild(ptrTt);
+		} else {
+			td.textContent = '-';
+		}
+	}
+
+	// fillCountryCell (re)populates td with the flag + country name for a
+	// decoded location -- shared the same way as fillPtrCell.
+	function fillCountryCell(td, country, code) {
+		td.textContent = '';
+		if (code) {
+			var img = document.createElement('img');
+			img.src = '/static/flags/' + encodeURIComponent(code) + '.gif';
+			img.alt = code;
+			img.title = country;
+			img.height = 11;
+			td.appendChild(img);
+			td.appendChild(document.createTextNode(' '));
+		}
+		td.appendChild(document.createTextNode(country || '-'));
+	}
+
+	// scheduleRefilter coalesces bursts of resolveClientPTR updates (a fresh
+	// ingest can leave hundreds of rows unresolved at once) into a single
+	// filter() re-run, so a search/sort that depends on country or PTR text
+	// picks up newly-resolved rows without re-filtering on every single one.
+	var refilterTimer = null;
+	function scheduleRefilter() {
+		if (refilterTimer) return;
+		refilterTimer = setTimeout(function () {
+			refilterTimer = null;
+			filter();
+		}, 300);
+	}
+
+	// resolveClientPTR looks up ip.ip's PTR client-side (see ptrResolve.js)
+	// when the server sent an empty ptrList -- happens for IPs a fresh
+	// ingest just discovered, before cron-ptr-refresh has caught up. Updates
+	// the row in place; a no-op if the lookup also comes back empty.
+	function resolveClientPTR(tr, ptrTd, countryTd, ip) {
+		resolvePTR(ip).then(function (result) {
+			if (!result.ok || !result.hostnames.length) return;
+			var loc = decodeBest(result.hostnames);
+			var code = countryCode(loc.country);
+			tr.dataset.ptr = result.hostnames.join(' ');
+			tr.dataset.country = loc.country;
+			fillPtrCell(ptrTd, result.hostnames);
+			fillCountryCell(countryTd, loc.country, code);
+			scheduleRefilter();
+		});
+	}
+
 	// buildRow creates one <tr> for an IP entry via the DOM API (never
 	// innerHTML) since PTR hostnames and the decoded country are derived from
 	// live DNS data, not trusted input.
@@ -173,33 +240,16 @@ import { decodeBest, countryCode } from './geo.js';
 		tr.appendChild(ipTd);
 
 		var ptrTd = document.createElement('td');
-		if (ip.ptrList && ip.ptrList.length) {
-			var ptrTt = document.createElement('tt');
-			ip.ptrList.forEach(function (h, i) {
-				if (i) ptrTt.appendChild(document.createElement('br'));
-				var a = document.createElement('a');
-				a.href = '/query?ip=' + encodeURIComponent(h);
-				a.textContent = h;
-				ptrTt.appendChild(a);
-			});
-			ptrTd.appendChild(ptrTt);
-		} else {
-			ptrTd.textContent = '-';
-		}
+		fillPtrCell(ptrTd, ip.ptrList);
 		tr.appendChild(ptrTd);
 
 		var countryTd = document.createElement('td');
-		if (code) {
-			var img = document.createElement('img');
-			img.src = '/static/flags/' + encodeURIComponent(code) + '.gif';
-			img.alt = code;
-			img.title = country;
-			img.height = 11;
-			countryTd.appendChild(img);
-			countryTd.appendChild(document.createTextNode(' '));
-		}
-		countryTd.appendChild(document.createTextNode(country || '-'));
+		fillCountryCell(countryTd, country, code);
 		tr.appendChild(countryTd);
+
+		if (!ip.ptrList || !ip.ptrList.length) {
+			resolveClientPTR(tr, ptrTd, countryTd, ip.ip);
+		}
 
 		var statusTd = document.createElement('td');
 		if (ip.status === 'Reachable' || ip.status === 'Unreachable') {
