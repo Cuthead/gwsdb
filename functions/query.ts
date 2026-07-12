@@ -201,6 +201,23 @@ async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, data: Q
 	}));
 }
 
+// queryDescription summarizes the lookup result for the page's og:description,
+// so a shared link (e.g. a report thread) previews the specific IP/hostname's
+// reachability and estimated location instead of the generic query-page blurb.
+function queryDescription(data: QueryData): string {
+	if (!data.submitted) return "Look up whether an IP address or 1e100.net hostname belongs to a Google Web Server reachable from China.";
+	if (data.error) return `${data.query}: ${data.error}.`;
+
+	const location = data.matched ? (data.city ? `${data.city}, ${data.country}` : data.country) : "";
+	if (data.queryIsHostname) {
+		return location ? `${data.query}: 1e100.net hostname, estimated location ${location}.` : `${data.query}: 1e100.net hostname.`;
+	}
+
+	const parts = [`${data.query}: ${data.hasHistory ? data.status : "no scan history"}`];
+	if (location) parts.push(`estimated location ${location}`);
+	return `${parts.join(", ")}.`;
+}
+
 function statusHTML(status: string, reachableLabel: string, unreachableLabel: string): string {
 	if (status === "Reachable") return `<font color="#008000">&#x2713; ${reachableLabel}</font>`;
 	if (status === "Unreachable") return `<font color="#CC0000">&#x2717; ${unreachableLabel}</font>`;
@@ -413,6 +430,11 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	}
 
 	const build = buildInfoFromEnv(context.env.CF_PAGES_COMMIT_SHA);
-	const html = pageShell({ title: "Query", body: renderQueryBody(data), build });
+	const html = pageShell({
+		title: "Query",
+		body: renderQueryBody(data),
+		build,
+		description: queryDescription(data),
+	});
 	return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 };

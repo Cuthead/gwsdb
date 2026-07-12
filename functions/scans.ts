@@ -86,6 +86,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		title: "Scan History",
 		body: renderScansTable(scans, scans.length === MAX_SCANS_LISTED),
 		build,
+		description: "History of automated scans that populate the GWS Database's list of Google Web Server IPs reachable from China.",
 	});
 	return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 };

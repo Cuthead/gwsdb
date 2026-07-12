@@ -6,6 +6,8 @@ This file provides guidance to AI coding agents (Claude Code, Codex, Cursor, etc
 
 gwsdb ("GWS Database") tracks which Google Web Server IPs are reachable from China. It ingests scan output from an external tool, `gscan_quic` (not in this repo — lives alongside it on the same host, see `scripts/scan_and_ingest.sh`), stores results in Cloudflare D1, and serves a web UI for browsing/querying known IPs and their reachability history.
 
+"GWS" is Google's own server identifier (the `Server: gws` response header), not "Google Web Search" — these are not crawler/spider IPs. China's GFW blocks most Google IPs; this project exists to find and track the ones still reachable, so don't describe the tracked IPs as a "search crawler" or "web search crawler" anywhere (UI copy, meta tags, comments).
+
 The stack is split across two runtimes:
 - **`cmd/gwsdb`** (Go) — runs only the probe-side pieces that must stay on real China-based network infrastructure: parsing `gscan_quic` output/logs and the recheck worker. It holds no local database; every subcommand talks to the Cloudflare-hosted API over HTTP.
 - **`functions/` + `src/`** (TypeScript, Cloudflare Pages Functions + D1) — everything else: web UI, `/api/*`, ingest/delete-scan/recheck endpoints, PTR/ASN caching, community reports. This is the full replacement for what used to be a Go `net/http` server (`internal/web`) backed by local SQLite (`internal/store`'s DB layer) — both are gone; see git history around the Cloudflare migration if you need the old implementation for reference.

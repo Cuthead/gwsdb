@@ -18,6 +18,8 @@ import type { Stats } from "../src/types";
 // "country" it special-cases for the client-side-only decode), defaultDesc
 // mirrors static/home.js's data-sort-desc attributes so a first click on a
 // header sorts the same direction whether JS is available or not.
+const DEFAULT_HOME_DESCRIPTION = "Live-updated list of known Google Web Server (GWS) IPs reachable from China, with PTR, country, and reachability status.";
+
 const sortColumns: Record<string, { dbKey: string; label: string; defaultDesc: boolean }> = {
 	ip: { dbKey: "ip", label: "IP Address", defaultDesc: false },
 	ptr: { dbKey: "ptr", label: "PTR", defaultDesc: false },
@@ -211,7 +213,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const build = buildInfoFromEnv(context.env.CF_PAGES_COMMIT_SHA);
 
 	if (!bot) {
-		const html = pageShell({ title: "Home", body: jsShellBody, build, extraHead: nojsRefresh });
+		const html = pageShell({ title: "Home", body: jsShellBody, build, extraHead: nojsRefresh, description: DEFAULT_HOME_DESCRIPTION });
 		return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 	}
 
@@ -249,6 +251,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		title: "Home",
 		body: renderFullTable(url, ips, stats, scanMode, activeSort, activeDesc, family),
 		build,
+		description: DEFAULT_HOME_DESCRIPTION,
 	});
 	const response = new Response(html, {
 		headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=86400" },

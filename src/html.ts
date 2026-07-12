@@ -84,16 +84,24 @@ const NAV_ZH = { home: "首页", query: "查询", scans: "扫描记录" };
 // verbatim into <head> (e.g. home.tmpl's <noscript> refresh meta tag).
 // lang defaults to "en" (NAV_EN); pass "zh" for report_confirm's Chinese
 // chrome (NAV_ZH).
-export function pageShell(opts: { title: string; body: string; build: BuildInfo; extraHead?: string; lang?: "en" | "zh" }): string {
+const DEFAULT_DESCRIPTION = "Community-maintained database of Google Web Server (GWS) IPs reachable from China, with PTR/ASN lookups, community reports, and scan history.";
+
+export function pageShell(opts: { title: string; body: string; build: BuildInfo; extraHead?: string; lang?: "en" | "zh"; description?: string }): string {
 	const lang = opts.lang ?? "en";
 	const nav = lang === "zh" ? NAV_ZH : NAV_EN;
+	const description = opts.description ?? DEFAULT_DESCRIPTION;
+	const fullTitle = `${escapeHTML(opts.title)} - GWS Database`;
 	return `<!DOCTYPE html>
 <html lang="${lang}">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="${escapeHTML(description)}">
+<meta property="og:title" content="${fullTitle}">
+<meta property="og:description" content="${escapeHTML(description)}">
+<meta property="og:type" content="website">
 ${opts.extraHead ?? ""}
-<title>${escapeHTML(opts.title)} - GWS Database</title>
+<title>${fullTitle}</title>
 <link rel="stylesheet" href="/static/gwsdb.css">
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
