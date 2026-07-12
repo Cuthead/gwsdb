@@ -10,10 +10,11 @@ import type { Env } from "../src/env";
 // contentSecurityPolicy locks the pages down to their own origin. Everything
 // the pages need is served from /static/, so there is no 'unsafe-inline'
 // here. connect-src allows the home page's JS to fetch /api/pool and
-// /api/pool/version.
+// /api/pool/version, plus cloudflare-dns.com for ptrResolve.js's
+// client-side PTR lookups on rows the server hasn't cached yet.
 const CONTENT_SECURITY_POLICY =
 	"default-src 'none'; " +
-	"img-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; " +
+	"img-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self' https://cloudflare-dns.com; " +
 	"form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 export const onRequest: PagesFunction<Env> = async (context) => {
