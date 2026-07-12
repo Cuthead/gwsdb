@@ -462,55 +462,66 @@ export async function getPTR(db: D1Database, ip: string): Promise<PTRCacheEntry 
 	};
 }
 
-// savePTR upserts a PTR lookup result into the cache.
+// savePTR upserts a PTR lookup result into the cache. expires_at is computed
+// via SQLite's own datetime() (not JS date math) so its TEXT format exactly
+// matches migration 0003's backfill -- pendingIPsForPTRRefresh compares it
+// unwrapped (no datetime() call at query time) so the idx_ptr_cache_expires_at
+// index stays usable; mixing formats would silently break that comparison,
+// the same footgun nextIPForPTRRefresh/nextPendingRecheck had before.
 export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
+	const checkedAt = toSQLiteDateTime(e.checkedAt);
 	await db
 		.prepare(
-			`INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at)
-			VALUES (?, ?, ?, ?, ?)
+			`INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, datetime(?, '+' || ? || ' seconds'))
 			ON CONFLICT(ip) DO UPDATE SET
 				ptr_hostname = excluded.ptr_hostname,
 				lookup_ok    = excluded.lookup_ok,
 				ttl_seconds  = excluded.ttl_seconds,
-				checked_at   = excluded.checked_at`,
+				checked_at   = excluded.checked_at,
+				expires_at   = excluded.expires_at`,
 		)
-		.bind(e.ip, joinStrings(e.ptrHostnames), e.lookupOk ? 1 : 0, e.ttlSeconds, toSQLiteDateTime(e.checkedAt))
+		.bind(e.ip, joinStrings(e.ptrHostnames), e.lookupOk ? 1 : 0, e.ttlSeconds, checkedAt, checkedAt, e.ttlSeconds)
 		.run();
 }
 
 // pendingIPsForPTRRefresh returns up to limit IPs from ip_pool whose
 // ptr_cache entry is missing or past its observed DNS TTL, preferring
-// never-checked IPs first, then the stalest. ip_pool is a view recomputed
-// (window functions over all of ip_checks) on every query against it, so
-// this fetches the whole batch a cron tick needs in one call rather than
-// being called once per IP in a loop -- cron-ptr-refresh used to do the
-// latter (LIMIT 1, called up to 200x per tick), which meant recomputing the
-// entire view up to 200 times per tick; D1 query analytics showed this one
-// query alone at ~75% of total runtime with a >60:1 rows-read-to-rows-
-// returned ratio. Returns [] if every known IP has a fresh cache entry.
-//
-// Both sides of the staleness comparison go through SQLite's own datetime()
-// (rather than binding a JS-formatted "now" string) so their TEXT output is
-// guaranteed to be in the same format -- datetime() always normalizes to
-// "YYYY-MM-DD HH:MM:SS" (space-separated, no fractional seconds), while
-// Date#toISOString() produces "YYYY-MM-DDTHH:MM:SS.sssZ". Comparing those
-// two formats as plain strings is a footgun: since ' ' (0x20) sorts before
-// 'T' (0x54), "<datetime() output> < <toISOString() output>" is true for
-// any same-day pair regardless of the actual times, making every row look
-// perpetually stale.
+// never-checked IPs first, then the stalest. Two separate indexed queries
+// instead of one LEFT JOIN + OR: the join's WHERE (missing OR expired)
+// wasn't sargable, so SQLite had to materialize and sort the whole
+// ip_pool x ptr_cache result before LIMIT could trim it -- D1 query
+// analytics showed ~15k rows read per call even after ip_pool became a
+// real (small) table, since the cost was in the join+sort, not ip_pool's
+// own size. "Missing" (query A) is bounded by ip_pool's size regardless
+// (no index avoids that scan, but ip_pool is small); "stale" (query B)
+// now filters on ptr_cache.expires_at, precomputed at write time by
+// savePTR specifically so idx_ptr_cache_expires_at can seek straight to
+// the stale rows instead of computing+sorting checked_at+ttl_seconds for
+// every row. Returns [] if every known IP has a fresh cache entry.
 export async function pendingIPsForPTRRefresh(db: D1Database, limit: number): Promise<string[]> {
-	const { results } = await db
+	const { results: missing } = await db
 		.prepare(
-			`SELECT i.ip
-			FROM ip_pool i
-			LEFT JOIN ptr_cache p ON p.ip = i.ip
-			WHERE p.ip IS NULL OR datetime(p.checked_at, '+' || p.ttl_seconds || ' seconds') < datetime('now')
-			ORDER BY (p.checked_at IS NULL) DESC, p.checked_at ASC
+			`SELECT i.ip FROM ip_pool i
+			WHERE NOT EXISTS (SELECT 1 FROM ptr_cache p WHERE p.ip = i.ip)
 			LIMIT ?`,
 		)
 		.bind(limit)
 		.all<{ ip: string }>();
-	return results.map((r) => r.ip);
+	const ips = missing.map((r) => r.ip);
+	if (ips.length >= limit) return ips;
+
+	const { results: stale } = await db
+		.prepare(
+			`SELECT p.ip FROM ptr_cache p
+			WHERE p.expires_at < datetime('now')
+			AND EXISTS (SELECT 1 FROM ip_pool i WHERE i.ip = p.ip)
+			ORDER BY p.expires_at ASC
+			LIMIT ?`,
+		)
+		.bind(limit - ips.length)
+		.all<{ ip: string }>();
+	return ips.concat(stale.map((r) => r.ip));
 }
 
 interface HostCacheRow {

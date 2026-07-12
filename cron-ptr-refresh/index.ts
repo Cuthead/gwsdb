@@ -17,17 +17,22 @@ interface Env {
 
 const PTR_TIMEOUT_MS = 3000;
 const DEFAULT_DOH_URL = "https://dns.google/resolve";
-// Caps a single invocation so a large first-run backlog can't blow the
-// Workers CPU-time limit -- any remainder is picked up on the next tick.
-const MAX_REFRESHED_PER_RUN = 200;
+// Caps a single invocation well under the Workers Free plan's 50
+// subrequests-per-invocation limit (D1 calls count as subrequests too, same
+// as fetch) -- each refreshed IP costs one DoH fetch (resolveAndCachePTR)
+// plus one D1 write (savePTR), so 20 IPs + the ~2 D1 reads pendingIPsForPTRRefresh
+// itself makes stays comfortably under 50. Confirmed the hard way: with a
+// real multi-thousand-row stale backlog, 200 tripped
+// "Too many subrequests by single Worker invocation". Any remainder is
+// picked up on the next tick.
+const MAX_REFRESHED_PER_RUN = 20;
 
 export default {
 	async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
 		const dohUrl = env.DOH_JSON_URL || DEFAULT_DOH_URL;
-		// Fetched once per tick, not once per IP -- ip_pool is a view
-		// recomputed from scratch on every query against it, so looping a
-		// LIMIT-1 query per IP here previously meant recomputing the whole
-		// view up to MAX_REFRESHED_PER_RUN times a tick.
+		// Fetched once per tick, not once per IP -- see pendingIPsForPTRRefresh's
+		// module comment (src/store.ts) for why looping a per-IP query here
+		// used to be expensive.
 		const ips = await pendingIPsForPTRRefresh(env.DB, MAX_REFRESHED_PER_RUN);
 		for (const ip of ips) {
 			await resolveAndCachePTR(env.DB, ip, PTR_TIMEOUT_MS, dohUrl);
