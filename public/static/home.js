@@ -43,7 +43,12 @@ import { resolvePTR } from './ptrResolve.js';
 			rows[i].classList.add('gwsdb-hidden');
 		}
 		for (var j = start; j < end && j < matched.length; j++) {
-			matched[j].classList.remove('gwsdb-hidden');
+			var row = matched[j];
+			row.classList.remove('gwsdb-hidden');
+			if (row._pendingPTR) {
+				resolveClientPTR(row, row._ptrTd, row._countryTd, row._pendingPTR);
+				row._pendingPTR = null;
+			}
 		}
 
 		document.getElementById('visibleCount').textContent = matched.length;
@@ -247,8 +252,14 @@ import { resolvePTR } from './ptrResolve.js';
 		fillCountryCell(countryTd, country, code);
 		tr.appendChild(countryTd);
 
+		// Deferred, not fired here: a fresh ingest can leave hundreds of rows
+		// pending, but only the page(s) the user actually scrolls/pages to
+		// need the client-side lookup. renderPage picks this up and fires it
+		// the first time the row becomes visible, then clears it.
 		if (!ip.ptrList || !ip.ptrList.length) {
-			resolveClientPTR(tr, ptrTd, countryTd, ip.ip);
+			tr._pendingPTR = ip.ip;
+			tr._ptrTd = ptrTd;
+			tr._countryTd = countryTd;
 		}
 
 		var statusTd = document.createElement('td');
