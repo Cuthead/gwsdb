@@ -8,8 +8,23 @@ import { loadPool } from "../../src/pool";
 import { poolVersion } from "../../src/store";
 import type { Env } from "../../src/env";
 
+// version is baked into the cache key (not just the response body) so this
+// edge cache and the browser's localStorage cache (home.js) invalidate on
+// exactly the same signal: a version bump makes both look like a miss,
+// nothing in between requires manual purging. Populated lazily per colo --
+// the first request after a version bump in each colo still pays the D1
+// read, every later request/colo hits the edge cache instead.
 export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const version = await poolVersion(context.env.DB);
+
+	const cache = caches.default;
+	const cacheURL = new URL(context.request.url);
+	cacheURL.searchParams.set("v", String(version));
+	const cacheKey = new Request(cacheURL.toString(), context.request);
+
+	const cached = await cache.match(cacheKey);
+	if (cached) return cached;
+
 	const { ips, scanMode, stats } = await loadPool(context.env.DB);
 
 	const body = {
@@ -21,5 +36,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		totalScans: stats.totalScans,
 		lastScanAt: formatTime(stats.lastScanAt),
 	};
-	return Response.json(body, { headers: { "Cache-Control": "no-store" } });
+	// max-age just bounds how long this colo holds the entry -- correctness
+	// doesn't depend on it, since a version bump already changes cacheKey.
+	const response = Response.json(body, { headers: { "Cache-Control": "public, max-age=86400" } });
+	context.waitUntil(cache.put(cacheKey, response.clone()));
+	return response;
 };
