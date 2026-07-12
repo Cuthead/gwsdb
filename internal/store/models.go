@@ -1,6 +1,11 @@
+// Package store holds the data-shape types shared between the ingest/recheck
+// CLI (cmd/gwsdb) and the Cloudflare-hosted API it submits to -- there is no
+// local database here anymore, all persistence lives in D1 behind
+// functions/. See AGENTS.md.
 package store
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -167,4 +172,14 @@ type RecheckQueueItem struct {
 	CreatedAt   time.Time
 	ScheduledAt time.Time // zero if eligible immediately (pre-delay rows)
 	ProcessedAt time.Time // zero if still pending
+}
+
+// MarshalConfig is a small helper used by the ingest package to stash the raw
+// scan config as JSON on the Scan record.
+func MarshalConfig(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
