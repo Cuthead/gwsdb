@@ -459,6 +459,7 @@ export const airportCodes: Record<string, Place> = {
 	"lhm": { city: "Council Bluffs, IA", country: "United States" },
 	"mci": { city: "Kansas City, MO", country: "United States" },
 	"mia": { city: "Miami, FL", country: "United States" },
+	"mrn": { city: "Morganton, NC", country: "United States"},
 	"msp": { city: "Minneapolis, MN", country: "United States" },
 	"nuq": { city: "Mountain View, CA", country: "United States" },
 	"oak": { city: "Oakland, CA", country: "United States" },
