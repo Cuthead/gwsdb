@@ -213,13 +213,23 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", ip, result.Reason, result.Detail)
 	}
 
+	// Best-effort: lets the query page's "Probe Request" column show this
+	// probe's request context (see FetchLatestScanID's comment). Not fatal
+	// if it fails -- the result is still worth submitting with
+	// config_scan_id NULL rather than not submitting at all.
+	configScanID, err := recheck.FetchLatestScanID(ctx, apiBase, token)
+	if err != nil {
+		log.Printf("recheck: fetch latest scan id: %v", err)
+	}
+
 	if err := recheck.Submit(ctx, apiBase, token, recheck.SubmitResult{
-		IP:        ip,
-		OK:        result.OK,
-		RTTMs:     result.RTTMs,
-		Reason:    result.Reason,
-		Detail:    result.Detail,
-		ScanMode:  recheck.DefaultScanMode,
+		IP:           ip,
+		OK:           result.OK,
+		RTTMs:        result.RTTMs,
+		Reason:       result.Reason,
+		Detail:       result.Detail,
+		ScanMode:     recheck.DefaultScanMode,
+		ConfigScanID: configScanID,
 		CheckedAt: time.Now().UTC(),
 	}); err != nil {
 		log.Fatalf("recheck: submit: %v", err)
