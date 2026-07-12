@@ -136,12 +136,16 @@ export function siblingHostname(hostname) {
 
 // decodeBest decodes every hostname in hostnames and returns the most
 // specific match. Google sometimes publishes more than one PTR for the same
-// IP (e.g. an f-numeric and an x-hex form of the same host, which always
-// agree), but on the rare hostname that disagrees, a 3-letter airport-code
-// match (pattern 1/3) outranks a 2-letter regional match (pattern 2), which
-// outranks the "any" anycast fallback (pattern 4). Ties break on input
-// order, so callers should pass a deterministically ordered array to get a
-// stable result.
+// IP -- an f-numeric and an x-hex form of the same host (which always
+// agree), or two entirely different regional codes for the same server
+// (which don't always both have known city/country -- some 2-letter codes
+// were deliberately dropped from regionalCodes for giving inconsistent
+// answers, see geoData.js). Whichever hostname actually resolves to a known
+// country wins first, so a code we know nothing about never shadows a
+// sibling PTR that does; a 3-letter airport-code match (pattern 1/3) then
+// outranks a 2-letter regional match (pattern 2), which outranks the "any"
+// anycast fallback (pattern 4). Ties break on input order, so callers should
+// pass a deterministically ordered array to get a stable result.
 export function decodeBest(hostnames) {
 	let best = emptyLocation("");
 	let bestRank = -1;
@@ -158,9 +162,11 @@ export function decodeBest(hostnames) {
 
 function decodeRank(loc) {
 	if (!loc.matched) return 0;
-	if (loc.airportCode === "any") return 1;
-	if (loc.airportCode.length === 2) return 2;
-	return 3;
+	let base;
+	if (loc.airportCode === "any") base = 1;
+	else if (loc.airportCode.length === 2) base = 2;
+	else base = 3;
+	return base + (loc.country ? 10 : 0);
 }
 
 // countryCodes maps the country names used in airportCodes/regionalCodes to
