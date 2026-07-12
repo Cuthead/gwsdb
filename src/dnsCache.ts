@@ -11,9 +11,10 @@ import type { ASNCacheEntry, HostCacheEntry, PTRCacheEntry } from "./types";
 
 // minCacheTTLSeconds floors the DNS TTL observed on a DoH response before
 // it's stored -- a 0/near-0 TTL is common for some providers (Team Cymru's
-// whois TXT records in particular) and taking it literally would force a
-// fresh DoH round trip on nearly every request.
-const MIN_CACHE_TTL_SECONDS = 5 * 60;
+// whois TXT records in particular, and any failed/empty lookup) and taking
+// it literally would force a fresh DoH round trip on nearly every request.
+// Applies uniformly to PTR/host/ASN cache writes, not just no-result ones.
+const MIN_CACHE_TTL_SECONDS = 60 * 60;
 
 function clampTTL(ttlSeconds: number): number {
 	return Math.max(ttlSeconds, MIN_CACHE_TTL_SECONDS);
