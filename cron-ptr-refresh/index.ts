@@ -13,10 +13,24 @@
 // invocation could refresh well under the old 50-subrequests-per-invocation
 // wall (see git history for the MAX_REFRESHED_PER_RUN=20 this replaced). A
 // single pipelined TCP connection is 1 subrequest regardless of how many
-// PTR queries ride it, benchmarked against 1.1.1.1:53 at up to 10,000
-// queries/connection (~23s for 5,000, ~42s for 10,000 -- well inside the
-// 15-minute Cron Trigger wall-clock cap). 8.8.8.8 resets the connection
-// after a few dozen pipelined queries and must not be used here.
+// PTR queries ride it.
+//
+// Resolver is ns1.google.com, not a public recursive resolver -- two
+// reasons, found the hard way. First, Cloudflare blocks outbound TCP
+// sockets to Cloudflare's own IP ranges, which rules out 1.1.1.1 entirely
+// (worked in every local/dev test, since that restriction is
+// production-only; failed instantly in production with no useful error).
+// Second, ip_pool is Google-owned address space end to end (see
+// isGoogleASN's gate in src/dnsCache.ts) -- ns1.google.com is authoritative
+// for its reverse zones, so it answers directly with no recursion, and
+// unlike a recursive resolver it has no reason to throttle/reset a large
+// pipelined burst from one client. Benchmarked against the full real
+// ip_pool (5,035 IPs, 98% IPv6): 100% answered in ~2.5s, rcodes only
+// NOERROR/NXDOMAIN (every current pool IP is in Google's authority) --
+// far faster than 1.1.1.1 ever was and well inside the 15-minute Cron
+// Trigger wall-clock cap. An IP outside Google's authority would come back
+// REFUSED and just be skipped (see the rcode filter below) -- acceptable
+// since the pool is ASN-gated to Google space by construction.
 import { connect } from "cloudflare:sockets";
 import { buildPTRQuery, parseMessage } from "../src/dnsWire";
 import { dedupeSorted } from "../src/resolver";
@@ -27,15 +41,15 @@ interface Env {
 	DB: D1Database;
 }
 
-const RESOLVER = { hostname: "1.1.1.1", port: 53 };
+const RESOLVER = { hostname: "ns1.google.com", port: 53 };
 // Caps one invocation's batch to the 16-bit DNS transaction ID space (each
 // in-flight query on the connection needs a unique id to match its
 // response). Comfortably above ip_pool's current size with room to grow;
 // pendingIPsForPTRRefresh simply returns fewer if the pool is smaller.
 const BATCH_LIMIT = 10000;
-// ~3x the worst measured wall time for a 10,000-query pipelined batch
-// against 1.1.1.1 (see module comment) -- generous margin while staying
-// well under the 15-minute Cron Trigger cap.
+// ~48x the measured wall time for the full 5,035-IP pool against
+// ns1.google.com (~2.5s, see module comment) -- generous margin while
+// staying well under the 15-minute Cron Trigger cap.
 const READ_TIMEOUT_MS = 120_000;
 // Same floor src/dnsCache.ts's clampTTL uses -- kept in sync manually since
 // this path doesn't go through resolveAndCachePTR (see that function for
