@@ -6,11 +6,8 @@
   "observability": {
     "enabled": true
   },
-  // Drains the whole ptr_cache refresh backlog per tick (see index.ts) --
-  // 15 minutes is the cadence, not a per-IP interval like the Go original's
-  // 15-second loop (StartPTRRefresher).
   "triggers": {
-    "crons": ["*/15 * * * *"]
+    "crons": ["* * * * *"]
   },
   "d1_databases": [
     {
