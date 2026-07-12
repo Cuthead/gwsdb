@@ -9,8 +9,40 @@
 //     snapshot never sees an empty shell.
 import { buildInfoFromEnv, escapeHTML, formatTime, isCrawlerUA, pageShell } from "../src/html";
 import { loadPool, type IPRow } from "../src/pool";
+import { poolVersion } from "../src/store";
 import type { Env } from "../src/env";
 import type { Stats } from "../src/types";
+
+// sortColumns whitelists the nojs table's ?sort= values -- dbKey is what's
+// passed through to loadPool (a listKnownIPs SQL column, or the literal
+// "country" it special-cases for the client-side-only decode), defaultDesc
+// mirrors static/home.js's data-sort-desc attributes so a first click on a
+// header sorts the same direction whether JS is available or not.
+const sortColumns: Record<string, { dbKey: string; label: string; defaultDesc: boolean }> = {
+	ip: { dbKey: "ip", label: "IP Address", defaultDesc: false },
+	ptr: { dbKey: "ptr", label: "PTR", defaultDesc: false },
+	country: { dbKey: "country", label: "Country", defaultDesc: false },
+	status: { dbKey: "status", label: "Status", defaultDesc: true },
+	firstSeen: { dbKey: "first_seen", label: "First Seen", defaultDesc: true },
+	lastSeen: { dbKey: "last_seen", label: "Last Reachable", defaultDesc: true },
+	rtt: { dbKey: "rtt", label: "Last RTT", defaultDesc: true },
+};
+const sortColumnOrder: (keyof typeof sortColumns)[] = ["ip", "ptr", "country", "status", "firstSeen", "lastSeen", "rtt"];
+
+// withParams clones url with the given query params set (nojs=1 always
+// forced on, so a no-JS reader's sort/filter clicks stay on the
+// server-rendered branch instead of falling back to the JS shell), every
+// other existing param preserved -- e.g. clicking "Country" keeps whatever
+// family filter was already active.
+function withParams(url: URL, overrides: Record<string, string | null>): string {
+	const next = new URL(url.toString());
+	next.searchParams.set("nojs", "1");
+	for (const [k, v] of Object.entries(overrides)) {
+		if (v === null) next.searchParams.delete(k);
+		else next.searchParams.set(k, v);
+	}
+	return next.pathname + next.search;
+}
 
 function statusHTML(status: string): string {
 	if (status === "Reachable") return `<font color="#008000">&#x2713; Reachable</font>`;
@@ -33,7 +65,44 @@ function countryCellHTML(row: IPRow): string {
 	return `${img}${escapeHTML(row.country) || "-"}`;
 }
 
-function renderFullTable(ips: IPRow[], stats: Stats, scanMode: string): string {
+// familyFilterHTML renders the "All | IPv4 only | IPv6 only" links above the
+// table -- home.js's familyInput <select> equivalent for readers without JS,
+// preserving whatever sort is currently active.
+function familyFilterHTML(url: URL, family: number | undefined): string {
+	const option = (label: string, value: string | null, active: boolean) =>
+		active ? `<b>${escapeHTML(label)}</b>` : `<a href="${escapeHTML(withParams(url, { family: value }))}">${escapeHTML(label)}</a>`;
+	return `<p>Family: ${option("All", null, family === undefined)} | ${option("IPv4 only", "4", family === 4)} | ${option("IPv6 only", "6", family === 6)}</p>`;
+}
+
+// sortHeaderHTML renders the table's header row as plain links -- clicking
+// a column re-requests the page with ?sort=<col>&desc=<0|1>, toggling
+// direction on a repeat click of the same column. No JS involved, so this
+// is the no-JS equivalent of home.js's data-sort click handlers.
+function sortHeaderHTML(url: URL, activeSort: string | undefined, activeDesc: boolean): string {
+	const cells = sortColumnOrder
+		.map((param) => {
+			// sortColumns is keyed by every entry of sortColumnOrder (see its
+			// definition just above), so this lookup always hits.
+			const col = sortColumns[param]!;
+			const isActive = activeSort === param;
+			const nextDesc = isActive ? !activeDesc : col.defaultDesc;
+			const href = withParams(url, { sort: param, desc: nextDesc ? "1" : "0" });
+			const arrow = isActive ? (activeDesc ? " ▼" : " ▲") : "";
+			return `<td><b><a href="${escapeHTML(href)}">${escapeHTML(col.label)}</a>${arrow}</b></td>`;
+		})
+		.join("\n");
+	return `<tr bgcolor="#EEEEEE">\n${cells}\n</tr>`;
+}
+
+function renderFullTable(
+	url: URL,
+	ips: IPRow[],
+	stats: Stats,
+	scanMode: string,
+	activeSort: string | undefined,
+	activeDesc: boolean,
+	family: number | undefined,
+): string {
 	const rows = ips
 		.map(
 			(row) => `<tr>
@@ -51,21 +120,14 @@ function renderFullTable(ips: IPRow[], stats: Stats, scanMode: string): string {
 	const table = ips.length
 		? `<div class="gwsdb-scroll">
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE">
-<td><b>IP Address</b></td>
-<td><b>PTR</b></td>
-<td><b>Country</b></td>
-<td><b>Status</b></td>
-<td><b>First Seen</b></td>
-<td><b>Last Reachable</b></td>
-<td><b>Last RTT</b></td>
-</tr>
+${sortHeaderHTML(url, activeSort, activeDesc)}
 ${rows}
 </table>
 </div>`
 		: `<p><i>No data yet. Please run a scan and import the results first.</i></p>`;
 
 	return `<p>The table below lists tracked Google Web Server (GWS) IP addresses and their reachability status.</p>
+${familyFilterHTML(url, family)}
 ${table}
 <hr>
 <table border="0" cellpadding="2" cellspacing="0">
@@ -153,8 +215,45 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 	}
 
-	// Crawler/archiver and nojs=1 path: full server-rendered table.
-	const { ips, scanMode, stats } = await loadPool(context.env.DB);
-	const html = pageShell({ title: "Home", body: renderFullTable(ips, stats, scanMode), build });
-	return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+	// Crawler/archiver and nojs=1 path: full server-rendered table, sortable
+	// (?sort=/&desc=) and filterable by family (?family=4|6) via plain links
+	// since there's no JS to do it client-side. Edge-cached per exact URL the
+	// same way api/pool.ts caches /api/pool -- otherwise every bot hit (and
+	// every ?nojs=1, trivially repeatable by anyone) pays a full D1 read.
+	const sortParam = url.searchParams.get("sort");
+	const sortCol = sortParam && Object.prototype.hasOwnProperty.call(sortColumns, sortParam) ? sortColumns[sortParam] : undefined;
+	const activeSort = sortCol ? sortParam! : undefined;
+	const activeDesc = sortCol
+		? url.searchParams.get("desc") === null
+			? sortCol.defaultDesc
+			: url.searchParams.get("desc") === "1"
+		: true;
+	const familyParam = url.searchParams.get("family");
+	const family = familyParam === "4" ? 4 : familyParam === "6" ? 6 : undefined;
+
+	const version = await poolVersion(context.env.DB);
+	const cache = caches.default;
+	const cacheURL = new URL(url.toString());
+	cacheURL.searchParams.set("v", String(version));
+	const cacheKey = new Request(cacheURL.toString(), context.request);
+
+	const cached = await cache.match(cacheKey);
+	if (cached) {
+		const resp = new Response(cached.body, cached);
+		resp.headers.set("Cache-Control", "no-store");
+		return resp;
+	}
+
+	const { ips, scanMode, stats } = await loadPool(context.env.DB, { sortBy: sortCol?.dbKey, sortDesc: activeDesc, family });
+	const html = pageShell({
+		title: "Home",
+		body: renderFullTable(url, ips, stats, scanMode, activeSort, activeDesc, family),
+		build,
+	});
+	const response = new Response(html, {
+		headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=86400" },
+	});
+	context.waitUntil(cache.put(cacheKey, response.clone()));
+	response.headers.set("Cache-Control", "no-store");
+	return response;
 };

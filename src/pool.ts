@@ -48,9 +48,33 @@ export interface Pool {
 	stats: Stats;
 }
 
-export async function loadPool(db: D1Database): Promise<Pool> {
-	const known = await listKnownIPs(db, { sortBy: "last_seen", sortDesc: true });
+export interface LoadPoolOptions {
+	// sortBy is one of listKnownIPs' whitelisted DB columns (ip, ptr, status,
+	// first_seen, last_seen, rtt), or "country" -- country isn't a DB column
+	// (it's decoded from ptr_hostname in toIPRow, after the query runs), so
+	// that case is sorted here instead of being passed through to SQL.
+	// Defaults to "last_seen" (unsorted API callers keep their prior order).
+	sortBy?: string;
+	sortDesc?: boolean; // defaults to true, matching the pre-existing default
+	family?: number; // 4 or 6 restricts to that address family; anything else is both
+}
+
+export async function loadPool(db: D1Database, opts: LoadPoolOptions = {}): Promise<Pool> {
+	const sortBy = opts.sortBy ?? "last_seen";
+	const sortDesc = opts.sortDesc ?? true;
+	const known = await listKnownIPs(db, {
+		sortBy: sortBy === "country" ? undefined : sortBy,
+		sortDesc,
+		family: opts.family,
+	});
 	const ips = known.map(toIPRow);
+	if (sortBy === "country") {
+		ips.sort((a, b) => {
+			if (a.country < b.country) return sortDesc ? 1 : -1;
+			if (a.country > b.country) return sortDesc ? -1 : 1;
+			return 0;
+		});
+	}
 	const latest = await latestScan(db, "");
 	const stats = await overview(db);
 	return { ips, scanMode: latest?.ScanMode ?? "", stats };
