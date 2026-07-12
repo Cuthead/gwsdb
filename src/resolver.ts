@@ -6,7 +6,7 @@ import { DNSType, queryDoH } from "./doh";
 
 // dedupeSorted trims trailing dots, dedupes, and sorts names/addresses for
 // deterministic output regardless of the order a resolver returned them in.
-function dedupeSorted(names: string[]): string[] {
+export function dedupeSorted(names: string[]): string[] {
 	const seen = new Set<string>();
 	const out: string[] = [];
 	for (const raw of names) {
@@ -32,7 +32,7 @@ export function reverseNibblesDotted(fullHex: string): string {
 
 // reverseName builds the in-addr.arpa (IPv4) or ip6.arpa (IPv6) query name
 // for ip, the same name a PTR query would use over classic DNS.
-function reverseName(ip: string): string {
+export function reverseName(ip: string): string {
 	if (ip.includes(".") && !ip.includes(":")) {
 		const parts = ip.split(".");
 		if (parts.length !== 4) throw new Error(`invalid IP: ${ip}`);

@@ -522,6 +522,45 @@ export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
 	]);
 }
 
+// PTR_BATCH_CHUNK caps how many entries one savePTRBatch db.batch() call
+// covers. Each entry is 2 statements (same as savePTR), and D1's Free plan
+// caps a batch() call at 1,000 statements -- 400 keeps every chunk at 800,
+// with headroom for Paid's higher per-statement bound parameter accounting
+// to not matter here (each statement only binds a handful of params).
+const PTR_BATCH_CHUNK = 400;
+
+// savePTRBatch is savePTR for many IPs in one cron-ptr-refresh tick --
+// cron-ptr-refresh/index.ts's TCP-pipelined resolver produces results for
+// potentially thousands of IPs per invocation, and issuing one db.batch()
+// (one D1 call/subrequest) per IP the way savePTR does would burn through
+// the 50-subrequests-per-invocation limit exactly like the old fetch()-per-IP
+// DoH approach did. Chunking into PTR_BATCH_CHUNK-sized batch() calls keeps
+// the whole write phase at a handful of subrequests regardless of how many
+// IPs were resolved.
+export async function savePTRBatch(db: D1Database, entries: PTRCacheEntry[]): Promise<void> {
+	for (let i = 0; i < entries.length; i += PTR_BATCH_CHUNK) {
+		const chunk = entries.slice(i, i + PTR_BATCH_CHUNK);
+		const statements = chunk.flatMap((e) => {
+			const checkedAt = toSQLiteDateTime(e.checkedAt);
+			return [
+				db
+					.prepare(
+						`INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at)
+						VALUES (?, ?, ?, ?, ?)
+						ON CONFLICT(ip) DO UPDATE SET
+							ptr_hostname = excluded.ptr_hostname,
+							lookup_ok    = excluded.lookup_ok,
+							ttl_seconds  = excluded.ttl_seconds,
+							checked_at   = excluded.checked_at`,
+					)
+					.bind(e.ip, joinStrings(e.ptrHostnames), e.lookupOk ? 1 : 0, e.ttlSeconds, checkedAt),
+				db.prepare(`UPDATE ip_pool SET ptr_checked_at = ? WHERE ip = ?`).bind(checkedAt, e.ip),
+			];
+		});
+		await db.batch(statements);
+	}
+}
+
 // pendingIPsForPTRRefresh returns up to limit ip_pool IPs due for a PTR
 // refresh, oldest-checked first (NULL/never-checked sorts first in SQLite's
 // default ASC order, so unchecked IPs are naturally prioritized without a

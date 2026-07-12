@@ -16,7 +16,7 @@ import type { ASNCacheEntry, HostCacheEntry, PTRCacheEntry } from "./types";
 // Applies uniformly to PTR/host/ASN cache writes, not just no-result ones.
 const MIN_CACHE_TTL_SECONDS = 60 * 60;
 
-function clampTTL(ttlSeconds: number): number {
+export function clampTTL(ttlSeconds: number): number {
 	return Math.max(ttlSeconds, MIN_CACHE_TTL_SECONDS);
 }
 

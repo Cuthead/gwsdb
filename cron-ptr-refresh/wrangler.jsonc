@@ -4,16 +4,16 @@
   "main": "index.ts",
   "compatibility_date": "2026-07-01",
   "observability": {
-    "enabled": true
+    "enabled": true,
   },
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": ["32 12 * * *"],
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "gwsdb",
-      "database_id": "d4e3df1f-07d5-4924-be21-5574125ef400"
-    }
-  ]
+      "database_id": "d4e3df1f-07d5-4924-be21-5574125ef400",
+    },
+  ],
 }
