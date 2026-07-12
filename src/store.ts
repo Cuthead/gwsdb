@@ -7,6 +7,7 @@
 // leave a scans row with fewer ip_checks rows than a fully-succeeded run
 // would have, rather than Go's all-or-nothing guarantee -- acceptable so
 // far, revisit if it bites in practice.
+import { ipToHex, prefixToRange } from "./ipAddr";
 import type {
 	ASNCacheEntry,
 	HostCacheEntry,
@@ -613,31 +614,44 @@ export async function saveHost(db: D1Database, e: HostCacheEntry): Promise<void>
 }
 
 interface ASNCacheRow {
-	ip: string;
+	prefix: string;
 	asn: number | null;
 	as_name: string | null;
-	prefix: string | null;
 	country: string | null;
 	lookup_ok: number;
 	ttl_seconds: number;
 	checked_at: string;
 }
 
-// getASN returns a cached ASN/prefix lookup for ip if present and not past
-// its observed DNS TTL (see getPTR).
+// getASN returns a cached ASN/prefix lookup covering ip, if present and not
+// past its observed DNS TTL -- keyed by the announced prefix's address
+// range rather than the exact ip (migration 0004), since every ip sharing a
+// prefix has identical asn/asName/country and querying by point-in-range
+// lets them share one cache entry instead of each paying their own Cymru
+// DNS round trip. ORDER BY prefix_len DESC picks the most specific match in
+// the rare case of overlapping announcements (longest-prefix-match, same as
+// real routing). The returned entry's ip is the *queried* ip, not whatever
+// ip originally triggered this prefix's cache row.
 export async function getASN(db: D1Database, ip: string): Promise<ASNCacheEntry | null> {
+	const point = ipToHex(ip);
+	if (!point) return null;
 	const row = await db
-		.prepare(`SELECT ip, asn, as_name, prefix, country, lookup_ok, ttl_seconds, checked_at FROM asn_cache WHERE ip = ?`)
-		.bind(ip)
+		.prepare(
+			`SELECT prefix, asn, as_name, country, lookup_ok, ttl_seconds, checked_at
+			FROM asn_cache
+			WHERE is_ipv6 = ? AND range_start <= ? AND range_end >= ?
+			ORDER BY prefix_len DESC LIMIT 1`,
+		)
+		.bind(ip.includes(":") ? 1 : 0, point, point)
 		.first<ASNCacheRow>();
 	if (!row) return null;
 	const checkedAt = fromSQLiteDateTime(row.checked_at)!;
 	if (Date.now() - checkedAt.getTime() > row.ttl_seconds * 1000) return null;
 	return {
-		ip: row.ip,
+		ip,
 		asn: row.asn ?? 0,
 		asName: row.as_name ?? "",
-		prefix: row.prefix ?? "",
+		prefix: row.prefix,
 		country: row.country ?? "",
 		lookupOk: row.lookup_ok !== 0,
 		ttlSeconds: row.ttl_seconds,
@@ -645,26 +659,34 @@ export async function getASN(db: D1Database, ip: string): Promise<ASNCacheEntry 
 	};
 }
 
-// saveASN upserts an ASN/prefix lookup result into the cache.
+// saveASN upserts an ASN/prefix lookup result into the cache, keyed by
+// e.prefix (not e.ip) -- see getASN.
 export async function saveASN(db: D1Database, e: ASNCacheEntry): Promise<void> {
+	const range = prefixToRange(e.prefix);
+	if (!range) {
+		console.error(`asn: saveASN: invalid prefix ${JSON.stringify(e.prefix)} for ip ${e.ip}`);
+		return;
+	}
 	await db
 		.prepare(
-			`INSERT INTO asn_cache (ip, asn, as_name, prefix, country, lookup_ok, ttl_seconds, checked_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(ip) DO UPDATE SET
+			`INSERT INTO asn_cache (prefix, is_ipv6, range_start, range_end, prefix_len, asn, as_name, country, lookup_ok, ttl_seconds, checked_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(prefix) DO UPDATE SET
 				asn         = excluded.asn,
 				as_name     = excluded.as_name,
-				prefix      = excluded.prefix,
 				country     = excluded.country,
 				lookup_ok   = excluded.lookup_ok,
 				ttl_seconds = excluded.ttl_seconds,
 				checked_at  = excluded.checked_at`,
 		)
 		.bind(
-			e.ip,
+			e.prefix,
+			range.isIPv6 ? 1 : 0,
+			range.start,
+			range.end,
+			range.prefixLen,
 			e.asn || null,
 			e.asName || null,
-			e.prefix || null,
 			e.country || null,
 			e.lookupOk ? 1 : 0,
 			e.ttlSeconds,
