@@ -82,8 +82,8 @@ function renderConfirmBody(opts: {
 <tr><td width="30%">目标IP</td><td><tt>${escapeHTML(opts.ip)}</tt></td></tr>
 <tr><td>结论</td><td>${verdictHTML}</td></tr>
 ${opts.comment ? `<tr><td>备注</td><td>${escapeHTML(opts.comment)}</td></tr>` : ""}
-<tr><td>你的前缀</td><td><tt>${opts.reporterPrefix ? escapeHTML(opts.reporterPrefix) : "(未知)"}</tt></td></tr>
-<tr><td>你的AS</td><td>${opts.reporterASN ? `AS${opts.reporterASN}${opts.reporterASName ? ` ${escapeHTML(opts.reporterASName)}` : ""}` : "(未知)"}</td></tr>
+<tr><td>你的前缀</td><td><tt>${opts.reporterPrefix ? escapeHTML(opts.reporterPrefix) : ""}</tt></td></tr>
+<tr><td>你的AS</td><td>${opts.reporterASN ? `AS${opts.reporterASN}${opts.reporterASName ? ` ${escapeHTML(opts.reporterASName)}` : ""}` : ""}</td></tr>
 </table>
 </div>
 
