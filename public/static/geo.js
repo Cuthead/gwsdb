@@ -1,3 +1,5 @@
+// @license magnet:?xt=urn:btih:1f739d935676111cfff4b4693e3816e664797050&dn=gpl-3.0.txt GPL-3.0
+
 // Ports internal/geo/geo.go: decodes Google 1e100.net PTR hostnames into an
 // approximate physical location, based on the naming convention documented
 // at https://github.com/lennylxx/ipv6-hosts/wiki/1e100.net. Pure/offline --
@@ -220,3 +222,4 @@ const countryCodes = {
 export function countryCode(country) {
 	return countryCodes[country] ?? "";
 }
+// @license-end

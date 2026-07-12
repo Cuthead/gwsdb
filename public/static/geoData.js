@@ -1,3 +1,5 @@
+// @license magnet:?xt=urn:btih:1f739d935676111cfff4b4693e3816e664797050&dn=gpl-3.0.txt GPL-3.0
+
 // Canonical data table for 1e100.net PTR hostname -> city/country decoding.
 // Served directly to the browser (see geo.js) AND imported by the server-side
 // TS code via src/geoData.ts, which just re-exports this file -- edit here, not there.
@@ -557,3 +559,4 @@ export const airportCodes = {
 	"mba": { city: "Mombasa", country: "Kenya" },
 	"tlv": { city: "Tel Aviv", country: "Israel" },
 };
+// @license-end
