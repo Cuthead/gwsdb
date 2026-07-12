@@ -22,8 +22,19 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	cacheURL.searchParams.set("v", String(version));
 	const cacheKey = new Request(cacheURL.toString(), context.request);
 
+	// cache.match/put need Cache-Control: public + max-age to actually store
+	// the entry, but that same header on the response we hand back to the
+	// browser would let fetch()'s own HTTP cache keep it under the literal
+	// (unversioned) /api/pool URL -- silently serving stale data past a
+	// version bump, bypassing home.js's version check entirely. So the
+	// header is only ever set on the copy that goes into cache.put; what
+	// reaches the client (hit or miss) is always no-store.
 	const cached = await cache.match(cacheKey);
-	if (cached) return cached;
+	if (cached) {
+		const resp = new Response(cached.body, cached);
+		resp.headers.set("Cache-Control", "no-store");
+		return resp;
+	}
 
 	const { ips, scanMode, stats } = await loadPool(context.env.DB);
 
@@ -40,5 +51,6 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	// doesn't depend on it, since a version bump already changes cacheKey.
 	const response = Response.json(body, { headers: { "Cache-Control": "public, max-age=86400" } });
 	context.waitUntil(cache.put(cacheKey, response.clone()));
+	response.headers.set("Cache-Control", "no-store");
 	return response;
 };
