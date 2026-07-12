@@ -3,7 +3,7 @@
 // it's the same box and the same trust boundary.
 import type { Env } from "./env";
 
-function timingSafeEqual(a: string, b: string): boolean {
+export function timingSafeEqual(a: string, b: string): boolean {
 	const enc = new TextEncoder();
 	const aBytes = enc.encode(a);
 	const bBytes = enc.encode(b);

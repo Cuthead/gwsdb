@@ -70,7 +70,14 @@ export async function resolveAndCachePTR(
 }
 
 // resolveAndCacheHost does a live forward A/AAAA lookup for hostname and
-// upserts the result into host_cache, regardless of what's already cached.
+// upserts the result into host_cache -- unless the lookup came back empty
+// (failed, or no A/AAAA records), in which case nothing is cached. /query's
+// hostname mode only requires the input end in ".1e100.net" (src/geo.ts's
+// isHostname), not that it match a real naming pattern, so an arbitrary
+// garbage hostname reaches this unauthenticated -- caching every miss would
+// let anyone grow host_cache without bound. A repeat query for the same
+// garbage hostname just re-resolves (no negative-result caching); that's a
+// deliberate trade against RAM/rows, not an oversight.
 export async function resolveAndCacheHost(
 	db: D1Database,
 	hostname: string,
@@ -78,6 +85,7 @@ export async function resolveAndCacheHost(
 	dohUrl: string,
 ): Promise<{ ipv4: string[]; ipv6: string[] }> {
 	const { ipv4, ipv6, ttlSeconds, ok } = await lookupHost(hostname, timeoutMs, dohUrl);
+	if (!ok || (ipv4.length === 0 && ipv6.length === 0)) return { ipv4, ipv6 };
 	const entry: HostCacheEntry = { hostname, ipv4, ipv6, lookupOk: ok, ttlSeconds: clampTTL(ttlSeconds), checkedAt: new Date() };
 	try {
 		await saveHost(db, entry);

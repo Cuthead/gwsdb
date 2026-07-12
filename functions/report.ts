@@ -1,6 +1,7 @@
 // Pages Function for POST /report -- ports internal/web/server.go's
 // handleReport/maybeEnqueueRecheck/sameOrigin/clientIP +
 // templates/report_confirm.tmpl.
+import { timingSafeEqual } from "../src/auth";
 import { isGoogleASN, lookupGoogleASN } from "../src/dnsCache";
 import { buildInfoFromEnv, escapeHTML, pageShell } from "../src/html";
 import { isIPAddress } from "../src/ipAddr";
@@ -134,6 +135,17 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	}
 
 	let comment = String(form.get("comment") ?? "").trim();
+
+	// Operator self-test escape hatch: the Go original could submit a report
+	// from inside the LAN (bypassing Cloudflare, no public IP for the reporter
+	// lookup to resolve) to test without publishing its own prefix/AS. There's
+	// no equivalent bypass here -- every request has a real CF-Connecting-IP --
+	// so pasting the ingest token into the comment field opts out of the
+	// reporter lookup instead. The token is compared timing-safely and never
+	// stored or echoed back: comment is cleared immediately so it can't leak
+	// into ip_reports (public) or the confirm page's hidden form field.
+	const isOperatorTest = timingSafeEqual(comment, env.INGEST_TOKEN);
+	if (isOperatorTest) comment = "";
 	if (comment.length > MAX_REPORT_COMMENT_LEN) comment = comment.slice(0, MAX_REPORT_COMMENT_LEN);
 
 	// The reporter's address is used only to resolve their announced
@@ -141,13 +153,15 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	let reporterPrefix = "";
 	let reporterASN = 0;
 	let reporterASName = "";
-	const reporterIP = clientIP(request);
-	if (reporterIP) {
-		const r = await lookupGoogleASN(env.DB, reporterIP, ASN_TIMEOUT_MS, dohUrl);
-		if (r.ok) {
-			reporterPrefix = r.info.prefix;
-			reporterASN = r.info.asn;
-			reporterASName = r.info.asName;
+	if (!isOperatorTest) {
+		const reporterIP = clientIP(request);
+		if (reporterIP) {
+			const r = await lookupGoogleASN(env.DB, reporterIP, ASN_TIMEOUT_MS, dohUrl);
+			if (r.ok) {
+				reporterPrefix = r.info.prefix;
+				reporterASN = r.info.asn;
+				reporterASName = r.info.asName;
+			}
 		}
 	}
 
