@@ -1,6 +1,6 @@
 # GWSDB
 
-Golang web application for processing gscan_quic results and present Google Web Server IP addresses.
+TypeScript web application for processing gscan_quic results and presenting Google Web Server IP addresses and Go probe program.
 
 Currently, latest GWS IP addresses are published through DNS records of,
 
