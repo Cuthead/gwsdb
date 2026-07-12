@@ -1,9 +1,10 @@
 // Command gwsdb runs the probe-side pieces of the GWS Database that must
-// stay on real China-based network infrastructure: ingesting gscan_quic scan
-// results into D1 (legacy local-sqlite mode, kept for manual debugging) and
-// the recheck_queue pull-model worker. Serving the web UI, DNS publish, and
-// bulk ingest all now live on Cloudflare (Pages Functions + D1) --
-// see AGENTS.md and scripts/scan_and_ingest.sh.
+// stay on real China-based network infrastructure: parsing gscan_quic scan
+// output and the recheck_queue pull-model worker. None of its subcommands
+// touch a local database anymore -- ingest/delete-scan/recheck all talk to
+// the Cloudflare-hosted API (Pages Functions + D1) over HTTP. Serving the
+// web UI and DNS publish live on Cloudflare too -- see AGENTS.md and
+// scripts/scan_and_ingest.sh.
 package main
 
 import (
@@ -21,7 +22,6 @@ import (
 
 	"github.com/cuthead/gwsdb/internal/ingest"
 	"github.com/cuthead/gwsdb/internal/recheck"
-	"github.com/cuthead/gwsdb/internal/store"
 )
 
 func main() {
@@ -53,7 +53,7 @@ func usage() {
 
 Usage:
   gwsdb ingest -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
-  gwsdb delete-scan -db PATH -id N
+  gwsdb delete-scan -id N                                     (deletes via $GWSDB_API/$GWSDB_INGEST_TOKEN)
   gwsdb recheck -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it -- no queue involved)
   gwsdb recheck -worker [-max 200] [-timeout 10s]            (pull-model: drain the due recheck_queue backlog via $GWSDB_API/$GWSDB_INGEST_TOKEN)
 
@@ -116,7 +116,6 @@ func runIngest(args []string) {
 
 func runDeleteScan(args []string) {
 	fs := flag.NewFlagSet("delete-scan", flag.ExitOnError)
-	dbPath := fs.String("db", "gwsdb.sqlite3", "path to the SQLite database file")
 	id := fs.Int64("id", 0, "id of the scan to delete")
 	fs.Parse(args)
 
@@ -126,13 +125,10 @@ func runDeleteScan(args []string) {
 		os.Exit(2)
 	}
 
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		log.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
+	apiBase := requireEnv("GWSDB_API")
+	token := requireEnv("GWSDB_INGEST_TOKEN")
 
-	if err := st.DeleteScan(*id); err != nil {
+	if err := ingest.DeleteScan(context.Background(), apiBase, token, *id); err != nil {
 		log.Fatalf("delete-scan: %v", err)
 	}
 	log.Printf("deleted scan #%d", *id)

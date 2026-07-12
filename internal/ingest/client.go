@@ -91,3 +91,34 @@ func Submit(ctx context.Context, apiBase, token string, scan *store.Scan, checks
 	}
 	return out.ScanID, nil
 }
+
+// DeleteScan asks the Cloudflare-hosted API to remove a scan and its owned
+// ip_checks rows (see functions/delete-scan.ts) -- "gwsdb delete-scan" (ops
+// CLI) uses this instead of a local sqlite file, same as ingest/recheck.
+func DeleteScan(ctx context.Context, apiBase, token string, id int64) error {
+	body, err := json.Marshal(struct {
+		ID int64 `json:"id"`
+	}{ID: id})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/delete-scan", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("POST /delete-scan: %s: %s", resp.Status, respBody)
+	}
+	return nil
+}

@@ -102,10 +102,13 @@ export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise
 }
 
 // POOL_REFRESH_CHUNK caps how many IPs one refreshPoolForIPs statement
-// covers -- each IP appears twice in the generated SQL (once per CTE's
-// WHERE ip IN (...)), so this keeps bound-parameter counts well under D1's
-// per-statement limit even when a bulk ingest touches thousands of IPs.
-const POOL_REFRESH_CHUNK = 100;
+// covers. Each IP appears twice in the generated SQL (once per CTE's WHERE
+// ip IN (...)), and D1's actual limit is 100 bound parameters *per query*
+// (not per db.batch() call, and not SQLite's classic ~999 default) --
+// confirmed the hard way in production: a chunk size of 100 (200 params)
+// failed with "D1_ERROR: too many SQL variables" on a real multi-hundred-IP
+// ingest. 45 keeps every query at 90 params, comfortably under the cap.
+const POOL_REFRESH_CHUNK = 45;
 
 // refreshPoolForIPs recomputes and upserts the ip_pool row for each of ips,
 // scoped to just those IPs -- the same aggregation migrations/
@@ -171,6 +174,38 @@ export async function refreshPoolForIPs(db: D1Database, ips: string[]): Promise<
 					last_check_ok = excluded.last_check_ok`,
 			)
 			.bind(...chunk, ...chunk)
+			.run();
+	}
+}
+
+// deleteScan removes a scan and its owned ip_checks rows -- ports
+// internal/store/queries.go's DeleteScan. That Go version could just delete
+// and walk away: ip_pool was a live view/derivation there, so a deleted IP's
+// aggregate fell out "on its own." ip_pool is now a maintained table, so
+// this has to redo that bookkeeping by hand: affected IPs that still have
+// ok=1 history elsewhere get recomputed via refreshPoolForIPs (upsert-only);
+// IPs left with none get explicitly deleted from ip_pool, since
+// refreshPoolForIPs would otherwise leave their now-stale row untouched.
+export async function deleteScan(db: D1Database, id: number): Promise<void> {
+	const { results } = await db.prepare(`SELECT DISTINCT ip FROM ip_checks WHERE scan_id = ?`).bind(id).all<{ ip: string }>();
+	const affectedIPs = results.map((r) => r.ip);
+
+	await db.batch([
+		db.prepare(`DELETE FROM ip_checks WHERE scan_id = ?`).bind(id),
+		// Recheck rows referencing this scan's config survive; they just lose
+		// their probe-request context.
+		db.prepare(`UPDATE ip_checks SET config_scan_id = NULL WHERE config_scan_id = ?`).bind(id),
+		db.prepare(`DELETE FROM scans WHERE id = ?`).bind(id),
+	]);
+
+	if (affectedIPs.length === 0) return;
+	await refreshPoolForIPs(db, affectedIPs);
+	for (let i = 0; i < affectedIPs.length; i += POOL_REFRESH_CHUNK) {
+		const chunk = affectedIPs.slice(i, i + POOL_REFRESH_CHUNK);
+		const placeholders = chunk.map(() => "?").join(",");
+		await db
+			.prepare(`DELETE FROM ip_pool WHERE ip IN (${placeholders}) AND NOT EXISTS (SELECT 1 FROM ip_checks WHERE ip = ip_pool.ip AND ok = 1)`)
+			.bind(...chunk)
 			.run();
 	}
 }
