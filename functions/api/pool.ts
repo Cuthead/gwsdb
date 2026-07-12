@@ -38,10 +38,18 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
 	const { ips, scanMode, stats } = await loadPool(context.env.DB);
 
+	// country/countryCode are dropped here -- the browser decodes ptrList
+	// itself (see public/static/home.js + geo.js), so shipping the
+	// server's precomputed copy would just be redundant bytes. The
+	// server-rendered crawler path (functions/index.ts) still uses the
+	// full IPRow with country attached, since it has no client-side JS
+	// to decode with.
+	const apiIPs = ips.map(({ country: _country, countryCode: _countryCode, ...rest }) => rest);
+
 	const body = {
 		version,
-		ips,
-		count: ips.length,
+		ips: apiIPs,
+		count: apiIPs.length,
 		scanMode,
 		totalKnownIPs: stats.totalKnownIPs,
 		totalScans: stats.totalScans,

@@ -131,7 +131,7 @@ const jsShellBody = `<p>The table below lists tracked Google Web Server (GWS) IP
 <option value="all">All</option>
 </select>
 </p>
-<script src="/static/home.js"></script>
+<script type="module" src="/static/home.js"></script>
 
 <hr>
 <table border="0" cellpadding="2" cellspacing="0">

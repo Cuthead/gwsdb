@@ -8,6 +8,12 @@
 // the only things that bump it, since both write ip_checks rows. A repeat
 // visit between those events renders entirely from localStorage, no request
 // to /api/pool at all.
+//
+// /api/pool sends ptrList only, not a precomputed country -- this decodes
+// each row's PTR hostnames client-side with the same logic the server uses
+// for the no-JS/crawler-rendered page (see geo.js/geoData.ts).
+import { decodeBest, countryCode } from './geo.js';
+
 (function () {
 	var CACHE_KEY = 'gwsdb_pool_v1';
 
@@ -144,10 +150,14 @@
 	// innerHTML) since PTR hostnames and the decoded country are derived from
 	// live DNS data, not trusted input.
 	function buildRow(ip) {
+		var loc = decodeBest(ip.ptrList || []);
+		var country = loc.country;
+		var code = countryCode(country);
+
 		var tr = document.createElement('tr');
 		tr.dataset.ip = ip.ip;
 		tr.dataset.ptr = (ip.ptrList || []).join(' ');
-		tr.dataset.country = ip.country;
+		tr.dataset.country = country;
 		tr.dataset.status = ip.status;
 		tr.dataset.firstSeen = ip.firstSeen;
 		tr.dataset.lastSeen = ip.lastSeen;
@@ -179,16 +189,16 @@
 		tr.appendChild(ptrTd);
 
 		var countryTd = document.createElement('td');
-		if (ip.countryCode) {
+		if (code) {
 			var img = document.createElement('img');
-			img.src = '/static/flags/' + encodeURIComponent(ip.countryCode) + '.gif';
-			img.alt = ip.countryCode;
-			img.title = ip.country;
+			img.src = '/static/flags/' + encodeURIComponent(code) + '.gif';
+			img.alt = code;
+			img.title = country;
 			img.height = 11;
 			countryTd.appendChild(img);
 			countryTd.appendChild(document.createTextNode(' '));
 		}
-		countryTd.appendChild(document.createTextNode(ip.country || '-'));
+		countryTd.appendChild(document.createTextNode(country || '-'));
 		tr.appendChild(countryTd);
 
 		var statusTd = document.createElement('td');
