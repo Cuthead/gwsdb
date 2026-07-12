@@ -234,7 +234,7 @@ function renderHostnameBranch(data: QueryData): string {
 </tr>
 <tr>
 <td>Estimated Location</td>
-<td colspan="2">${data.city ? `${escapeHTML(data.city)}, ${escapeHTML(data.country)}` : "<i>Airport code not in database, cannot estimate</i>"}</td>
+<td colspan="2">${data.country ? (data.city ? `${escapeHTML(data.city)}, ${escapeHTML(data.country)}` : escapeHTML(data.country)) : "<i>Airport code not in database, cannot estimate</i>"}</td>
 </tr>`
 		: `<tr>
 <td colspan="3"><i>This does not match the known 1e100.net naming convention, cannot estimate a location</i></td>
@@ -262,7 +262,7 @@ function renderIPBranch(data: QueryData): string {
 </tr>
 <tr>
 <td>Estimated Location</td>
-<td>${data.city ? `${escapeHTML(data.city)}, ${escapeHTML(data.country)}` : "<i>Airport code not in database, cannot estimate</i>"}</td>
+<td>${data.country ? (data.city ? `${escapeHTML(data.city)}, ${escapeHTML(data.country)}` : escapeHTML(data.country)) : "<i>Airport code not in database, cannot estimate</i>"}</td>
 </tr>`
 		: data.ptrHostnames.length
 			? `<tr>
