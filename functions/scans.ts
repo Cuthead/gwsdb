@@ -27,8 +27,10 @@ function describeScanConfig(sc: ScanRow): string {
 function durationLabel(sc: ScanRow): string {
 	if (!sc.StartedAt || !sc.FinishedAt || sc.FinishedAt <= sc.StartedAt) return "-";
 	const seconds = Math.round((sc.FinishedAt.getTime() - sc.StartedAt.getTime()) / 1000);
-	const m = Math.floor(seconds / 60);
+	const h = Math.floor(seconds / 3600);
+	const m = Math.floor((seconds % 3600) / 60);
 	const s = seconds % 60;
+	if (h > 0) return `${h}h${m}m${s}s`;
 	return m > 0 ? `${m}m${s}s` : `${s}s`;
 }
 
