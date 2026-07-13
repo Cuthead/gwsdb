@@ -43,6 +43,7 @@ const crawlerUAs = [
 	"pinterest",
 	"whatsapp",
 	"telegrambot",
+	"twitterbot",
 ];
 
 export function isCrawlerUA(ua: string): boolean {
