@@ -13,7 +13,13 @@
 // each row's PTR hostnames client-side with the same logic the server uses
 // for the no-JS/crawler-rendered page (see geo.js/geoData.ts).
 import { decodeBest, countryCode } from './geo.js';
-import { resolvePTR } from './ptrResolve.js';
+// Client-side DoH PTR resolution (ptrResolve.js) is disabled -- superseded
+// by functions/ingest.ts triggering cron-ptr-refresh on demand
+// (src/ptrRefreshTrigger.ts), which fills ptr_cache server-side within the
+// same ingest run instead of leaving new IPs unresolved client-side. Left
+// in place, wiring commented out below, in case the on-demand trigger ever
+// needs a client-side fallback again.
+// import { resolvePTR } from './ptrResolve.js';
 
 (function () {
 	var CACHE_KEY = 'gwsdb_pool_v1';
@@ -45,10 +51,11 @@ import { resolvePTR } from './ptrResolve.js';
 		for (var j = start; j < end && j < matched.length; j++) {
 			var row = matched[j];
 			row.classList.remove('gwsdb-hidden');
-			if (row._pendingPTR) {
-				resolveClientPTR(row, row._ptrTd, row._countryTd, row._pendingPTR);
-				row._pendingPTR = null;
-			}
+			// Client-side PTR resolution disabled -- see the import comment above.
+			// if (row._pendingPTR) {
+			// 	resolveClientPTR(row, row._ptrTd, row._countryTd, row._pendingPTR);
+			// 	row._pendingPTR = null;
+			// }
 		}
 
 		document.getElementById('visibleCount').textContent = matched.length;
@@ -252,15 +259,16 @@ import { resolvePTR } from './ptrResolve.js';
 		fillCountryCell(countryTd, country, code);
 		tr.appendChild(countryTd);
 
+		// Client-side PTR resolution disabled -- see the import comment above.
 		// Deferred, not fired here: a fresh ingest can leave hundreds of rows
 		// pending, but only the page(s) the user actually scrolls/pages to
 		// need the client-side lookup. renderPage picks this up and fires it
 		// the first time the row becomes visible, then clears it.
-		if (!ip.ptrList || !ip.ptrList.length) {
-			tr._pendingPTR = ip.ip;
-			tr._ptrTd = ptrTd;
-			tr._countryTd = countryTd;
-		}
+		// if (!ip.ptrList || !ip.ptrList.length) {
+		// 	tr._pendingPTR = ip.ip;
+		// 	tr._ptrTd = ptrTd;
+		// 	tr._countryTd = countryTd;
+		// }
 
 		var statusTd = document.createElement('td');
 		if (ip.status === 'Reachable' || ip.status === 'Unreachable') {
