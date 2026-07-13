@@ -331,6 +331,15 @@ export async function poolVersion(db: D1Database): Promise<number> {
 	return row?.v ?? 0;
 }
 
+// scansVersion returns scans' highest row id, a cheap (rowid-indexed) signal
+// that changes whenever a scan run is imported. scans rows are insert-only
+// (never updated in place -- see ingest.ts), so this is a valid cache key for
+// the /scans page's edge cache, mirroring poolVersion above.
+export async function scansVersion(db: D1Database): Promise<number> {
+	const row = await db.prepare(`SELECT COALESCE(MAX(id), 0) AS v FROM scans`).first<{ v: number }>();
+	return row?.v ?? 0;
+}
+
 // listKnownIPsSortColumns whitelists the columns listKnownIPs may sort by,
 // mapping the caller-facing key to the actual SQL expression -- sortBy is
 // caller-controlled (query param), so it must never be interpolated directly.

@@ -1,7 +1,7 @@
 // Pages Function for GET /scans -- ports internal/web/server.go's
 // handleScans + describeScanConfig + templates/scans.tmpl.
 import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html";
-import { listScans } from "../src/store";
+import { listScans, scansVersion } from "../src/store";
 import type { Env } from "../src/env";
 import type { ScanRow } from "../src/types";
 
@@ -81,7 +81,24 @@ ${rows}
 ${table}`;
 }
 
+// Edge-cached keyed on scansVersion, same pattern as /api/pool
+// (functions/api/pool.ts): the first request after a new scan is imported in
+// each colo pays the D1 read, every later request/colo hits the edge cache.
 export const onRequestGet: PagesFunction<Env> = async (context) => {
+	const version = await scansVersion(context.env.DB);
+
+	const cache = caches.default;
+	const cacheURL = new URL(context.request.url);
+	cacheURL.searchParams.set("v", String(version));
+	const cacheKey = new Request(cacheURL.toString(), context.request);
+
+	const cached = await cache.match(cacheKey);
+	if (cached) {
+		const resp = new Response(cached.body, cached);
+		resp.headers.set("Cache-Control", "no-store");
+		return resp;
+	}
+
 	const scans = await listScans(context.env.DB, MAX_SCANS_LISTED);
 	const build = buildInfoFromEnv(context.env.CF_PAGES_COMMIT_SHA);
 	const html = pageShell({
@@ -90,5 +107,12 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		build,
 		description: "History of automated scans that populate the GWS Database's list of Google Web Server IPs reachable from China.",
 	});
-	return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+	// max-age just bounds how long this colo holds the entry -- correctness
+	// doesn't depend on it, since a version bump already changes cacheKey.
+	const response = new Response(html, {
+		headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=86400" },
+	});
+	context.waitUntil(cache.put(cacheKey, response.clone()));
+	response.headers.set("Cache-Control", "no-store");
+	return response;
 };
