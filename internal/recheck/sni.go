@@ -52,14 +52,6 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 	scanMaxRTT := time.Duration(cfg.ScanMaxRTT) * time.Millisecond
 
 	tlscfg := &tls.Config{InsecureSkipVerify: true}
-	tr := &http.Transport{TLSClientConfig: tlscfg, ResponseHeaderTimeout: scanMaxRTT}
-	httpconn := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: tr,
-	}
-	defer httpconn.CloseIdleConnections()
 
 	host := randomHost()
 	if len(cfg.HTTPVerifyHosts) > 0 {
@@ -109,6 +101,15 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			}
 			req.Host = host
 			tlsconn.SetDeadline(time.Now().Add(scanMaxRTT - time.Since(start)))
+			httpconn := &http.Client{
+				Transport: &http.Transport{
+					DialTLS: func(network, addr string) (net.Conn, error) { return tlsconn, nil },
+				},
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+				Timeout: scanMaxRTT - time.Since(start),
+			}
 			resp, err := httpconn.Do(req)
 			if err != nil {
 				tlsconn.Close()
