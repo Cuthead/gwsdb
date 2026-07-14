@@ -220,6 +220,7 @@ const countryCodes = {
 	"United Arab Emirates": "ae",
 	"United Kingdom": "gb",
 	"United States": "us",
+	"Uruguay": "uy",
 };
 
 // countryCode returns the ISO 3166-1 alpha-2 code for a country name as
