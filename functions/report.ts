@@ -30,6 +30,13 @@ function sameOrigin(request: Request): boolean {
 	return false;
 }
 
+// clientCountry reads Cloudflare's CF-IPCountry edge header, populated for
+// every request that reaches a Pages Function -- unspoofable the same way
+// CF-Connecting-IP is (see clientIP below).
+function clientCountry(request: Request): string {
+	return request.headers.get("CF-IPCountry") ?? "";
+}
+
 // clientIP extracts the real client address from Cloudflare's
 // CF-Connecting-IP edge header -- always present and trustworthy for a
 // Pages deployment, since there's no way to reach it except through
@@ -108,6 +115,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	const { request, env } = context;
 	if (!sameOrigin(request)) {
 		return new Response("cross-origin request rejected", { status: 403 });
+	}
+	if (clientCountry(request) !== "CN") {
+		return new Response("forbidden", { status: 403 });
 	}
 
 	let form: FormData;
