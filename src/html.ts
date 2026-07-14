@@ -67,10 +67,10 @@ export function buildInfoFromEnv(commitSha: string | undefined): BuildInfo {
 }
 
 function footerHTML(build: BuildInfo): string {
-	const source = build.revision
-		? `commit <a href="${escapeHTML(build.commitURL)}">${escapeHTML(build.revision)}</a>`
-		: `<a href="${repoURL}">gwsdb</a>`;
-	return `${source} | <a href="/privacy">Privacy</a>`;
+	if (build.revision) {
+		return `commit <a href="${escapeHTML(build.commitURL)}">${escapeHTML(build.revision)}</a>`;
+	}
+	return `<a href="${repoURL}">gwsdb</a>`;
 }
 
 // NAV_EN/NAV_ZH are the two nav-bar variants used across the site.
