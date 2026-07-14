@@ -5,6 +5,7 @@ import { lookupGoogleASN, resolveAndCacheHost, resolveAndCachePTR, isGoogleASN }
 import { decode, decodeBest, isHostname, siblingHostname } from "../src/geo";
 import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html";
 import { isIPAddress } from "../src/ipAddr";
+import { clientCountry } from "../src/request";
 import { getHost, getPTR, ipHistory, ipStatusFor, listReports } from "../src/store";
 import type { Env } from "../src/env";
 import type { IPCheckHistoryRow, IPReport, IPStatus } from "../src/types";
@@ -98,6 +99,7 @@ interface QueryData {
 	unusableCount: number;
 	queryIsHostname: boolean;
 	hostnameForms: HostnameForm[];
+	canReport: boolean;
 }
 
 function emptyData(query: string): QueryData {
@@ -122,6 +124,7 @@ function emptyData(query: string): QueryData {
 		unusableCount: 0,
 		queryIsHostname: false,
 		hostnameForms: [],
+		canReport: false,
 	};
 }
 
@@ -338,6 +341,15 @@ ${data.reports
 </div>`
 		: "";
 
+	const reportCell = data.canReport
+		? `<form method="POST" action="/report">
+<input type="hidden" name="ip" value="${escapeHTML(data.query)}">
+备注（可选）：<input type="text" name="comment" size="40" maxlength="500">
+<button type="submit" name="verdict" value="usable">可用</button>
+<button type="submit" name="verdict" value="unusable">不可用</button>
+</form>`
+		: `<font color="#666666">仅中国大陆IP可提交报告</font>`;
+
 	return `<div class="gwsdb-scroll">
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>Query Result: ${escapeHTML(data.query)}</b></td></tr>
@@ -357,12 +369,7 @@ ${checksTable}
 <tr bgcolor="#EEEEEE"><td colspan="2"><b>报告IP</b></td></tr>
 <tr>
 <td colspan="2">
-<form method="POST" action="/report">
-<input type="hidden" name="ip" value="${escapeHTML(data.query)}">
-备注（可选）：<input type="text" name="comment" size="40" maxlength="500">
-<button type="submit" name="verdict" value="usable">可用</button>
-<button type="submit" name="verdict" value="unusable">不可用</button>
-</form>
+${reportCell}
 </td>
 </tr>
 </table>
@@ -407,6 +414,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const url = new URL(context.request.url);
 	const q = (url.searchParams.get("ip") ?? "").trim();
 	const data = emptyData(q);
+	data.canReport = clientCountry(context.request) === "CN";
 	const dohUrl = context.env.DOH_JSON_URL;
 
 	if (q === "") {

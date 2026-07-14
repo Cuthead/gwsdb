@@ -5,6 +5,7 @@ import { timingSafeEqual } from "../src/auth";
 import { isGoogleASN, lookupGoogleASN } from "../src/dnsCache";
 import { buildInfoFromEnv, escapeHTML, pageShell } from "../src/html";
 import { isIPAddress } from "../src/ipAddr";
+import { clientCountry } from "../src/request";
 import { enqueueRecheck, ipStatusFor, saveReport } from "../src/store";
 import type { Env } from "../src/env";
 
@@ -27,13 +28,6 @@ function sameOrigin(request: Request): boolean {
 		}
 	}
 	return false;
-}
-
-// clientCountry reads Cloudflare's CF-IPCountry edge header, populated for
-// every request that reaches a Pages Function -- unspoofable the same way
-// CF-Connecting-IP is (see clientIP below).
-function clientCountry(request: Request): string {
-	return request.headers.get("CF-IPCountry") ?? "";
 }
 
 // clientIP extracts the real client address from Cloudflare's
