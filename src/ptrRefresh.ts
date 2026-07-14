@@ -19,6 +19,12 @@
 // single pipelined TCP connection is 1 subrequest regardless of how many
 // PTR queries ride it.
 //
+import { connect } from "cloudflare:sockets";
+import { buildPTRQuery, parseMessage } from "./dnsWire";
+import { dedupeSorted } from "./resolver";
+import { pendingIPsForPTRRefresh, savePTRBatch } from "./store";
+import type { PTRCacheEntry } from "./types";
+
 // Resolver is ns1.google.com, not a public recursive resolver -- two
 // reasons, found the hard way. First, Cloudflare blocks outbound TCP
 // sockets to Cloudflare's own IP ranges, which rules out 1.1.1.1 entirely
@@ -35,12 +41,6 @@
 // IP outside Google's authority would come back REFUSED and just be
 // skipped (see the rcode filter below) -- acceptable since the pool is
 // ASN-gated to Google space by construction.
-import { connect } from "cloudflare:sockets";
-import { buildPTRQuery, parseMessage } from "./dnsWire";
-import { dedupeSorted } from "./resolver";
-import { pendingIPsForPTRRefresh, savePTRBatch } from "./store";
-import type { PTRCacheEntry } from "./types";
-
 const RESOLVER = { hostname: "ns1.google.com", port: 53 };
 // Caps one invocation's batch to the 16-bit DNS transaction ID space (each
 // in-flight query on the connection needs a unique id to match its
