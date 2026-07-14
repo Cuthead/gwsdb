@@ -21,7 +21,8 @@
     "DNS_PUBLISH_NAME": "google.com.c.0.8.0.d.0.0.0.0.7.4.0.1.0.0.2.ip6.arpa",
     "DNS_PUBLISH_ZONE_ID": "d58f43cc6d0e6d500e2e8420f51dad30",
     "DNS_PUBLISH_TTL": "300",
-    "DNS_PUBLISH_LIMIT": "4"
+    "DNS_PUBLISH_LIMIT": "4",
+    "DOH_JSON_URL": "https://cloudflare-dns.com/dns-query"
   },
   "d1_databases": [
     {

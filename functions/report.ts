@@ -10,7 +10,6 @@ import type { Env } from "../src/env";
 
 const ASN_TIMEOUT_MS = 3000;
 const MAX_REPORT_COMMENT_LEN = 500;
-const DEFAULT_DOH_URL = "https://dns.google/resolve";
 
 // sameOrigin reports whether request's Origin (or, failing that, Referer)
 // header names this same host -- a lightweight CSRF guard for the
@@ -132,7 +131,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		return new Response("invalid ip", { status: 400 });
 	}
 
-	const dohUrl = env.DOH_JSON_URL || DEFAULT_DOH_URL;
+	const dohUrl = env.DOH_JSON_URL;
 	const { info, ok } = await lookupGoogleASN(env.DB, ip, ASN_TIMEOUT_MS, dohUrl);
 	if (!ok || !isGoogleASN(info)) {
 		return new Response("this IP does not belong to a Google ASN", { status: 400 });

@@ -4,10 +4,9 @@ export interface Env {
 	// Set via `wrangler pages secret put INGEST_TOKEN --project-name=gwsdb`.
 	INGEST_TOKEN: string;
 	// JSON-form DoH endpoint (Accept: application/dns-json) used for all DNS
-	// resolution (PTR/host/ASN) -- see src/doh.ts. Defaults to
-	// "https://dns.google/resolve" in code if unset, same provider as the Go
-	// original's defaultDoHURL.
-	DOH_JSON_URL?: string;
+	// resolution (PTR/host/ASN) -- see src/doh.ts. Set in wrangler.jsonc's
+	// vars.
+	DOH_JSON_URL: string;
 	// DNS publish (src/publish.ts) -- reconciles A/AAAA records at
 	// DNS_PUBLISH_NAME to the store's current top IPs. Publishing stays off
 	// unless DNS_PUBLISH_NAME is set, mirroring Go's Config.Name gate.

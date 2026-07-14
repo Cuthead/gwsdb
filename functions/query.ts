@@ -13,7 +13,6 @@ const PTR_TIMEOUT_MS = 3000;
 const ASN_TIMEOUT_MS = 3000;
 const MAX_REPORT_ROWS = 100;
 const MAX_HISTORY_ROWS = 30;
-const DEFAULT_DOH_URL = "https://dns.google/resolve";
 
 function reachabilityStatus(st: IPStatus | null): string {
 	if (!st || !st.hasCheck) return "-";
@@ -408,7 +407,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const url = new URL(context.request.url);
 	const q = (url.searchParams.get("ip") ?? "").trim();
 	const data = emptyData(q);
-	const dohUrl = context.env.DOH_JSON_URL || DEFAULT_DOH_URL;
+	const dohUrl = context.env.DOH_JSON_URL;
 
 	if (q === "") {
 		// not submitted; render the empty form
