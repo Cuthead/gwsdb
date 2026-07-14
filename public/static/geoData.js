@@ -555,6 +555,7 @@ export const airportCodes = {
 	"dmm": { city: "Dammam", country: "Saudi Arabia" },
 	"doh": { city: "Doha", country: "Qatar" },
 	"dxb": { city: "Dubai", country: "United Arab Emirates" },
+	"fjr": { city: "Fujairah", country: "United Arab Emirates" },
 	"jnb": { city: "Johannesburg", country: "South Africa" },
 	"mba": { city: "Mombasa", country: "Kenya" },
 	"tlv": { city: "Tel Aviv", country: "Israel" },
