@@ -6,7 +6,7 @@
 // failures with, POST accepts the already-parsed/filtered scan and inserts
 // it. No decompression, no regex, no streaming.
 import { checkBearerAuth } from "../src/auth";
-import { triggerPTRRefresh } from "../src/ptrRefreshTrigger";
+import { runPTRRefresh } from "../src/ptrRefresh";
 import { syncPublish } from "../src/publish";
 import { allKnownGoodIPs, type CheckRow, insertCheckRows, insertScan, refreshPoolForIPs } from "../src/store";
 import type { Scan } from "../src/types";
@@ -125,9 +125,9 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	waitUntil(syncPublish(env, env.DB).catch((err) => console.error("ingest: publish:", err)));
 
 	// Newly-discovered IPs (ptr_checked_at NULL) would otherwise sit with no
-	// PTR/country until cron-ptr-refresh's next run -- ask it to refresh now
-	// instead. Same waitUntil/non-fatal treatment as publish above.
-	waitUntil(triggerPTRRefresh(env).catch((err) => console.error("ingest: ptr-refresh trigger:", err)));
+	// PTR/country until the next scan's ingest runs this. Same
+	// waitUntil/non-fatal treatment as publish above.
+	waitUntil(runPTRRefresh(env.DB).catch((err) => console.error("ingest: ptr-refresh:", err)));
 
 	return Response.json({ scanId, scannedCount: scan.ScannedCount, foundCount: scan.FoundCount });
 }

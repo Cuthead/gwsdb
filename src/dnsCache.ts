@@ -1,8 +1,8 @@
 // Ports internal/web/server.go's three cache-first "look up live on a miss,
 // then upsert" wrappers (resolveAndCachePTR, resolveAndCacheHost,
 // lookupASN) plus isGoogleASN/conflictingLocations/clampTTL. Shared by
-// functions/query.ts, functions/report.ts, and cron-ptr-refresh/index.ts
-// (PTR only -- the cron worker never touches host_cache/asn_cache).
+// functions/query.ts, functions/report.ts, and ptrRefresh.ts (PTR only --
+// the latter never touches host_cache/asn_cache).
 import { decode } from "./geo";
 import { lookupASN, type ASNInfo } from "./asn";
 import { lookupHost, lookupPTR } from "./resolver";
@@ -44,7 +44,7 @@ function conflictingLocations(hostnames: string[]): boolean {
 
 // resolveAndCachePTR does a live PTR lookup for ip and upserts the result
 // into ptr_cache, regardless of what's already cached. Shared by the
-// on-demand /query lookup (cache miss) and cron-ptr-refresh.
+// on-demand /query lookup (cache miss) and ptrRefresh.ts.
 export async function resolveAndCachePTR(
 	db: D1Database,
 	ip: string,

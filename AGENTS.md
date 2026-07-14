@@ -73,7 +73,7 @@ The home page doesn't query D1 or render the IP list server-side on every hit, s
 
 **Client IP handling**: request handlers trust `CF-Connecting-IP` first (see `src/env.ts`/callers) — this is inherent to running as a Cloudflare Pages Function, there's no "origin" to spoof around.
 
-**cron-ptr-refresh** (`cron-ptr-refresh/`) is a separate Cloudflare Worker on its own cron trigger that round-robins through `ip_pool` refreshing stale PTR cache entries — see its own source for details.
+**`src/ptrRefresh.ts`** round-robins through `ip_pool` refreshing stale PTR cache entries over one pipelined DNS-over-TCP connection — run from `functions/ingest.ts` via `waitUntil` right after each scan's ingest, not on a schedule (used to be a separate Cloudflare Worker on its own cron trigger, back when Pages Functions had no scheduled-execution primitive; folded in once ingest started triggering it on demand and the cron became redundant).
 
 ## Gotchas
 

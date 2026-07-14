@@ -478,7 +478,7 @@ export async function listScans(db: D1Database, limit: number): Promise<ScanRow[
 // --- PTR / host / ASN caches, IP history, community reports, recheck
 // queue -- ports of the matching functions in internal/store/queries.go,
 // used by functions/query.ts, functions/report.ts, and (PTR only)
-// cron-ptr-refresh/index.ts. ---
+// ptrRefresh.ts. ---
 
 interface PTRCacheRow {
 	ip: string;
@@ -538,8 +538,8 @@ export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
 // to not matter here (each statement only binds a handful of params).
 const PTR_BATCH_CHUNK = 400;
 
-// savePTRBatch is savePTR for many IPs in one cron-ptr-refresh tick --
-// cron-ptr-refresh/index.ts's TCP-pipelined resolver produces results for
+// savePTRBatch is savePTR for many IPs in one ptrRefresh.ts run --
+// its TCP-pipelined resolver produces results for
 // potentially thousands of IPs per invocation, and issuing one db.batch()
 // (one D1 call/subrequest) per IP the way savePTR does would burn through
 // the 50-subrequests-per-invocation limit exactly like the old fetch()-per-IP

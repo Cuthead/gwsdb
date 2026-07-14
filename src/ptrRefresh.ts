@@ -1,18 +1,16 @@
-// Separate small Workers project (own wrangler.jsonc, same D1 database as
-// the gwsdb Pages project) -- ports internal/web/server.go's
-// StartPTRRefresher. Pages Functions have no scheduled-execution primitive,
-// so this can't live in the Pages project itself. No Cron Trigger anymore
-// (see wrangler.jsonc): functions/ingest.ts POSTs to this Worker's fetch
-// handler right after writing new IPs (see src/ptrRefreshTrigger.ts), so a
-// fresh scan's IPs get resolved within that request instead of waiting for
-// a timer. scan_and_ingest.sh already runs daily, which is what made the
-// standalone daily cron redundant.
+// Round-robin PTR refresh, run in-process from functions/ingest.ts's
+// waitUntil right after a scan writes new IPs (see that file) -- used to be
+// a separate cron-ptr-refresh Worker (see git history) because Pages
+// Functions had no scheduled-execution primitive, but the Cron Trigger was
+// dropped once ingest started triggering a refresh on demand, so the
+// separate project just added an extra HTTP hop between two things
+// deployed and invoked together. Folded back in here.
 //
 // Refreshes every IP due for a round-robin PTR check in a single invocation
-// over one pipelined DNS-over-TCP connection -- see src/store.ts's
+// over one pipelined DNS-over-TCP connection -- see store.ts's
 // pendingIPsForPTRRefresh and migration 0005 for the round-robin scheduling
-// this replaced TTL-staleness with, and src/dnsWire.ts for the wire format
-// this speaks.
+// this replaced TTL-staleness with, and dnsWire.ts for the wire format this
+// speaks.
 //
 // Why TCP sockets instead of the JSON-form DoH fetch() used everywhere else
 // in gwsdb: each fetch() is its own subrequest, capping how many IPs one
@@ -27,31 +25,21 @@
 // (worked in every local/dev test, since that restriction is
 // production-only; failed instantly in production with no useful error).
 // Second, ip_pool is Google-owned address space end to end (see
-// isGoogleASN's gate in src/dnsCache.ts) -- ns1.google.com is authoritative
-// for its reverse zones, so it answers directly with no recursion, and
-// unlike a recursive resolver it has no reason to throttle/reset a large
-// pipelined burst from one client. Benchmarked against the full real
-// ip_pool (5,035 IPs, 98% IPv6): 100% answered in ~2.5s, rcodes only
-// NOERROR/NXDOMAIN (every current pool IP is in Google's authority) --
-// far faster than 1.1.1.1 ever was and well inside a fetch handler's
-// execution limits. An IP outside Google's authority would come back
-// REFUSED and just be skipped (see the rcode filter below) -- acceptable
-// since the pool is ASN-gated to Google space by construction.
+// isGoogleASN's gate in dnsCache.ts) -- ns1.google.com is authoritative for
+// its reverse zones, so it answers directly with no recursion, and unlike a
+// recursive resolver it has no reason to throttle/reset a large pipelined
+// burst from one client. Benchmarked against the full real ip_pool (5,035
+// IPs, 98% IPv6): 100% answered in ~2.5s, rcodes only NOERROR/NXDOMAIN
+// (every current pool IP is in Google's authority) -- far faster than
+// 1.1.1.1 ever was and well inside a fetch handler's execution limits. An
+// IP outside Google's authority would come back REFUSED and just be
+// skipped (see the rcode filter below) -- acceptable since the pool is
+// ASN-gated to Google space by construction.
 import { connect } from "cloudflare:sockets";
-import { timingSafeEqual } from "../src/auth";
-import { buildPTRQuery, parseMessage } from "../src/dnsWire";
-import { dedupeSorted } from "../src/resolver";
-import { pendingIPsForPTRRefresh, savePTRBatch } from "../src/store";
-import type { PTRCacheEntry } from "../src/types";
-
-interface Env {
-	DB: D1Database;
-	// Shared secret functions/ingest.ts authenticates with to trigger a
-	// refresh on demand (see src/ptrRefreshTrigger.ts). Set via
-	// `wrangler secret put REFRESH_SECRET --name gwsdb-ptr-refresh`; must
-	// match the Pages project's PTR_REFRESH_SECRET.
-	REFRESH_SECRET: string;
-}
+import { buildPTRQuery, parseMessage } from "./dnsWire";
+import { dedupeSorted } from "./resolver";
+import { pendingIPsForPTRRefresh, savePTRBatch } from "./store";
+import type { PTRCacheEntry } from "./types";
 
 const RESOLVER = { hostname: "ns1.google.com", port: 53 };
 // Caps one invocation's batch to the 16-bit DNS transaction ID space (each
@@ -61,9 +49,9 @@ const RESOLVER = { hostname: "ns1.google.com", port: 53 };
 const BATCH_LIMIT = 10000;
 // ~48x the measured wall time for the full 5,035-IP pool against
 // ns1.google.com (~2.5s, see module comment) -- generous margin while
-// staying well under the 15-minute Cron Trigger cap.
+// staying well under a Pages Function invocation's execution limits.
 const READ_TIMEOUT_MS = 120_000;
-// Same floor src/dnsCache.ts's clampTTL uses -- kept in sync manually since
+// Same floor dnsCache.ts's clampTTL uses -- kept in sync manually since
 // this path doesn't go through resolveAndCachePTR (see that function for
 // why a near-zero TTL isn't taken literally).
 const MIN_CACHE_TTL_SECONDS = 60 * 60;
@@ -74,8 +62,8 @@ const MIN_CACHE_TTL_SECONDS = 60 * 60;
 // answered or readTimeoutMs elapses. IPs with no response by the deadline
 // (dropped packet, resolver hiccup, or just not enough time) are simply
 // absent from the result map -- pendingIPsForPTRRefresh's round-robin
-// ordering means an unanswered IP just gets tried again on the next daily
-// run, no separate retry bookkeeping needed.
+// ordering means an unanswered IP just gets tried again on the next run, no
+// separate retry bookkeeping needed.
 async function pipelinePTRQueries(ips: string[], readTimeoutMs: number): Promise<Map<string, { rcode: number; hostnames: string[]; ttlSeconds: number }>> {
 	const idToIP = new Map<number, string>();
 	ips.forEach((ip, i) => idToIP.set(i + 1, ip));
@@ -134,11 +122,13 @@ async function pipelinePTRQueries(ips: string[], readTimeoutMs: number): Promise
 	return results;
 }
 
-// runRefresh does one round-robin PTR refresh pass, shared by the fetch
-// handler below (functions/ingest.ts's on-demand trigger is the only
-// caller now -- see the module comment for why there's no Cron Trigger).
-async function runRefresh(env: Env): Promise<{ queried: number; answered: number; cached: number }> {
-	const ips = await pendingIPsForPTRRefresh(env.DB, BATCH_LIMIT);
+// runPTRRefresh does one round-robin PTR refresh pass -- called from
+// functions/ingest.ts via waitUntil right after a scan writes new IPs, so
+// those IPs (ptr_checked_at NULL, which pendingIPsForPTRRefresh sorts
+// first) get PTR-resolved within the same request instead of waiting for
+// the next ingest.
+export async function runPTRRefresh(db: D1Database): Promise<{ queried: number; answered: number; cached: number }> {
+	const ips = await pendingIPsForPTRRefresh(db, BATCH_LIMIT);
 	if (ips.length === 0) return { queried: 0, answered: 0, cached: 0 };
 
 	const results = await pipelinePTRQueries(ips, READ_TIMEOUT_MS);
@@ -147,7 +137,7 @@ async function runRefresh(env: Env): Promise<{ queried: number; answered: number
 	for (const [ip, r] of results) {
 		// rcode 0 (NOERROR) or 3 (NXDOMAIN) are both definitive answers --
 		// NXDOMAIN just means "no PTR records", same as a NOERROR/no-answer
-		// response (mirrors src/doh.ts's queryDoH: null-vs-thrown, not
+		// response (mirrors doh.ts's queryDoH: null-vs-thrown, not
 		// present-vs-absent). Any other rcode (SERVFAIL, REFUSED, ...) is a
 		// transient failure -- leave it out so it isn't wrongly marked
 		// checked and gets retried on the next run.
@@ -161,26 +151,6 @@ async function runRefresh(env: Env): Promise<{ queried: number; answered: number
 		});
 	}
 
-	await savePTRBatch(env.DB, entries);
+	await savePTRBatch(db, entries);
 	return { queried: ips.length, answered: results.size, cached: entries.length };
 }
-
-function checkAuth(request: Request, env: Env): boolean {
-	const auth = request.headers.get("Authorization") ?? "";
-	if (!auth.startsWith("Bearer ") || !env.REFRESH_SECRET) return false;
-	return timingSafeEqual(auth.slice("Bearer ".length), env.REFRESH_SECRET);
-}
-
-export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
-		if (!checkAuth(request, env)) return new Response("unauthorized", { status: 401 });
-		try {
-			const r = await runRefresh(env);
-			console.log(`ptr-refresh: queried ${r.queried}, answered ${r.answered}, cached ${r.cached}`);
-			return Response.json(r);
-		} catch (err) {
-			console.error("ptr-refresh failed:", err);
-			return new Response(`ptr-refresh failed: ${(err as Error).message}`, { status: 500 });
-		}
-	},
-} satisfies ExportedHandler<Env>;

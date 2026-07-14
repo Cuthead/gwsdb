@@ -18,14 +18,6 @@ export interface Env {
 	// Bearer token for the Cloudflare API (DNS-edit permission on the zone
 	// above). Set via `wrangler pages secret put CLOUDFLARE_DNS_API_TOKEN`.
 	CLOUDFLARE_DNS_API_TOKEN: string;
-	// On-demand PTR refresh trigger (src/ptrRefreshTrigger.ts) -- the
-	// cron-ptr-refresh Worker's fetch URL (e.g. its workers.dev URL) and the
-	// bearer secret it expects, must match that Worker's REFRESH_SECRET. URL
-	// is a plain var (wrangler.jsonc); secret via
-	// `wrangler pages secret put PTR_REFRESH_SECRET`. Triggering stays off
-	// unless PTR_REFRESH_URL is set, same gate DNS_PUBLISH_NAME uses.
-	PTR_REFRESH_URL?: string;
-	PTR_REFRESH_SECRET?: string;
 	// Injected automatically by Cloudflare Pages at request time (see
 	// src/html.ts's buildInfoFromEnv) -- not set in wrangler.jsonc.
 	CF_PAGES_COMMIT_SHA?: string;

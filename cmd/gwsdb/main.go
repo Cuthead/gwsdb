@@ -135,9 +135,9 @@ func runDeleteScan(args []string) {
 }
 
 // recheckDefaultMaxPerRun caps how many queue items one "gwsdb recheck
-// -worker" invocation drains, mirroring the Cloudflare-side cron-ptr-refresh
-// project's per-run cap -- a large backlog can't block a single cron tick
-// forever; any remainder is picked up on the next invocation.
+// -worker" invocation drains, mirroring the Cloudflare-side ptrRefresh.ts's
+// per-run cap -- a large backlog can't block a single tick forever; any
+// remainder is picked up on the next invocation.
 const recheckDefaultMaxPerRun = 200
 
 func runRecheck(args []string) {

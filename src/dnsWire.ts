@@ -1,6 +1,6 @@
 // Minimal RFC 1035 message encode/decode for PTR queries only -- just
 // enough to pipeline many queries over one DNS-over-TCP connection
-// (cron-ptr-refresh/index.ts), which needs raw wire format since Workers
+// (ptrRefresh.ts), which needs raw wire format since Workers
 // has no ready-made binary DNS client (see src/doh.ts's module comment for
 // why the rest of gwsdb uses JSON-form DoH instead). Benchmarked against
 // 1.1.1.1:53 with up to 10,000 pipelined queries on one connection --
