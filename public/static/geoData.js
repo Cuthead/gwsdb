@@ -449,6 +449,7 @@ export const regionalCodes = {
 // airportCodes maps IATA airport codes to the city/country Google's PTR
 // naming convention associates them with.
 export const airportCodes = {
+	// United States
 	"atl": { city: "Atlanta, GA", country: "United States" },
 	"auz": { city: "Aurora, IL", country: "United States" },
 	"bos": { city: "Boston, MA", country: "United States" },
@@ -487,7 +488,11 @@ export const airportCodes = {
 	"slc": { city: "Salt Lake City, UT", country: "United States" },
 	"stl": { city: "St. Louis, MO", country: "United States" },
 	"uos": { city: "Franklin County, TN", country: "United States" },
+
+	// Canada
 	"yyz": { city: "Toronto", country: "Canada" },
+
+	// Europe
 	"ams": { city: "Amsterdam/Eemshaven", country: "Netherlands" },
 	"arn": { city: "Stockholm", country: "Sweden" },
 	"ber": { city: "Berlin", country: "Germany" },
@@ -520,6 +525,8 @@ export const airportCodes = {
 	"vie": { city: "Vienna", country: "Austria" },
 	"waw": { city: "Warsaw", country: "Poland" },
 	"zrh": { city: "Zurich", country: "Switzerland" },
+
+	// Asia-Pacific
 	"akl": { city: "Auckland", country: "New Zealand" },
 	"bkk": { city: "Bangkok", country: "Thailand" },
 	"blr": { city: "Bengaluru", country: "India" },
@@ -544,6 +551,8 @@ export const airportCodes = {
 	"sin": { city: "Singapore", country: "Singapore" },
 	"syd": { city: "Sydney", country: "Australia" },
 	"tsa": { city: "Taipei", country: "Taiwan" },
+
+	// Latin America
 	"bog": { city: "Bogotá", country: "Colombia" },
 	"eze": { city: "Buenos Aires", country: "Argentina" },
 	"gig": { city: "Rio de Janeiro", country: "Brazil" },
@@ -553,6 +562,8 @@ export const airportCodes = {
 	"mvd": { city: "Montevideo", country: "Uruguay"},
 	"qro": { city: "Querétaro", country: "Mexico" },
 	"scl": { city: "Santiago", country: "Chile" },
+
+	// Middle East / Africa
 	"cai": { city: "Cairo", country: "Egypt" },
 	"dmm": { city: "Dammam", country: "Saudi Arabia" },
 	"doh": { city: "Doha", country: "Qatar" },
