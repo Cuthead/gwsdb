@@ -202,6 +202,7 @@ const countryCodes = {
 	Netherlands: "nl",
 	"New Zealand": "nz",
 	Norway: "no",
+	Oman: "om",
 	Peru: "pe",
 	Philippines: "ph",
 	Poland: "pl",

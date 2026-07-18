@@ -571,6 +571,7 @@ export const airportCodes = {
 	"fjr": { city: "Fujairah", country: "United Arab Emirates" },
 	"jnb": { city: "Johannesburg", country: "South Africa" },
 	"mba": { city: "Mombasa", country: "Kenya" },
+	"mct": { city: "Muscat", country: "Oman"},
 	"tlv": { city: "Tel Aviv", country: "Israel" },
 };
 // @license-end
