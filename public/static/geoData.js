@@ -461,6 +461,7 @@ export const airportCodes = {
 	"dfw": { city: "Dallas-Fort Worth, TX", country: "United States" },
 	"dls": { city: "The Dalles, OR", country: "United States" },
 	"ewr": { city: "Newark, NJ", country: "United States" },
+	"fwa": { city: "Fort Wayne, IN", country: "United States" },
 	"hou": { city: "Houston, TX", country: "United States" },
 	"iad": { city: "Ashburn/Washington, VA", country: "United States" },
 	"iah": { city: "Houston, TX", country: "United States" },
