@@ -562,6 +562,7 @@ export const airportCodes = {
 	"mex": { city: "Mexico City", country: "Mexico" },
 	"mvd": { city: "Montevideo", country: "Uruguay"},
 	"qro": { city: "Querétaro", country: "Mexico" },
+	"rio": { city: "Rio de Janeiro", country: "Brazil" },
 	"scl": { city: "Santiago", country: "Chile" },
 
 	// Middle East / Africa
