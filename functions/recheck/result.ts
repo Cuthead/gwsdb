@@ -9,7 +9,7 @@
 // prunes old processed entries, and reconciles published DNS records.
 import { checkBearerAuth } from "../../src/auth";
 import { syncPublish } from "../../src/publish";
-import { markRecheckProcessed, pruneRecheckQueue, refreshPoolForIPs, saveRecheckResult } from "../../src/store";
+import { markRecheckProcessed, pruneCheckHistory, pruneRecheckQueue, refreshPoolForIPs, saveRecheckResult } from "../../src/store";
 import type { Env } from "../../src/env";
 
 // RECHECK_QUEUE_RETENTION_DAYS mirrors internal/web/recheck.go's
@@ -61,6 +61,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		configScanId: body.configScanId || null, // 0 means "no D1 scan config" (ad-hoc probes use a local config file, not a stored scan) -- never a real scan id, which starts at 1
 	});
 	await refreshPoolForIPs(env.DB, [body.ip]);
+	await pruneCheckHistory(env.DB, [body.ip]);
 	if (body.id > 0) await markRecheckProcessed(env.DB, body.id, body.ok, checkedAt);
 	await pruneRecheckQueue(env.DB, RECHECK_QUEUE_RETENTION_DAYS);
 

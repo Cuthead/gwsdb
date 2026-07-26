@@ -211,6 +211,61 @@ export async function deleteScan(db: D1Database, id: number): Promise<void> {
 	}
 }
 
+// CHECK_HISTORY_RETENTION caps how many ip_checks rows survive per IP.
+// query.ts's history view only ever shows the most recent 30
+// (MAX_HISTORY_ROWS), and ip_pool's first_seen/times_seen are allowed to
+// drift to "within the retained window" rather than true lifetime values
+// (product decision -- see conversation, not derivable from code). Kept
+// equal to MAX_HISTORY_ROWS so pruning never trims a row the history view
+// would otherwise have shown.
+const CHECK_HISTORY_RETENTION = 30;
+
+// pruneCheckHistory deletes ip_checks rows beyond CHECK_HISTORY_RETENTION
+// per IP (oldest first) for the given ips, then refreshes ip_pool for
+// whichever of them still have surviving ok=1 history and explicitly
+// deletes the ip_pool row for any that don't -- same bookkeeping deleteScan
+// does, needed because refreshPoolForIPs alone is upsert-only (see its
+// module comment) and can't clear a row for an IP with no history left.
+// Call with the same IP set each ingest already refreshes ip_pool for, so
+// this only ever touches IPs that could have just crossed the retention
+// threshold.
+export async function pruneCheckHistory(db: D1Database, ips: string[]): Promise<void> {
+	const unique = [...new Set(ips)];
+	const affectedIPs = new Set<string>();
+	for (let i = 0; i < unique.length; i += POOL_REFRESH_CHUNK) {
+		const chunk = unique.slice(i, i + POOL_REFRESH_CHUNK);
+		const placeholders = chunk.map(() => "?").join(",");
+		const { results } = await db
+			.prepare(
+				`DELETE FROM ip_checks
+				WHERE id IN (
+					SELECT id FROM (
+						SELECT id, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn
+						FROM ip_checks
+						WHERE ip IN (${placeholders})
+					)
+					WHERE rn > ?
+				)
+				RETURNING ip`,
+			)
+			.bind(...chunk, CHECK_HISTORY_RETENTION)
+			.all<{ ip: string }>();
+		for (const row of results) affectedIPs.add(row.ip);
+	}
+
+	if (affectedIPs.size === 0) return;
+	const affected = [...affectedIPs];
+	await refreshPoolForIPs(db, affected);
+	for (let i = 0; i < affected.length; i += POOL_REFRESH_CHUNK) {
+		const chunk = affected.slice(i, i + POOL_REFRESH_CHUNK);
+		const placeholders = chunk.map(() => "?").join(",");
+		await db
+			.prepare(`DELETE FROM ip_pool WHERE ip IN (${placeholders}) AND NOT EXISTS (SELECT 1 FROM ip_checks WHERE ip = ip_pool.ip AND ok = 1)`)
+			.bind(...chunk)
+			.run();
+	}
+}
+
 // isKnownGood reports whether ip has ever had a successful check recorded --
 // mirrors Go's live "EXISTS(SELECT 1 FROM ip_checks WHERE ip = ? AND ok = 1)"
 // query in SaveScan. Callers should memoize per ingest run (see

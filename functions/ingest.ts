@@ -8,7 +8,7 @@
 import { checkBearerAuth } from "../src/auth";
 import { runPTRRefresh } from "../src/ptrRefresh";
 import { syncPublish } from "../src/publish";
-import { allKnownGoodIPs, type CheckRow, insertCheckRows, insertScan, refreshPoolForIPs } from "../src/store";
+import { allKnownGoodIPs, type CheckRow, insertCheckRows, insertScan, pruneCheckHistory, refreshPoolForIPs } from "../src/store";
 import type { Scan } from "../src/types";
 import type { Env } from "../src/env";
 
@@ -116,7 +116,12 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	// Tracks every IP this run wrote an ip_checks row for, so ip_pool only
 	// gets recomputed for the IPs that could have actually changed -- see
 	// refreshPoolForIPs's module comment.
-	await refreshPoolForIPs(env.DB, [...new Set(rows.map((r) => r.ip))]);
+	const touchedIPs = [...new Set(rows.map((r) => r.ip))];
+	await refreshPoolForIPs(env.DB, touchedIPs);
+
+	// Bounds ip_checks growth: only the IPs just written to can have crossed
+	// CHECK_HISTORY_RETENTION, so this never scans IPs untouched by this run.
+	await pruneCheckHistory(env.DB, touchedIPs);
 
 	// A bulk ingest can shift the top set a lot; reconcile published DNS
 	// records after responding so a slow Cloudflare API call doesn't add
