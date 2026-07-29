@@ -201,6 +201,7 @@ const countryCodes = {
 	Mexico: "mx",
 	Netherlands: "nl",
 	"New Zealand": "nz",
+	Nigeria: "ng",
 	Norway: "no",
 	Oman: "om",
 	Peru: "pe",

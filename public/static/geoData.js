@@ -572,6 +572,7 @@ export const airportCodes = {
 	"dxb": { city: "Dubai", country: "United Arab Emirates" },
 	"fjr": { city: "Fujairah", country: "United Arab Emirates" },
 	"jnb": { city: "Johannesburg", country: "South Africa" },
+	"los": { city: "Lagos State", country: "Nigeria"},
 	"mba": { city: "Mombasa", country: "Kenya" },
 	"mct": { city: "Muscat", country: "Oman"},
 	"tlv": { city: "Tel Aviv", country: "Israel" },
