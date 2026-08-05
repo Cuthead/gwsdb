@@ -29,3 +29,15 @@ trap - INT TERM
 
 "$BIN_DIR/gwsdb" ingest -scanner-config "$SCANNER_CONFIG" -log "$LOG_FILE" \
 	&& rm "$LOG_FILE"
+
+shopt -s nullglob
+for old_log in "$LOG_DIR"/scan_*.log; do
+	if [ "$old_log" = "$LOG_FILE" ]; then
+		continue
+	fi
+	if "$BIN_DIR/gwsdb" ingest -scanner-config "$SCANNER_CONFIG" -log "$old_log" -log-only; then
+		rm "$old_log"
+	else
+		echo "warning: retry ingest failed for $old_log, leaving in place" >&2
+	fi
+done
