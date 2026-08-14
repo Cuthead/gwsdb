@@ -212,13 +212,14 @@ export async function deleteScan(db: D1Database, id: number): Promise<void> {
 }
 
 // CHECK_HISTORY_RETENTION caps how many ip_checks rows survive per IP.
-// query.ts's history view only ever shows the most recent 30
+// functions/query.ts's history view only ever shows the most recent 30
 // (MAX_HISTORY_ROWS), and ip_pool's first_seen/times_seen are allowed to
 // drift to "within the retained window" rather than true lifetime values
-// (product decision -- see conversation, not derivable from code). Kept
-// equal to MAX_HISTORY_ROWS so pruning never trims a row the history view
-// would otherwise have shown.
-const CHECK_HISTORY_RETENTION = 30;
+// (product decision -- see conversation, not derivable from code). Retention
+// only needs to be >= MAX_HISTORY_ROWS so pruning never trims a row the
+// history view would otherwise have shown; the surplus is deliberate, kept
+// so first_seen/times_seen drift over a much longer window.
+const CHECK_HISTORY_RETENTION = 300;
 
 // pruneCheckHistory deletes ip_checks rows beyond CHECK_HISTORY_RETENTION
 // per IP (oldest first) for the given ips, then refreshes ip_pool for
