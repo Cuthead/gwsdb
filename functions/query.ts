@@ -7,6 +7,7 @@ import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html
 import { isIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
 import { getHost, getPTR, ipHistory, ipStatusFor, listReports } from "../src/store";
+import type { ASNInfo } from "../src/asn";
 import type { Env } from "../src/env";
 import type { IPCheckHistoryRow, IPReport, IPStatus } from "../src/types";
 
@@ -76,6 +77,9 @@ interface HostnameForm {
 	hostname: string;
 	ipv4: AddrStatus[];
 	ipv6: AddrStatus[];
+	// failed marks a forward lookup that errored out, so the address columns
+	// read as "lookup failed" rather than a definitive "none".
+	failed: boolean;
 }
 
 interface QueryData {
@@ -83,6 +87,10 @@ interface QueryData {
 	submitted: boolean;
 	error: string;
 	ptrHostnames: string[];
+	// ptrFailed distinguishes "the PTR lookup itself errored out" from the
+	// ptrHostnames-empty "this IP definitively has no PTR record" case, so
+	// the page can say which.
+	ptrFailed: boolean;
 	matched: boolean;
 	airportCode: string;
 	city: string;
@@ -108,6 +116,7 @@ function emptyData(query: string): QueryData {
 		submitted: false,
 		error: "",
 		ptrHostnames: [],
+		ptrFailed: false,
 		matched: false,
 		airportCode: "",
 		city: "",
@@ -132,10 +141,22 @@ async function statusForIP(db: D1Database, ip: string): Promise<string> {
 	return reachabilityStatus(await ipStatusFor(db, ip));
 }
 
+// resolveHostnameForm resolves one hostname's A/AAAA records. A failed
+// forward lookup yields an empty (failed=true) form rather than throwing:
+// lookupHostnameQuery resolves both a hostname and its sibling, and one
+// side's SERVFAIL shouldn't discard the other side's good answer.
 async function resolveHostnameForm(db: D1Database, hostname: string, dohUrl: string): Promise<HostnameForm> {
-	const cached = await getHost(db, hostname);
-	const { ipv4, ipv6 } = cached ?? (await resolveAndCacheHost(db, hostname, PTR_TIMEOUT_MS, dohUrl));
-	const form: HostnameForm = { hostname, ipv4: [], ipv6: [] };
+	const form: HostnameForm = { hostname, ipv4: [], ipv6: [], failed: false };
+	let ipv4: string[] = [];
+	let ipv6: string[] = [];
+	try {
+		const cached = await getHost(db, hostname);
+		({ ipv4, ipv6 } = cached ?? (await resolveAndCacheHost(db, hostname, PTR_TIMEOUT_MS, dohUrl)));
+	} catch (err) {
+		console.warn(`query: host lookup ${hostname}:`, err);
+		form.failed = true;
+		return form;
+	}
 	for (const addr of ipv4) form.ipv4.push({ addr, status: await statusForIP(db, addr) });
 	for (const addr of ipv6) form.ipv6.push({ addr, status: await statusForIP(db, addr) });
 	return form;
@@ -154,10 +175,23 @@ async function lookupHostnameQuery(db: D1Database, hostname: string, dohUrl: str
 }
 
 async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, data: QueryData): Promise<void> {
-	const cached = await getPTR(db, ip);
-	const { hostnames, ok } = cached
-		? { hostnames: cached.ptrHostnames, ok: cached.lookupOk }
-		: await resolveAndCachePTR(db, ip, PTR_TIMEOUT_MS, dohUrl);
+	// A PTR lookup failure is non-fatal: it costs one row of the result,
+	// while the reachability overview/check history/reports below it are all
+	// independent of it. Large parts of Google's reverse space (notably the
+	// GCP /31s) are delegated to authorities that answer REFUSED, which
+	// queryDoH surfaces as a thrown SERVFAIL -- letting that propagate would
+	// 500 the whole page over a cosmetic row.
+	let hostnames: string[] = [];
+	let ok = false;
+	try {
+		const cached = await getPTR(db, ip);
+		({ hostnames, ok } = cached
+			? { hostnames: cached.ptrHostnames, ok: cached.lookupOk }
+			: await resolveAndCachePTR(db, ip, PTR_TIMEOUT_MS, dohUrl));
+	} catch (err) {
+		console.warn(`query: PTR lookup ${ip}:`, err);
+		data.ptrFailed = true;
+	}
 
 	if (ok) {
 		data.ptrHostnames = hostnames;
@@ -237,7 +271,9 @@ function renderHostnameBranch(data: QueryData): string {
 									`<tt><a href="/query?ip=${encodeURIComponent(a.addr)}">${escapeHTML(a.addr)}</a></tt> ${statusHTML(a.status, "", "")}<br>`,
 							)
 							.join("")
-					: "<i>none</i>";
+					: form.failed
+						? "<i>lookup failed</i>"
+						: "<i>none</i>";
 			return `<tr>
 <td><tt><a href="/query?ip=${encodeURIComponent(form.hostname)}">${escapeHTML(form.hostname)}</a></tt></td>
 <td>${addrCol(form.ipv4)}</td>
@@ -272,7 +308,9 @@ ${locationRows}
 function renderIPBranch(data: QueryData): string {
 	const ptrCell = data.ptrHostnames.length
 		? `<tt>${data.ptrHostnames.map((h) => `<a href="/query?ip=${encodeURIComponent(h)}">${escapeHTML(h)}</a>`).join("<br>")}</tt>`
-		: "<i>(no PTR record)</i>";
+		: data.ptrFailed
+			? `<i>(PTR lookup failed -- the reverse zone for this address did not answer)</i>`
+			: "<i>(no PTR record)</i>";
 
 	const locationRows = data.matched
 		? `<tr>
@@ -421,15 +459,30 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		// not submitted; render the empty form
 	} else if (isIPAddress(q)) {
 		data.submitted = true;
-		const { info, ok } = await lookupGoogleASN(context.env.DB, q, ASN_TIMEOUT_MS, dohUrl);
-		if (!ok || !isGoogleASN(info)) {
-			data.error = "This IP does not belong to a Google ASN";
-		} else {
-			await lookupIPQuery(context.env.DB, q, dohUrl, data);
+		// The ASN check is this page's gate, not a display field, so a failed
+		// lookup can't fail open (it would show scan history for arbitrary
+		// non-Google IPs) and shouldn't fail closed under the flat "not a
+		// Google ASN" message either -- that asserts something we didn't
+		// establish. Report the transient failure as itself instead.
+		let asn: { info: ASNInfo; ok: boolean } | null = null;
+		try {
+			asn = await lookupGoogleASN(context.env.DB, q, ASN_TIMEOUT_MS, dohUrl);
+		} catch (err) {
+			console.warn(`query: ASN lookup ${q}:`, err);
+			data.error = "Could not verify this IP's ASN right now (the lookup failed); please try again";
+		}
+		if (asn) {
+			if (!asn.ok || !isGoogleASN(asn.info)) {
+				data.error = "This IP does not belong to a Google ASN";
+			} else {
+				await lookupIPQuery(context.env.DB, q, dohUrl, data);
+			}
 		}
 	} else if (isHostname(q)) {
 		data.submitted = true;
 		data.queryIsHostname = true;
+		// No catch needed here: resolveHostnameForm absorbs each hostname's
+		// own lookup failure, and nothing else on this path does DNS.
 		await lookupHostnameQuery(context.env.DB, q, dohUrl, data);
 	} else {
 		data.submitted = true;

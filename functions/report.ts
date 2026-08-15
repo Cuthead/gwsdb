@@ -7,6 +7,7 @@ import { buildInfoFromEnv, escapeHTML, pageShell } from "../src/html";
 import { isIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
 import { enqueueRecheck, ipStatusFor, saveReport } from "../src/store";
+import type { ASNInfo } from "../src/asn";
 import type { Env } from "../src/env";
 
 const ASN_TIMEOUT_MS = 3000;
@@ -126,7 +127,20 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	}
 
 	const dohUrl = env.DOH_JSON_URL;
-	const { info, ok } = await lookupGoogleASN(env.DB, ip, ASN_TIMEOUT_MS, dohUrl);
+	// A thrown ASN lookup (queryDoH turns any non-NOERROR/NXDOMAIN DNS status
+	// into an exception -- SERVFAIL on Google's own reverse/whois authorities
+	// is common enough to hit in practice) must not fail open into the
+	// "belongs to Google" path, and can't be reported as a flat "not a Google
+	// ASN" either, since that asserts something we never established. 503:
+	// transient, retrying is the right move.
+	let info: ASNInfo;
+	let ok: boolean;
+	try {
+		({ info, ok } = await lookupGoogleASN(env.DB, ip, ASN_TIMEOUT_MS, dohUrl));
+	} catch (err) {
+		console.warn(`report: ASN lookup ${ip}:`, err);
+		return new Response("could not verify this IP's ASN right now; please try again", { status: 503 });
+	}
 	if (!ok || !isGoogleASN(info)) {
 		return new Response("this IP does not belong to a Google ASN", { status: 400 });
 	}
@@ -162,19 +176,35 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
 	// The reporter's address is used only to resolve their announced
 	// prefix/AS; it is never persisted.
+	//
+	// This lookup is load-bearing, not decorative: the prefix/AS is what
+	// makes a stored report attributable, and the confirm step promises the
+	// reporter exactly which of it will be published. Storing a report with
+	// those fields silently blank -- because the lookup failed, or because
+	// CF-Connecting-IP was somehow absent -- would both weaken the record and
+	// make the confirmation screen a lie. So any failure aborts the whole
+	// submission rather than degrading it.
 	let reporterPrefix = "";
 	let reporterASN = 0;
 	let reporterASName = "";
 	if (!isOperatorTest) {
 		const reporterIP = clientIP(request);
-		if (reporterIP) {
-			const r = await lookupGoogleASN(env.DB, reporterIP, ASN_TIMEOUT_MS, dohUrl);
-			if (r.ok) {
-				reporterPrefix = r.info.prefix;
-				reporterASN = r.info.asn;
-				reporterASName = r.info.asName;
-			}
+		if (!reporterIP) {
+			return new Response("could not determine your IP address", { status: 400 });
 		}
+		let r: { info: ASNInfo; ok: boolean };
+		try {
+			r = await lookupGoogleASN(env.DB, reporterIP, ASN_TIMEOUT_MS, dohUrl);
+		} catch (err) {
+			console.warn(`report: reporter ASN lookup:`, err);
+			return new Response("could not look up your network's prefix/AS right now; please try again", { status: 503 });
+		}
+		if (!r.ok) {
+			return new Response("could not look up your network's prefix/AS right now; please try again", { status: 503 });
+		}
+		reporterPrefix = r.info.prefix;
+		reporterASN = r.info.asn;
+		reporterASName = r.info.asName;
 	}
 
 	const build = buildInfoFromEnv(env.CF_PAGES_COMMIT_SHA);
