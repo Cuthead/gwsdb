@@ -567,6 +567,7 @@ export const airportCodes = {
 
 	// Middle East / Africa
 	"cai": { city: "Cairo", country: "Egypt" },
+	"dia": { city: "Doha", country: "Qatar"},
 	"dmm": { city: "Dammam", country: "Saudi Arabia" },
 	"doh": { city: "Doha", country: "Qatar" },
 	"dxb": { city: "Dubai", country: "United Arab Emirates" },
