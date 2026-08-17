@@ -59,10 +59,11 @@ Usage:
   gwsdb ingest      -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
   gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
   gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
-                    [-workers 10] [-interval 1s] [-timeout 10s] [-flush 10m]
+                    [-workers 10] [-recheck-workers -1] [-interval 1s] [-timeout 10s] [-flush 10m]
                     [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
                                 (always-on: probes random IPs from CIDR range files, flushes to $GWSDB_API
-                                 every -flush, serves on-demand probes via VPC proxy Worker — replaces scan_and_ingest.sh + recheck_and_submit.sh)
+                                 every -flush, serves on-demand probes via VPC proxy Worker — replaces scan_and_ingest.sh + recheck_and_submit.sh.
+                                 -recheck-workers carves out goroutines to re-probe known IPs from the pool, oldest-first; -1 = workers/3, 0 = disable)
 
 GWSDB_API/GWSDB_INGEST_TOKEN/GWSDB_PROBE_TOKEN can also come from a KEY=VALUE
 file instead of being exported by hand: ~/.config/gwsdb/env by default, or
@@ -234,7 +235,8 @@ func runScan(args []string) {
 	mode := fs.String("mode", "SNI", "scan mode block to use from the config")
 	var extraRanges stringSliceFlag
 	fs.Var(&extraRanges, "ip-range", "additional IP range file (CIDR per line, v4 or v6); may be repeated")
-	workers := fs.Int("workers", 10, "number of probe worker goroutines")
+	workers := fs.Int("workers", 10, "number of probe worker goroutines (scan + recheck combined)")
+	recheckWorkers := fs.Int("recheck-workers", -1, "goroutines carved out for re-checking known IPs from the pool; -1 = workers/3, 0 = disable (all scan)")
 	interval := fs.Duration("interval", time.Second, "per-worker sleep between probes")
 	probeTimeout := fs.Duration("timeout", 10*time.Second, "per-probe timeout")
 	flushInterval := fs.Duration("flush", 10*time.Minute, "how often to flush accumulated checks to the API")
@@ -310,18 +312,19 @@ func runScan(args []string) {
 	}
 
 	sc := scan.New(scan.Config{
-		ProbeConfig:   sub,
-		ScanMode:      strings.ToUpper(*mode),
-		IPRange:       ipRange,
-		InputFile:     strings.Join(rangePaths, ","),
-		Workers:       *workers,
-		Interval:      *interval,
-		ProbeTimeout:  *probeTimeout,
-		FlushInterval: *flushInterval,
-		ProbeAddr:     *probeAddr,
-		ProbeToken:    probeTokenVal,
-		APIBase:       apiBase,
-		Token:         token,
+		ProbeConfig:    sub,
+		ScanMode:       strings.ToUpper(*mode),
+		IPRange:        ipRange,
+		InputFile:      strings.Join(rangePaths, ","),
+		Workers:        *workers,
+		RecheckWorkers: *recheckWorkers,
+		Interval:       *interval,
+		ProbeTimeout:   *probeTimeout,
+		FlushInterval:  *flushInterval,
+		ProbeAddr:      *probeAddr,
+		ProbeToken:     probeTokenVal,
+		APIBase:        apiBase,
+		Token:          token,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

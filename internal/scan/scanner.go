@@ -28,10 +28,11 @@ type Config struct {
 	// config's InputFile plus any extra -ip-range files, comma-joined).
 	InputFile string
 
-	Workers         int           // probe goroutine count
-	Interval        time.Duration // per-worker sleep between probes
-	ProbeTimeout    time.Duration // per-probe deadline (bounds CheckSNI)
-	FlushInterval time.Duration // how often to submit accumulated checks
+	Workers        int           // probe goroutine count (scan + recheck combined)
+	RecheckWorkers int           // recheck goroutines carve-out; -1 = Workers/3, 0 = disable
+	Interval       time.Duration // per-worker sleep between probes
+	ProbeTimeout   time.Duration // per-probe deadline (bounds CheckSNI)
+	FlushInterval  time.Duration // how often to submit accumulated checks
 
 	// ProbeAddr is the address the on-demand probe HTTP server listens
 	// on (e.g. "0.0.0.0:8787"), reached by the gwsdb-probe Worker (worker/)
@@ -103,9 +104,18 @@ func New(cfg Config) *Scanner {
 // but-unflushed checks aren't lost (the flusher's ctx.Done case runs a
 // detached-context flush before returning).
 func (s *Scanner) Run(ctx context.Context) error {
+	recheckN := s.cfg.RecheckWorkers
+	if recheckN < 0 {
+		recheckN = s.cfg.Workers / 3
+	}
+	if recheckN > s.cfg.Workers {
+		recheckN = s.cfg.Workers
+	}
+	scanN := s.cfg.Workers - recheckN
+
 	v4, v6 := s.cfg.IPRange.Counts()
-	log.Printf("scan: starting: %d workers, interval=%s, flush=%s, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
-		s.cfg.Workers, s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, s.cfg.IPRange.Len(), v4, v6)
+	log.Printf("scan: starting: %d workers (%d scan + %d recheck), interval=%s, flush=%s, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
+		s.cfg.Workers, scanN, recheckN, s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, s.cfg.IPRange.Len(), v4, v6)
 	log.Printf("scan: probe config: sni=%s path=%s method=%s level=%d want_code=%d cn=%s",
 		strings.Join(s.cfg.ProbeConfig.ServerName, ","),
 		s.cfg.ProbeConfig.HTTPPath, s.cfg.ProbeConfig.HTTPMethod,
@@ -142,7 +152,30 @@ func (s *Scanner) Run(ctx context.Context) error {
 		s.runFlusher(ctx)
 	}()
 
-	for range s.cfg.Workers {
+	// Recheck workers: a feeder fetches the tracked pool from /api/pool
+	// (oldest-first by lastSeen) and feeds IPs through an unbuffered
+	// channel to N recheck workers, which re-probe each with the same
+	// ping gate + CheckSNI as scan workers. The unbuffered channel means
+	// the feeder blocks until a worker takes each IP, so it doesn't
+	// re-fetch until the previous full cycle has been consumed — natural
+	// backpressure, no double-queueing. See recheck_worker.go.
+	if recheckN > 0 {
+		jobs := make(chan string)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.runRecheckFeeder(ctx, jobs)
+		}()
+		for range recheckN {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.runRecheckWorker(ctx, jobs)
+			}()
+		}
+	}
+
+	for range scanN {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

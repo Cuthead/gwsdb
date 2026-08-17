@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 
 	"github.com/cuthead/gwsdb/internal/store"
 )
@@ -45,6 +46,49 @@ func FetchKnownGood(ctx context.Context, apiBase, token string) (map[string]bool
 		knownGood[ip] = true
 	}
 	return knownGood, nil
+}
+
+// poolResponse is the /api/pool payload. Only ip + lastSeen are needed —
+// the recheck feeder sorts by lastSeen ascending so the oldest-checked
+// IPs are rechecked first (mirrors XX-Net's get_ip_sni_host pointer
+// walking the handshake-sorted ip_list from the front).
+type poolResponse struct {
+	IPs []struct {
+		IP       string `json:"ip"`
+		LastSeen string `json:"lastSeen"` // "YYYY-MM-DD HH:MM:SS" or "-"
+	} `json:"ips"`
+}
+
+// FetchPool returns every IP currently in the tracked pool, sorted by
+// lastSeen ascending (oldest first). No auth — /api/pool is the same
+// public endpoint the home page fetches. The response is edge-cached
+// keyed by poolVersion, so a fetch right after a flush sees fresh data.
+func FetchPool(ctx context.Context, apiBase string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/api/pool", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GET /api/pool: %s: %s", resp.Status, body)
+	}
+	var out poolResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode /api/pool: %w", err)
+	}
+	sort.SliceStable(out.IPs, func(i, j int) bool {
+		return out.IPs[i].LastSeen < out.IPs[j].LastSeen
+	})
+	ips := make([]string, len(out.IPs))
+	for i, r := range out.IPs {
+		ips[i] = r.IP
+	}
+	return ips, nil
 }
 
 // submitPayload is the POST /ingest body -- just checks (no Scan row; the
