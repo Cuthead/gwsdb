@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"time"
 
 	"golang.org/x/net/icmp"
@@ -41,36 +42,47 @@ type PingResult struct {
 // unprivileged ICMP (SOCK_DGRAM) via "udp4"/"udp6" so it does NOT need
 // root — on Linux the process just needs its gid in
 // /proc/sys/net/ipv4/ping_group_range (default 0 2147483647, i.e. all
-// groups). Falls back gracefully: if the datagram socket can't be
-// opened (e.g. restricted ping_group_range), Ping returns OK=true so
-// the caller proceeds to the TCP probe rather than treating a
-// permissions issue as "host unreachable".
+// groups). If unprivileged sockets fail, it falls back to raw sockets
+// ("ip4:icmp"/"ip6:ipv6-icmp") if running as root. If both fail, Ping
+// returns OK=true so the caller proceeds to the TCP probe rather than
+// treating a local socket configuration issue as "host unreachable".
 func Ping(ctx context.Context, ip string) PingResult {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return PingResult{Err: fmt.Sprintf("parse ip: %v", err)}
 	}
 
-	var network string
+	var network, bindAddr string
 	var reqType, replyType icmp.Type
 	var proto int
 	if addr.Is4() {
 		network = "udp4"
+		bindAddr = "0.0.0.0"
 		reqType = ipv4.ICMPTypeEcho
 		replyType = ipv4.ICMPTypeEchoReply
 		proto = protocolICMP
 	} else {
 		network = "udp6"
+		bindAddr = "::"
 		reqType = ipv6.ICMPTypeEchoRequest
 		replyType = ipv6.ICMPTypeEchoReply
 		proto = protocolICMPv6
 	}
-	conn, err := icmp.ListenPacket(network, "0.0.0.0:0")
+
+	conn, err := icmp.ListenPacket(network, bindAddr)
 	if err != nil {
-		// Can't open the ICMP socket — treat as "ping unavailable, don't
-		// gate" rather than marking the IP unreachable. A misconfigured
-		// box shouldn't silently kill every probe.
-		return PingResult{OK: true}
+		// Fallback to raw socket if running with root / CAP_NET_RAW.
+		if addr.Is4() {
+			network = "ip4:icmp"
+		} else {
+			network = "ip6:ipv6-icmp"
+		}
+		conn, err = icmp.ListenPacket(network, bindAddr)
+		if err != nil {
+			// Can't open either ICMP socket type — treat as "ping unavailable,
+			// don't gate" rather than marking the remote IP unreachable.
+			return PingResult{OK: true, Err: fmt.Sprintf("socket: %v", err)}
+		}
 	}
 	defer conn.Close()
 
@@ -80,13 +92,19 @@ func Ping(ctx context.Context, ip string) PingResult {
 	}
 	_ = conn.SetDeadline(deadline)
 
-	echo := icmp.Echo{ID: 1, Seq: 1, Data: []byte("gwsdb-ping")}
+	echo := icmp.Echo{ID: os.Getpid() & 0xffff, Seq: 1, Data: []byte("gwsdb-ping")}
 	body, err := (&icmp.Message{Type: reqType, Code: 0, Body: &echo}).Marshal(nil)
 	if err != nil {
 		return PingResult{Err: fmt.Sprintf("marshal: %v", err)}
 	}
 
-	dstAddr := &net.IPAddr{IP: net.ParseIP(addr.String())}
+	var dstAddr net.Addr
+	if network == "udp4" || network == "udp6" {
+		dstAddr = &net.UDPAddr{IP: net.ParseIP(addr.String())}
+	} else {
+		dstAddr = &net.IPAddr{IP: net.ParseIP(addr.String())}
+	}
+
 	for range PingCount {
 		start := time.Now()
 		if _, err := conn.WriteTo(body, dstAddr); err != nil {
