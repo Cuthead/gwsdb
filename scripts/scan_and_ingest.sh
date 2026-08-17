@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# Run the gscan_quic scanner once, then hand its config + captured log to
-# `gwsdb ingest`, which parses the log locally (internal/ingest -- real
-# compute on the box, no need to ship the log anywhere) and submits the
-# filtered result to the gwsdb Pages project's /ingest Function (Cloudflare
-# Pages + D1 -- see AGENTS.md). Intended to be invoked from cron (e.g. daily)
-# on the scanning box; the scan/recheck probe itself must stay on real
-# China-based network infrastructure (Cloudflare's edge doesn't sit behind
-# the GFW), but storage lives on Cloudflare.
-#
-# GWSDB_API/GWSDB_INGEST_TOKEN aren't required here -- `gwsdb` itself reads
-# them from the environment or, if unset, from ~/.config/gwsdb/env (see
-# `gwsdb -h`), so there's nowhere else they need to be exported.
 set -euo pipefail
 
 SCANNER_DIR="${GWSDB_SCANNER_DIR:-$HOME/gscan_quic}"
@@ -19,9 +7,6 @@ BIN_DIR="${GWSDB_BIN_DIR:-$HOME/gwsdb}"
 
 LOG_DIR="$SCANNER_DIR/scan_logs"
 mkdir -p "$LOG_DIR"
-
-# gscan_quic runs under sudo and survives its shell being killed, so liveness
-# is keyed on the scanner, not on this shell.
 LOCK_DIR="$LOG_DIR/.scan.lock"
 lock_held=false
 
@@ -36,7 +21,6 @@ lock_holder_alive() {
 			return 0
 		fi
 	done
-	# Lock dir exists but no pid recorded yet: holder is still starting up.
 	if [ ! -f "$LOCK_DIR/pid" ]; then
 		return 0
 	fi
@@ -84,9 +68,6 @@ sudo ./gscan_quic -Config "$SCANNER_CONFIG" < /dev/null > >(tee "$PARTIAL_LOG") 
 scanner_pid=$!
 echo "$scanner_pid" > "$LOCK_DIR/scanner_pid"
 
-# Kill by PID, not `pkill gscan_quic` -- the latter matches by name and would
-# also take down another run's scanner. sudo forks, so signal both it and its
-# child, and don't return while a probe is still alive.
 stop_scanner() {
 	sudo pkill -TERM -P "$scanner_pid" 2>/dev/null || true
 	kill -TERM "$scanner_pid" 2>/dev/null || true
