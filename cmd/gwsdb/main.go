@@ -70,7 +70,7 @@ func runIngest(args []string) {
 	mode := fs.String("mode", "", "scan mode to ingest (SNI/QUIC/TLS/PING); defaults to the config's ScanMode")
 	output := fs.String("output", "", "override path to the scan output IP list; defaults to the config's OutputFile")
 	logOnly := fs.Bool("log-only", false, "ignore the output file even if present; derive hits from -log only (use when a later scan overwrote the output file at this path)")
-	timeout := fs.Duration("timeout", 30*time.Second, "HTTP timeout for the known-good fetch + submit round trip")
+	timeout := fs.Duration("timeout", 60*time.Second, "HTTP timeout for the known-good fetch + submit round trip")
 	fs.Parse(args)
 
 	if *scannerConfigPath == "" {
