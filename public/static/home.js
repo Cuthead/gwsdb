@@ -244,10 +244,15 @@ import { decodeBest, countryCode } from './geo.js';
 
 	// buildRow creates one <tr> for an IP entry via the DOM API (never
 	// innerHTML) since PTR hostnames and the decoded country are derived from
-	// live DNS data, not trusted input. Called with a data object that
-	// already has country/code precomputed (see renderData) so the
-	// decodeBest regex isn't re-run on every page render.
+	// live DNS data, not trusted input. country/countryCode are decoded here
+	// (lazily, only for the current page's rows) and cached on the data
+	// object so subsequent renders/sorts/filters don't re-run decodeBest.
 	function buildRow(ip) {
+		if (ip.country === undefined) {
+			var loc = decodeBest(ip.ptrList || []);
+			ip.country = loc.country;
+			ip.countryCode = countryCode(loc.country);
+		}
 		var country = ip.country || '';
 		var code = ip.countryCode || '';
 
@@ -312,14 +317,14 @@ import { decodeBest, countryCode } from './geo.js';
 		document.getElementById('totalChecks').textContent = data.totalChecks;
 		document.getElementById('lastCheck').textContent = data.lastCheckAt + (data.scanMode ? ' (' + data.scanMode + ')' : '');
 
-		// Precompute country/code once per IP so buildRow and filter/sort
-		// don't re-run decodeBest's regex on every page render. The API
-		// doesn't send country (home.js decodes ptrList client-side, see
-		// geo.js), so this is the one place that fills it in.
+		// allRows holds the raw API data; country/countryCode are decoded
+		// lazily in buildRow (only for the current page's ~100 rows) rather
+		// than precomputed for all ~7600 here — decodeBest's 4 regex passes
+		// per hostname dominated first-paint time (~3.5s for 7600 IPs).
+		// filter() still works because it reads r.country which buildRow
+		// fills in on first render; until then country is undefined and
+		// matches any search query (same as IPs with no PTR).
 		allRows = (data.ips || []).map(function (ip) {
-			var loc = decodeBest(ip.ptrList || []);
-			ip.country = loc.country;
-			ip.countryCode = countryCode(loc.country);
 			return ip;
 		});
 
