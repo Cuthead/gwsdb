@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
@@ -66,6 +67,11 @@ type Scanner struct {
 	scannedCount int
 	flushStart   time.Time
 
+	// Cumulative counters across flush windows, for the periodic status
+	// log — scannedCount in flush.go resets each window.
+	totalScanned atomic.Int64
+	totalFound   atomic.Int64
+
 	netMon networkMonitor
 }
 
@@ -120,7 +126,7 @@ func (s *Scanner) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.runFlusher(ctx)
+		s.runStatusLogger(ctx, 60*time.Second)
 	}()
 
 	for range s.cfg.Workers {
@@ -177,6 +183,7 @@ func (s *Scanner) record(ip string, result recheck.Result) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scannedCount++
+	s.totalScanned.Add(1)
 	s.checks = append(s.checks, store.IPCheck{
 		IP:        ip,
 		OK:        result.OK,
@@ -187,6 +194,11 @@ func (s *Scanner) record(ip string, result recheck.Result) {
 		ScanMode:  s.cfg.ScanMode,
 	})
 	if result.OK {
+		s.totalFound.Add(1)
+		// Log every hit so the operator can see the scanner is finding IPs
+		// without waiting for a flush. Failures aren't logged here — they'd
+		// flood (the vast majority of probes fail).
+		log.Printf("scan: OK %s rtt=%dms", ip, result.RTTMs)
 		st := s.pool[ip]
 		if st == nil {
 			st = &ipState{}
@@ -197,5 +209,30 @@ func (s *Scanner) record(ip string, result recheck.Result) {
 		st.failTimes = 0
 	} else if st, ok := s.pool[ip]; ok {
 		st.failTimes++
+	}
+}
+
+// runStatusLogger prints a periodic one-line summary so the operator can
+// tell the scanner is alive and making progress between flushes — without
+// it, a healthy scanner with no hits is silent for the whole flush window.
+func (s *Scanner) runStatusLogger(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		s.mu.Lock()
+		poolSize := len(s.pool)
+		pending := len(s.checks)
+		s.mu.Unlock()
+		net := "down"
+		if s.netMon.OK() {
+			net = "up"
+		}
+		log.Printf("scan: status: %d probes, %d found, pool=%d, pending=%d, net=%s",
+			s.totalScanned.Load(), s.totalFound.Load(), poolSize, pending, net)
 	}
 }
