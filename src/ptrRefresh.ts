@@ -42,11 +42,11 @@ import type { PTRCacheEntry } from "./types";
 // skipped (see the rcode filter below) -- acceptable since the pool is
 // ASN-gated to Google space by construction.
 const RESOLVER = { hostname: "ns1.google.com", port: 53 };
-// Caps one invocation's batch to the 16-bit DNS transaction ID space (each
-// in-flight query on the connection needs a unique id to match its
-// response). Comfortably above ip_pool's current size with room to grow;
-// pendingIPsForPTRRefresh simply returns fewer if the pool is smaller.
-const BATCH_LIMIT = 10000;
+// Caps one invocation's batch size. Only IPs never checked (IS NULL) or
+// checked >30 days ago are returned by pendingIPsForPTRRefresh, so a normal
+// run touches only newly discovered IPs plus a small trickle of 30-day
+// renewals (typically 0-20 IPs per ingest).
+const BATCH_LIMIT = 500;
 // ~48x the measured wall time for the full 5,035-IP pool against
 // ns1.google.com (~2.5s, see module comment) -- generous margin while
 // staying well under a Pages Function invocation's execution limits.

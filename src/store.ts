@@ -476,15 +476,16 @@ export async function savePTRBatch(db: D1Database, entries: PTRCacheEntry[]): Pr
 }
 
 // pendingIPsForPTRRefresh returns up to limit ip_pool IPs due for a PTR
-// refresh, oldest-checked first (NULL/never-checked sorts first in SQLite's
-// default ASC order, so unchecked IPs are naturally prioritized without a
-// separate query). Round-robin, not TTL-based: this cycles the whole pool
-// roughly once a day rather than tracking each IP's observed DNS TTL --
-// see migration 0005's comment for why and for the ptr_checked_at index
-// this seeks on directly, no join/full-scan needed.
+// refresh: either never checked (ptr_checked_at IS NULL, which sorts first
+// on the index) or checked more than 30 days ago. Seeks on the
+// idx_ip_pool_ptr_checked_at index directly.
 export async function pendingIPsForPTRRefresh(db: D1Database, limit: number): Promise<string[]> {
 	const { results } = await db
-		.prepare(`SELECT ip FROM ip_pool ORDER BY ptr_checked_at ASC LIMIT ?`)
+		.prepare(
+			`SELECT ip FROM ip_pool
+			WHERE ptr_checked_at IS NULL OR ptr_checked_at < datetime('now', '-30 days')
+			ORDER BY ptr_checked_at ASC LIMIT ?`,
+		)
 		.bind(limit)
 		.all<{ ip: string }>();
 	return results.map((r) => r.ip);
