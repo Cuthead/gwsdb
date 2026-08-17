@@ -707,9 +707,9 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 		await db
 			.prepare(
 				`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
-				VALUES (?, 1, ?, NULL, NULL, ?, ?)`,
+				VALUES (?, 1, ?, NULL, ?, ?, ?)`,
 			)
-			.bind(r.ip, r.rttMs, toSQLiteDateTime(r.checkedAt), r.scanMode)
+			.bind(r.ip, r.rttMs, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 			.run();
 		return;
 	}

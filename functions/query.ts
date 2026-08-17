@@ -302,7 +302,7 @@ ${data.checks
 		(c) => `<tr>
 <td>${escapeHTML(c.time)}</td>
 <td>${c.ok ? `<font color="#008000">&#x2713; Reachable</font>` : `<font color="#CC0000">&#x2717; Unreachable</font>`}</td>
-<td>${c.reasonLabel ? escapeHTML(c.reasonLabel) : "-"}${c.detail ? `<br><tt>${escapeHTML(c.detail)}</tt>` : ""}</td>
+<td>${c.reasonLabel ? escapeHTML(c.reasonLabel) : ""}${c.reasonLabel && c.detail ? "<br>" : ""}${c.detail ? `<tt>${escapeHTML(c.detail)}</tt>` : (c.reasonLabel ? "" : "-")}</td>
 <td>${c.rtt ? `${c.rtt} ms` : "-"}</td>
 </tr>`,
 	)

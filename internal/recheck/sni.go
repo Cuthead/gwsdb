@@ -41,14 +41,16 @@ type Result struct {
 func CheckSNI(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
 	count := max(cfg.ScanCountPerIP, 1)
 	var totalRTT time.Duration
+	var lastDetail string
 	for range count {
 		res := checkSNIOnce(ctx, ip, cfg)
 		if !res.OK {
 			return res
 		}
 		totalRTT += time.Duration(res.RTTMs) * time.Millisecond
+		lastDetail = res.Detail
 	}
-	return Result{OK: true, RTTMs: int((totalRTT / time.Duration(count)).Milliseconds())}
+	return Result{OK: true, RTTMs: int((totalRTT / time.Duration(count)).Milliseconds()), Detail: lastDetail}
 }
 
 // checkSNIOnce mirrors gscan_quic's testSni for a single pass over
@@ -69,6 +71,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 	}
 
 	var totalRTT time.Duration
+	var details []string
 	for _, serverName := range cfg.ServerName {
 		start := time.Now()
 
@@ -130,9 +133,16 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		tlsconn.Close()
 
 		totalRTT += time.Since(start)
+		if cfg.Level > 2 {
+			details = append(details, fmt.Sprintf("sni=%s host=%s method=%s path=%s", serverName, host, method, cfg.HTTPPath))
+		} else if cfg.Level > 1 {
+			details = append(details, fmt.Sprintf("sni=%s cn=%s", serverName, cfg.VerifyCommonName))
+		} else {
+			details = append(details, fmt.Sprintf("sni=%s", serverName))
+		}
 	}
 
-	return Result{OK: true, RTTMs: int(totalRTT.Milliseconds())}
+	return Result{OK: true, RTTMs: int(totalRTT.Milliseconds()), Detail: strings.Join(details, " ")}
 }
 
 // randomHost mirrors gscan_quic's util.go randomHost: a fake 2-3 segment

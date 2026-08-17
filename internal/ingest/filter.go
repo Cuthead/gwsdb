@@ -24,9 +24,13 @@ func FilterChecks(results []store.ScanResult, checks []store.IPCheck, knownGood 
 	// Prefer the log's own per-line timestamp for "when was this actually
 	// seen" over now, when we have one -- mirrors SaveScan's seenAt map.
 	seenAt := make(map[string]time.Time, len(checks))
+	detailByIP := make(map[string]string, len(checks))
 	for _, c := range checks {
 		if c.OK && !c.CheckedAt.IsZero() {
 			seenAt[c.IP] = c.CheckedAt
+			if c.Detail != "" {
+				detailByIP[c.IP] = c.Detail
+			}
 		}
 	}
 
@@ -41,7 +45,7 @@ func FilterChecks(results []store.ScanResult, checks []store.IPCheck, knownGood 
 		if !ok {
 			ts = now
 		}
-		out = append(out, store.IPCheck{IP: r.IP, OK: true, RTTMs: r.RTTMs, CheckedAt: ts})
+		out = append(out, store.IPCheck{IP: r.IP, OK: true, RTTMs: r.RTTMs, Detail: detailByIP[r.IP], CheckedAt: ts})
 	}
 
 	for _, c := range checks {
@@ -56,7 +60,7 @@ func FilterChecks(results []store.ScanResult, checks []store.IPCheck, knownGood 
 				continue
 			}
 			recorded[c.IP] = true
-			out = append(out, store.IPCheck{IP: c.IP, OK: true, RTTMs: c.RTTMs, CheckedAt: checkedAt})
+			out = append(out, store.IPCheck{IP: c.IP, OK: true, RTTMs: c.RTTMs, Detail: c.Detail, CheckedAt: checkedAt})
 			continue
 		}
 		// SaveScan's live DB check sees this run's own already-inserted
