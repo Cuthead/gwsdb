@@ -6,14 +6,13 @@ import { decode, decodeBest, isHostname, siblingHostname } from "../src/geo";
 import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html";
 import { isIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
-import { getHost, getPTR, ipHistory, ipStatusFor, listReports } from "../src/store";
+import { getHost, getPTR, ipHistory, ipStatusFor } from "../src/store";
 import type { ASNInfo } from "../src/asn";
 import type { Env } from "../src/env";
-import type { IPCheckHistoryRow, IPReport, IPStatus } from "../src/types";
+import type { IPCheckHistoryRow, IPStatus } from "../src/types";
 
 const PTR_TIMEOUT_MS = 3000;
 const ASN_TIMEOUT_MS = 3000;
-const MAX_REPORT_ROWS = 100;
 const MAX_HISTORY_ROWS = 30;
 
 function reachabilityStatus(st: IPStatus | null): string {
@@ -59,15 +58,6 @@ interface CheckRow {
 	probe: string;
 }
 
-interface ReportRow {
-	time: string;
-	verdict: boolean;
-	reporterPrefix: string;
-	reporterASN: number;
-	reporterASName: string;
-	comment: string;
-}
-
 interface AddrStatus {
 	addr: string;
 	status: string;
@@ -102,12 +92,9 @@ interface QueryData {
 	timesSeen: number;
 	lastRttMs: number;
 	checks: CheckRow[];
-	reports: ReportRow[];
-	usableCount: number;
-	unusableCount: number;
 	queryIsHostname: boolean;
 	hostnameForms: HostnameForm[];
-	canReport: boolean;
+	canProbe: boolean;
 }
 
 function emptyData(query: string): QueryData {
@@ -128,12 +115,9 @@ function emptyData(query: string): QueryData {
 		timesSeen: 0,
 		lastRttMs: 0,
 		checks: [],
-		reports: [],
-		usableCount: 0,
-		unusableCount: 0,
 		queryIsHostname: false,
 		hostnameForms: [],
-		canReport: false,
+		canProbe: false,
 	};
 }
 
@@ -222,24 +206,11 @@ async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, data: Q
 		probe: describeProbe(c),
 	}));
 
-	const reports = await listReports(db, ip, MAX_REPORT_ROWS);
-	for (const rep of reports) {
-		if (rep.verdict) data.usableCount++;
-		else data.unusableCount++;
-	}
-	data.reports = reports.map((rep: IPReport) => ({
-		time: formatTime(rep.createdAt),
-		verdict: rep.verdict,
-		reporterPrefix: rep.reporterPrefix,
-		reporterASN: rep.reporterASN,
-		reporterASName: rep.reporterASName,
-		comment: rep.comment,
-	}));
 }
 
 // queryDescription summarizes the lookup result for the page's og:description,
-// so a shared link (e.g. a report thread) previews the specific IP/hostname's
-// reachability and estimated location instead of the generic query-page blurb.
+// so a shared link previews the specific IP/hostname's reachability and
+// estimated location instead of the generic query-page blurb.
 function queryDescription(data: QueryData): string {
 	if (!data.submitted) return "Look up whether an IP address or 1e100.net hostname belongs to a Google Web Server reachable from China.";
 	if (data.error) return `${data.query}: ${data.error}.`;
@@ -358,35 +329,9 @@ ${data.checks
 </div>`
 		: "";
 
-	const reportsTable = data.reports.length
-		? `<p></p>
-<div class="gwsdb-scroll">
-<table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="5"><b>社区报告</b>（${data.usableCount} 可用 / ${data.unusableCount} 不可用）</td></tr>
-<tr bgcolor="#EEEEEE"><td><b>时间</b></td><td><b>结论</b></td><td><b>前缀</b></td><td><b>AS</b></td><td><b>备注</b></td></tr>
-${data.reports
-	.map(
-		(r) => `<tr>
-<td>${escapeHTML(r.time)}</td>
-<td>${r.verdict ? `<font color="#008000">&#x2713; 可用</font>` : `<font color="#CC0000">&#x2717; 不可用</font>`}</td>
-<td><tt>${r.reporterPrefix ? escapeHTML(r.reporterPrefix) : "-"}</tt></td>
-<td>${r.reporterASN ? `AS${r.reporterASN}${r.reporterASName ? ` ${escapeHTML(r.reporterASName)}` : ""}` : "-"}</td>
-<td>${r.comment ? escapeHTML(r.comment) : "-"}</td>
-</tr>`,
-	)
-	.join("\n")}
-</table>
-</div>`
-		: "";
-
-	const reportCell = data.canReport
-		? `<form method="POST" action="/report">
-<input type="hidden" name="ip" value="${escapeHTML(data.query)}">
-备注（可选）：<input type="text" name="comment" size="40" maxlength="500">
-<button type="submit" name="verdict" value="usable">可用</button>
-<button type="submit" name="verdict" value="unusable">不可用</button>
-</form>`
-		: `<font color="#666666">仅中国大陆IP可提交报告</font>`;
+	const probeCell = data.canProbe
+		? `<button type="button" id="probeBtn" data-ip="${escapeHTML(data.query)}">立即检测</button> <span id="probeStatus"></span>`
+		: `<font color="#666666">仅中国大陆IP可即时检测</font>`;
 
 	return `<div class="gwsdb-scroll">
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
@@ -404,15 +349,15 @@ ${checksTable}
 <p></p>
 <div class="gwsdb-scroll">
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="2"><b>报告IP</b></td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="2"><b>即时检测</b></td></tr>
 <tr>
 <td colspan="2">
-${reportCell}
+${probeCell}
 </td>
 </tr>
 </table>
 </div>
-${reportsTable}`;
+<script src="/static/query.js"></script>`;
 }
 
 function renderQueryBody(data: QueryData): string {
@@ -452,7 +397,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const url = new URL(context.request.url);
 	const q = (url.searchParams.get("ip") ?? "").trim();
 	const data = emptyData(q);
-	data.canReport = clientCountry(context.request) === "CN";
+	data.canProbe = clientCountry(context.request) === "CN";
 	const dohUrl = context.env.DOH_JSON_URL;
 
 	if (q === "") {

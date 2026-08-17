@@ -1,0 +1,27 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "gwsdb-probe",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-16",
+  // No public workers.dev URL — this Worker is only reachable via service
+  // binding from the gwsdb Pages project (PROBE_PROXY), not the Internet.
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  // VPC Network binding (beta) — Pages can't bind vpc_networks, so this
+  // standalone Worker holds it and proxies probe requests to the China box's
+  // internal probe server via Cloudflare Mesh (cf1:network). Mirrors
+  // ~/git/Total-ECH's PRIVATE_NETWORK binding.
+  "vpc_networks": [
+    {
+      "binding": "PROBE_NETWORK",
+      "network_id": "cf1:network",
+      "remote": true
+    }
+  ],
+  "vars": {
+    // China box's private IP:port as reachable through Cloudflare Mesh. The
+    // probe server (gwsdb scan -worker's probeserver.go) must listen on
+    // 0.0.0.0 or this specific IP. Replace with your actual address.
+    "PROBE_ADDR": "192.168.1.10:8787"
+  }
+}

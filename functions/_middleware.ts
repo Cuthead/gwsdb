@@ -23,9 +23,9 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 	headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
 	headers.set("X-Content-Type-Options", "nosniff");
 	headers.set("X-Frame-Options", "DENY");
-	// same-origin (not no-referrer) so a Referer still arrives on the future
-	// /report POST (a usable CSRF signal), while outbound links to GitHub
-	// disclose nothing.
+	// same-origin (not no-referrer) so a Referer still arrives on the /check
+	// POST (a usable CSRF signal), while outbound links to GitHub disclose
+	// nothing.
 	headers.set("Referrer-Policy", "same-origin");
 	return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 };

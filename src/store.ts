@@ -12,10 +12,8 @@ import type {
 	ASNCacheEntry,
 	HostCacheEntry,
 	IPCheckHistoryRow,
-	IPReport,
 	IPStatus,
 	PTRCacheEntry,
-	RecheckQueueItem,
 	Scan,
 	ScanRow,
 	Stats,
@@ -828,143 +826,33 @@ export async function ipHistory(db: D1Database, ip: string, limit: number): Prom
 	}));
 }
 
-// saveReport records one community report for an IP and returns its id.
-export async function saveReport(db: D1Database, rep: Omit<IPReport, "id">): Promise<number> {
-	const res = await db
-		.prepare(
-			`INSERT INTO ip_reports (ip, verdict, comment, reporter_prefix, reporter_asn, reporter_as_name, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.bind(
-			rep.ip,
-			rep.verdict ? 1 : 0,
-			rep.comment || null,
-			rep.reporterPrefix || null,
-			rep.reporterASN || null,
-			rep.reporterASName || null,
-			toSQLiteDateTime(rep.createdAt),
-		)
-		.run();
-	return res.meta.last_row_id;
-}
-
-interface IPReportRow {
-	id: number;
-	ip: string;
-	verdict: number;
-	comment: string;
-	reporter_prefix: string;
-	reporter_asn: number;
-	reporter_as_name: string;
-	created_at: string;
-}
-
-// listReports returns the most recent reports for ip, newest first. The
-// reporter's full IP is intentionally never selected -- callers should
-// only surface reporterPrefix/reporterASN/reporterASName publicly.
-export async function listReports(db: D1Database, ip: string, limit: number): Promise<IPReport[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT id, ip, verdict, COALESCE(comment, '') AS comment, COALESCE(reporter_prefix, '') AS reporter_prefix,
-				COALESCE(reporter_asn, 0) AS reporter_asn, COALESCE(reporter_as_name, '') AS reporter_as_name, created_at
-			FROM ip_reports WHERE ip = ? ORDER BY created_at DESC LIMIT ?`,
-		)
-		.bind(ip, limit)
-		.all<IPReportRow>();
-	return results.map((row) => ({
-		id: row.id,
-		ip: row.ip,
-		verdict: row.verdict !== 0,
-		comment: row.comment,
-		reporterPrefix: row.reporter_prefix,
-		reporterASN: row.reporter_asn,
-		reporterASName: row.reporter_as_name,
-		createdAt: fromSQLiteDateTime(row.created_at)!,
-	}));
-}
-
-// recheckMinDelayMs/recheckMaxDelayMs bound the random delay applied before
-// a queued recheck becomes eligible for the (deferred, pull-model) worker
-// to pick up -- spreads out probes triggered by a burst of reports instead
-// of firing them all at once.
-const RECHECK_MIN_DELAY_MS = 60_000;
-const RECHECK_MAX_DELAY_MS = 60 * 60_000;
-
-// enqueueRecheck schedules a re-scan of ip for report reportId, eligible to
-// run at a random time 1 minute to 1 hour from now. A no-op if that report
-// was already enqueued (UNIQUE(report_id)), so callers can call it at most
-// once per report without a separate existence check. Only *writes* the
-// queue -- processing it is a later, deferred phase (the recheck
-// pull-model rework).
-export async function enqueueRecheck(db: D1Database, reportId: number, ip: string, createdAt: Date): Promise<void> {
-	const delayMs = RECHECK_MIN_DELAY_MS + Math.random() * (RECHECK_MAX_DELAY_MS - RECHECK_MIN_DELAY_MS);
-	const scheduledAt = new Date(Date.now() + delayMs);
+// checkRateLimit enforces a per-client-IP probe-request cap for the
+// on-demand probe button (functions/check.ts). One row per (client_ip, UTC
+// minute); the count is incremented and compared against limit. Returns
+// true if the request is allowed, false if over the limit. Old windows are
+// pruned lazily so the table stays bounded. There's a benign race between
+// the SELECT and INSERT under concurrent requests (two simultaneous clicks
+// could both pass before either increments) -- acceptable for a rate limit
+// whose purpose is abuse prevention, not exact metering.
+export async function checkRateLimit(db: D1Database, clientIP: string, limit: number): Promise<boolean> {
+	const window = new Date().toISOString().slice(0, 16); // 'YYYY-MM-DDTHH:MM' (UTC minute)
 	await db
-		.prepare(`INSERT OR IGNORE INTO recheck_queue (report_id, ip, created_at, scheduled_at) VALUES (?, ?, ?, ?)`)
-		.bind(reportId, ip, toSQLiteDateTime(createdAt), toSQLiteDateTime(scheduledAt))
+		.prepare(`DELETE FROM check_rate_limit WHERE client_ip = ? AND window < ?`)
+		.bind(clientIP, window)
 		.run();
-}
-
-// --- Recheck pull-model: the China box's worker fetches its next probe
-// target here and reports the outcome back through saveRecheckResult --
-// ports internal/store/queries.go's NextPendingRecheck/MarkRecheckProcessed/
-// PruneRecheckQueue/LatestScanConfig/SaveRecheck. ---
-
-interface RecheckQueueRow {
-	id: number;
-	report_id: number;
-	ip: string;
-	created_at: string;
-	scheduled_at: string | null;
-}
-
-// nextPendingRecheck returns the oldest not-yet-processed recheck_queue entry
-// whose scheduled_at has arrived, or null if none are ready yet.
-//
-// scheduled_at is compared via SQLite's own datetime() on both sides (rather
-// than a bound JS-formatted "now" string) for the same reason
-// pendingIPsForPTRRefresh does: stored values here are ISO strings
-// (toISOString(), "YYYY-MM-DDTHH:MM:SS.sssZ") but datetime('now') normalizes
-// to "YYYY-MM-DD HH:MM:SS" (space-separated) -- comparing those as raw
-// strings puts the ISO value (with 'T', 0x54) after the datetime() value
-// (with ' ', 0x20) regardless of actual times, so scheduled_at would almost
-// never look due. Wrapping scheduled_at in datetime() too normalizes both
-// sides to the same format before comparing.
-export async function nextPendingRecheck(db: D1Database): Promise<RecheckQueueItem | null> {
 	const row = await db
+		.prepare(`SELECT count FROM check_rate_limit WHERE client_ip = ? AND window = ?`)
+		.bind(clientIP, window)
+		.first<{ count: number }>();
+	if ((row?.count ?? 0) >= limit) return false;
+	await db
 		.prepare(
-			`SELECT id, report_id, ip, created_at, scheduled_at FROM recheck_queue
-			WHERE processed_at IS NULL AND (scheduled_at IS NULL OR datetime(scheduled_at) <= datetime('now'))
-			ORDER BY created_at ASC LIMIT 1`,
+			`INSERT INTO check_rate_limit (client_ip, window, count) VALUES (?, ?, 1)
+			ON CONFLICT(client_ip, window) DO UPDATE SET count = count + 1`,
 		)
-		.first<RecheckQueueRow>();
-	if (!row) return null;
-	return {
-		id: row.id,
-		reportId: row.report_id,
-		ip: row.ip,
-		createdAt: fromSQLiteDateTime(row.created_at)!,
-		scheduledAt: fromSQLiteDateTime(row.scheduled_at),
-	};
-}
-
-// markRecheckProcessed records the outcome of a recheck attempt so it is not
-// picked up again.
-export async function markRecheckProcessed(db: D1Database, id: number, ok: boolean, processedAt: Date): Promise<void> {
-	await db
-		.prepare(`UPDATE recheck_queue SET processed_at = ?, ok = ? WHERE id = ?`)
-		.bind(toSQLiteDateTime(processedAt), ok ? 1 : 0, id)
+		.bind(clientIP, window)
 		.run();
-}
-
-// pruneRecheckQueue deletes processed recheck_queue rows older than
-// retentionDays, so the table doesn't grow unboundedly with completed work.
-// Pending (unprocessed) rows are never touched.
-export async function pruneRecheckQueue(db: D1Database, retentionDays: number): Promise<void> {
-	await db
-		.prepare(`DELETE FROM recheck_queue WHERE processed_at IS NOT NULL AND processed_at < datetime('now', '-' || ? || ' days')`)
-		.bind(retentionDays)
-		.run();
+	return true;
 }
 
 // latestScanConfig returns the id and config_json of the most recent scan

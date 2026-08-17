@@ -31,5 +31,15 @@
       "database_id": "d4e3df1f-07d5-4924-be21-5574125ef400",
       "migrations_dir": "./migrations"
     }
+  ],
+  // Service binding to the gwsdb-probe Worker (worker/), which holds the
+  // vpc_networks binding Pages can't and proxies probe requests to the
+  // China box via Cloudflare Mesh. Deploy the Worker first:
+  //   cd worker && npx wrangler deploy
+  "services": [
+    {
+      "binding": "PROBE_PROXY",
+      "service": "gwsdb-probe"
+    }
   ]
 }

@@ -1,21 +1,13 @@
-// Pages Function for POST /recheck/result -- submitted either by the China
-// box's pull-model worker (gwsdb recheck -worker) after fetching an item
-// from GET /recheck/next (id > 0, a real recheck_queue row), or by ad-hoc
-// manual probes (gwsdb recheck -ip, id 0 -- no queue item to mark
-// processed, matching the old Go CLI's "gwsdb recheck -ip" behavior, which
-// always wrote its result straight to the store with no queue involved).
-// Ports internal/web/recheck.go's (now-deleted) processNextRecheck: saves
-// the ip_checks row, marks the queue entry processed (skipped for id 0),
-// prunes old processed entries, and reconciles published DNS records.
+// Pages Function for POST /recheck/result -- submitted by ad-hoc manual
+// probes (gwsdb recheck -ip), which write their result straight to the
+// store with no queue involved (id 0). The on-demand probe button on the
+// query page no longer goes through here -- it calls the China box's probe
+// server synchronously via functions/check.ts. Saves the ip_checks row,
+// prunes old history, and reconciles published DNS records.
 import { checkBearerAuth } from "../../src/auth";
 import { syncPublish } from "../../src/publish";
-import { markRecheckProcessed, pruneCheckHistory, pruneRecheckQueue, refreshPoolForIPs, saveRecheckResult } from "../../src/store";
+import { pruneCheckHistory, refreshPoolForIPs, saveRecheckResult } from "../../src/store";
 import type { Env } from "../../src/env";
-
-// RECHECK_QUEUE_RETENTION_DAYS mirrors internal/web/recheck.go's
-// recheckQueueRetention (30 days) -- how long a processed recheck_queue row
-// is kept around for debugging/audit before being pruned.
-const RECHECK_QUEUE_RETENTION_DAYS = 30;
 
 interface ResultBody {
 	id: number;
@@ -62,8 +54,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	});
 	await refreshPoolForIPs(env.DB, [body.ip]);
 	await pruneCheckHistory(env.DB, [body.ip]);
-	if (body.id > 0) await markRecheckProcessed(env.DB, body.id, body.ok, checkedAt);
-	await pruneRecheckQueue(env.DB, RECHECK_QUEUE_RETENTION_DAYS);
 
 	// A recheck just changed this IP's status, so the top set may have
 	// shifted. Reconcile after responding so a slow Cloudflare API call

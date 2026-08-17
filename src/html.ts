@@ -85,7 +85,7 @@ const NAV_ZH = { home: "首页", query: "查询", scans: "扫描记录" };
 // verbatim into <head> (e.g. home.tmpl's <noscript> refresh meta tag).
 // lang defaults to "en" (NAV_EN); pass "zh" for report_confirm's Chinese
 // chrome (NAV_ZH).
-const DEFAULT_DESCRIPTION = "Community-maintained database of Google Web Server (GWS) IPs reachable from China, with PTR/ASN lookups, community reports, and scan history.";
+const DEFAULT_DESCRIPTION = "Community-maintained database of Google Web Server (GWS) IPs reachable from China, with PTR/ASN lookups, on-demand probes, and scan history.";
 
 export function pageShell(opts: { title: string; body: string; build: BuildInfo; extraHead?: string; lang?: "en" | "zh"; description?: string }): string {
 	const lang = opts.lang ?? "en";

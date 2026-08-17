@@ -19,6 +19,12 @@ import (
 	"github.com/cuthead/gwsdb/internal/ingest"
 )
 
+// DefaultScanMode is the only scan mode CheckSNI currently knows how to
+// probe -- it ports gscan_quic's SNI-specific testSni logic. Must match the
+// Cloudflare side's DEFAULT_SCAN_MODE (functions/recheck/latest-scan-id.ts,
+// functions/check.ts).
+const DefaultScanMode = "SNI"
+
 // Result is the outcome of one SNI recheck attempt.
 type Result struct {
 	OK     bool

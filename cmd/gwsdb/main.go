@@ -11,17 +11,21 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
 	"github.com/cuthead/gwsdb/internal/recheck"
+	"github.com/cuthead/gwsdb/internal/scan"
 )
 
 func main() {
@@ -39,6 +43,8 @@ func main() {
 		runDeleteScan(os.Args[2:])
 	case "recheck":
 		runRecheck(os.Args[2:])
+	case "scan":
+		runScan(os.Args[2:])
 	case "-h", "-help", "--help":
 		usage()
 	default:
@@ -54,8 +60,12 @@ func usage() {
 Usage:
   gwsdb ingest -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
   gwsdb delete-scan -id N                                     (deletes via $GWSDB_API/$GWSDB_INGEST_TOKEN)
-  gwsdb recheck -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it -- no queue involved)
-  gwsdb recheck -worker [-max 200] [-timeout 10s]            (pull-model: drain the due recheck_queue backlog via $GWSDB_API/$GWSDB_INGEST_TOKEN)
+  gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
+  gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
+                    [-workers 10] [-interval 1s] [-timeout 10s] [-flush 10m]
+                    [-probe-addr 127.0.0.1:8787] [-probe-token SECRET]
+                                (always-on: probes random IPs from CIDR range files, flushes to $GWSDB_API
+                                 every -flush, serves on-demand probes via VPC proxy Worker — replaces scan_and_ingest.sh + recheck_and_submit.sh)
 
 GWSDB_API/GWSDB_INGEST_TOKEN can also come from a KEY=VALUE file instead of
 being exported by hand: ~/.config/gwsdb/env by default, or $GWSDB_ENV_FILE.
@@ -134,44 +144,24 @@ func runDeleteScan(args []string) {
 	log.Printf("deleted scan #%d", *id)
 }
 
-// recheckDefaultMaxPerRun caps how many queue items one "gwsdb recheck
-// -worker" invocation drains, mirroring the Cloudflare-side ptrRefresh.ts's
-// per-run cap -- a large backlog can't block a single tick forever; any
-// remainder is picked up on the next invocation.
-const recheckDefaultMaxPerRun = 200
-
 func runRecheck(args []string) {
 	fs := flag.NewFlagSet("recheck", flag.ExitOnError)
-	ip := fs.String("ip", "", "ad-hoc mode: IP address to re-test once, printing OK/FAIL and submitting the result -- no queue involved")
-	scannerConfigPath := fs.String("scanner-config", "", "ad-hoc mode: path to the local gscan_quic config.json/config.user.json to probe with")
-	worker := fs.Bool("worker", false, "pull-model mode: drain the due backlog from the Cloudflare-hosted recheck_queue via $GWSDB_API/$GWSDB_INGEST_TOKEN")
-	maxPerRun := fs.Int("max", recheckDefaultMaxPerRun, "worker mode: cap on items drained in one invocation")
+	ip := fs.String("ip", "", "IP address to re-test once, printing OK/FAIL and submitting the result -- no queue involved")
+	scannerConfigPath := fs.String("scanner-config", "", "path to the local gscan_quic config.json/config.user.json to probe with")
 	timeout := fs.Duration("timeout", 10*time.Second, "probe timeout")
 	fs.Parse(args)
 
-	switch {
-	case *ip != "" && *worker:
-		fmt.Fprintln(os.Stderr, "recheck: -ip and -worker are mutually exclusive")
-		fs.Usage()
-		os.Exit(2)
-	case *ip != "":
-		runRecheckAdHoc(*ip, *scannerConfigPath, *timeout)
-	case *worker:
-		runRecheckWorker(*maxPerRun, *timeout)
-	default:
-		fmt.Fprintln(os.Stderr, "recheck: exactly one of -ip or -worker is required")
+	if *ip == "" {
+		fmt.Fprintln(os.Stderr, "recheck: -ip is required")
 		fs.Usage()
 		os.Exit(2)
 	}
+	runRecheckAdHoc(*ip, *scannerConfigPath, *timeout)
 }
 
 // runRecheckAdHoc is a manual ops diagnostic: probe one IP with the scan
 // config gscan_quic already has on disk, print the result, and submit it to
-// Cloudflare -- same as the old Go CLI's "gwsdb recheck -ip" (which wrote
-// straight to the store), except now over HTTP since there's no local store
-// on the China box anymore. Doesn't touch recheck_queue -- there's no queue
-// item behind an ad-hoc probe, so it submits with id 0 (see
-// functions/recheck/result.ts), which just skips markRecheckProcessed.
+// Cloudflare (POST /recheck/result with id 0 -- no queue involved).
 func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 	if net.ParseIP(ip) == nil {
 		log.Fatalf("recheck: invalid ip %q", ip)
@@ -232,32 +222,136 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 	}
 }
 
-// runRecheckWorker drains the due recheck_queue backlog from the
-// Cloudflare-hosted API, one item at a time via recheck.PullAndRun, until
-// it's empty or maxPerRun is hit -- meant to be invoked by cron every few
-// minutes (see scripts/recheck_and_submit.sh), not run as a long-lived
-// daemon.
-func runRecheckWorker(maxPerRun int, probeTimeout time.Duration) {
+// stringSliceFlag is a flag.Value that accumulates repeated -flag values
+// into a slice (Go's stdlib flag has no built-in slice type). Used for
+// -ip-range, which may be given more than once to mix v4 and v6 range
+// files.
+type stringSliceFlag []string
+
+func (f *stringSliceFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *stringSliceFlag) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
+// runScan runs the always-on scanner: N probe workers continuously test
+// random IPs drawn from CIDR range files, a flusher submits accumulated
+// results to the Cloudflare-hosted API on a fixed cadence, and a
+// separate goroutine drains the recheck queue — all in one long-lived
+// process. Replaces the old cron-driven scan_and_ingest.sh (external
+// gscan_quic one-shot) + recheck_and_submit.sh pair. See internal/scan.
+//
+// The probe config comes from gscan_quic's config.user.json (same file
+// `gwsdb ingest`/`recheck` read), so the scanner probes with the exact
+// same ServerName/HTTPPath/timeout settings the last manual scan used.
+// The default IP range is the config's InputFile (typically v4); add
+// more with -ip-range (e.g. the v6 range file). Stops cleanly on
+// SIGINT/SIGTERM with one final flush.
+func runScan(args []string) {
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	scannerConfigPath := fs.String("scanner-config", "", "path to gscan_quic config.json/config.user.json (probe config + default IP range source)")
+	scanDir := fs.String("scanner-dir", "", "dir gscan_quic ran in; base for relative InputFile paths (defaults to -scanner-config's dir)")
+	mode := fs.String("mode", "SNI", "scan mode block to use from the config")
+	var extraRanges stringSliceFlag
+	fs.Var(&extraRanges, "ip-range", "additional IP range file (CIDR per line, v4 or v6); may be repeated")
+	workers := fs.Int("workers", 10, "number of probe worker goroutines")
+	interval := fs.Duration("interval", time.Second, "per-worker sleep between probes")
+	probeTimeout := fs.Duration("timeout", 10*time.Second, "per-probe timeout")
+	flushInterval := fs.Duration("flush", 10*time.Minute, "how often to flush accumulated checks to the API")
+	probeAddr := fs.String("probe-addr", "0.0.0.0:8787", "address for the on-demand probe HTTP server (reached by the gwsdb-probe Worker via Cloudflare Mesh); empty disables it")
+	probeToken := fs.String("probe-token", "", "shared secret authenticating probe requests (X-Probe-Token header); must match the Cloudflare side's PROBE_TOKEN. Required if -probe-addr is set")
+	fs.Parse(args)
+
+	if *scannerConfigPath == "" {
+		fmt.Fprintln(os.Stderr, "scan: -scanner-config is required")
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	raw, err := os.ReadFile(*scannerConfigPath)
+	if err != nil {
+		log.Fatalf("scan: read scanner config: %v", err)
+	}
+	var gcfg ingest.GScannerConfig
+	if err := json.Unmarshal(raw, &gcfg); err != nil {
+		log.Fatalf("scan: parse scanner config: %v", err)
+	}
+	sub := gcfg.ForMode(*mode)
+	if sub == nil {
+		log.Fatalf("scan: scanner config has no %s block", *mode)
+	}
+	if strings.EqualFold(*mode, "sni") && sub.HTTPMethod == "" {
+		// Same default ingest.Parse applies for SNI mode (gscan_quic's
+		// testSni is the only mode that reads HTTPMethod).
+		sub.HTTPMethod = "HEAD"
+	}
+
+	// Default IP range comes from the config's InputFile (gscan_quic's
+	// convention), resolved relative to scanDir or the config's dir.
+	// Extra -ip-range files append to it so v4 and v6 can be scanned
+	// together (the China box needs v6 connectivity for v6 probes to
+	// succeed; v6 failures don't affect v4 scanning).
+	base := *scanDir
+	if base == "" {
+		base = filepath.Dir(*scannerConfigPath)
+	}
+	var rangePaths []string
+	if sub.InputFile != "" {
+		p := sub.InputFile
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(base, p)
+		}
+		rangePaths = append(rangePaths, p)
+	}
+	for _, p := range extraRanges {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(base, p)
+		}
+		rangePaths = append(rangePaths, p)
+	}
+	if len(rangePaths) == 0 {
+		log.Fatalf("scan: no IP range files (config has no InputFile for %s, and no -ip-range given)", *mode)
+	}
+
+	ipRange, err := scan.LoadIPRanges(rangePaths)
+	if err != nil {
+		log.Fatalf("scan: load IP ranges: %v", err)
+	}
+
 	apiBase := requireEnv("GWSDB_API")
 	token := requireEnv("GWSDB_INGEST_TOKEN")
 
-	ctx := context.Background()
-	processed := 0
-	for ; processed < maxPerRun; processed++ {
-		drained, result, err := recheck.PullAndRun(ctx, apiBase, token, probeTimeout)
-		if err != nil {
-			log.Fatalf("recheck: %v", err)
-		}
-		if drained {
-			break
-		}
-		if result.OK {
-			log.Printf("recheck: OK rtt=%dms", result.RTTMs)
-		} else {
-			log.Printf("recheck: FAIL reason=%s detail=%s", result.Reason, result.Detail)
-		}
+	probeTokenVal := *probeToken
+	if probeTokenVal == "" {
+		probeTokenVal = os.Getenv("GWSDB_PROBE_TOKEN")
 	}
-	log.Printf("recheck: processed %d item(s)", processed)
+	if *probeAddr != "" && probeTokenVal == "" {
+		log.Fatal("scan: -probe-token is required when -probe-addr is set (or set GWSDB_PROBE_TOKEN in the env file)")
+	}
+
+	sc := scan.New(scan.Config{
+		ProbeConfig:   sub,
+		ScanMode:      strings.ToUpper(*mode),
+		IPRange:       ipRange,
+		InputFile:     strings.Join(rangePaths, ","),
+		Workers:       *workers,
+		Interval:      *interval,
+		ProbeTimeout:  *probeTimeout,
+		FlushInterval: *flushInterval,
+		ProbeAddr:     *probeAddr,
+		ProbeToken:    probeTokenVal,
+		APIBase:       apiBase,
+		Token:         token,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := sc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatalf("scan: %v", err)
+	}
 }
 
 func requireEnv(name string) string {

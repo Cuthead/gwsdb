@@ -17,6 +17,16 @@ export interface Env {
 	// Bearer token for the Cloudflare API (DNS-edit permission on the zone
 	// above). Set via `wrangler pages secret put CLOUDFLARE_DNS_API_TOKEN`.
 	CLOUDFLARE_DNS_API_TOKEN: string;
+	// Service binding to the gwsdb-probe Worker (worker/), which holds the
+	// vpc_networks binding Pages can't and proxies probe requests to the
+	// China box's internal probe server via Cloudflare Mesh. See
+	// worker/src/index.ts.
+	PROBE_PROXY: Fetcher;
+	// Shared secret authenticating the Pages -> probe Worker -> probe server
+	// chain. Must match the -probe-token the China box's `gwsdb scan -worker`
+	// was started with. Set via `wrangler pages secret put PROBE_TOKEN`
+	// (Pages) and `wrangler secret put PROBE_TOKEN` (worker/).
+	PROBE_TOKEN: string;
 	// Injected automatically by Cloudflare Pages at request time (see
 	// src/html.ts's buildInfoFromEnv) -- not set in wrangler.jsonc.
 	CF_PAGES_COMMIT_SHA?: string;

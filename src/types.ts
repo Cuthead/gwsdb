@@ -81,19 +81,6 @@ export interface ASNCacheEntry {
 	checkedAt: Date;
 }
 
-// IPReport is a community-submitted usable/unusable report for one IP. The
-// reporter's full IP is never stored -- only the announced prefix/AS.
-export interface IPReport {
-	id: number;
-	ip: string;
-	verdict: boolean;
-	comment: string;
-	reporterPrefix: string;
-	reporterASN: number;
-	reporterASName: string;
-	createdAt: Date;
-}
-
 // IPCheckHistoryRow is one row from IPHistory: a pass/fail observation plus
 // the request context (from its owning/config scan) in effect at the time.
 export interface IPCheckHistoryRow {
@@ -113,12 +100,4 @@ export interface IPCheckHistoryRow {
 	validStatusCode: number;
 }
 
-// RecheckQueueItem is a pending recheck_queue row, returned by
-// nextPendingRecheck to the China box's pull-model worker.
-export interface RecheckQueueItem {
-	id: number;
-	reportId: number;
-	ip: string;
-	createdAt: Date;
-	scheduledAt: Date | null;
-}
+
