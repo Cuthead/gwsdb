@@ -63,13 +63,13 @@ Usage:
   gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
   gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
                     [-workers 10] [-interval 1s] [-timeout 10s] [-flush 10m]
-                    [-probe-addr 127.0.0.1:8787] [-probe-token SECRET]
+                    [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
                                 (always-on: probes random IPs from CIDR range files, flushes to $GWSDB_API
                                  every -flush, serves on-demand probes via VPC proxy Worker — replaces scan_and_ingest.sh + recheck_and_submit.sh)
 
-GWSDB_API/GWSDB_INGEST_TOKEN can also come from a KEY=VALUE file instead of
-being exported by hand: ~/.config/gwsdb/env by default, or $GWSDB_ENV_FILE.
-chmod 600 it -- it holds a bearer token.`)
+GWSDB_API/GWSDB_INGEST_TOKEN/GWSDB_PROBE_TOKEN can also come from a KEY=VALUE
+file instead of being exported by hand: ~/.config/gwsdb/env by default, or
+$GWSDB_ENV_FILE. chmod 600 it -- it holds bearer/probe tokens.`)
 }
 
 func runIngest(args []string) {
