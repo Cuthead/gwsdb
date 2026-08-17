@@ -290,19 +290,28 @@ export async function ipStatusFor(db: D1Database, ip: string): Promise<IPStatus 
 }
 
 // overview returns aggregate stats for the home page — now check-based
-// (the scans table is gone; Total Checks / Last Check come from ip_checks).
+// overview computes the home page's summary stats. All three values come
+// from ip_pool (the maintained table, ~7600 rows) rather than ip_checks
+// (the append-only history, 134k+ rows and growing) — a single full scan
+// of ip_pool is ~18x cheaper than a single COUNT(*) on ip_checks.
+//
+// totalChecks is SUM(times_seen), i.e. total successful checks across all
+// IPs — semantically "how many times have we confirmed IPs reachable"
+// rather than "how many probe results exist" (which includes failures).
+// This is more meaningful for visitors and avoids the ip_checks scan.
 export async function overview(db: D1Database): Promise<Stats> {
-	const [poolCount, checkCount, lastCheck] = await Promise.all([
-		db.prepare(`SELECT COUNT(*) AS n FROM ip_pool`).first<{ n: number }>(),
-		db.prepare(`SELECT COUNT(*) AS n FROM ip_checks`).first<{ n: number }>(),
+	const [agg, lastCheck] = await Promise.all([
 		db
-			.prepare(`SELECT checked_at, scan_mode FROM ip_checks ORDER BY checked_at DESC, id DESC LIMIT 1`)
-			.first<{ checked_at: string | null; scan_mode: string | null }>(),
+			.prepare(`SELECT COUNT(*) AS totalKnownIPs, COALESCE(SUM(times_seen), 0) AS totalChecks FROM ip_pool`)
+			.first<{ totalKnownIPs: number; totalChecks: number }>(),
+		db
+			.prepare(`SELECT last_checked_at, scan_mode FROM ip_pool ORDER BY last_checked_at DESC LIMIT 1`)
+			.first<{ last_checked_at: string | null; scan_mode: string | null }>(),
 	]);
 	return {
-		totalKnownIPs: poolCount?.n ?? 0,
-		totalChecks: checkCount?.n ?? 0,
-		lastCheckAt: lastCheck ? fromSQLiteDateTime(lastCheck.checked_at) : null,
+		totalKnownIPs: agg?.totalKnownIPs ?? 0,
+		totalChecks: agg?.totalChecks ?? 0,
+		lastCheckAt: lastCheck ? fromSQLiteDateTime(lastCheck.last_checked_at) : null,
 		scanMode: lastCheck?.scan_mode ?? "",
 	};
 }
@@ -714,4 +723,56 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 		)
 		.bind(r.ip, r.reason, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 		.run();
+}
+
+// updatePoolForCheck is a lightweight single-IP pool update for on-demand
+// probes (/check, /recheck/result). Instead of refreshPoolForIPs (which
+// recomputes the entire ip_pool row from all ip_checks rows for that IP via
+// window functions — ~5k rows read per call), this does a targeted UPDATE
+// by primary key (1 row read). Only the columns that change on a single
+// probe are touched: last_checked_at, last_check_ok, and on success also
+// last_seen/last_rtt_ms/times_seen. If the IP isn't in ip_pool yet and the
+// check succeeded, it INSERTs; if it failed and the IP isn't known, the
+// caller (saveRecheckResult) already skipped the ip_checks insert, so
+// there's nothing to update.
+//
+// pruneCheckHistory is intentionally NOT called here — a single probe adds
+// 1 row, which can't push an IP past CHECK_HISTORY_RETENTION (300) unless
+// it already has 299, and the next batch ingest flush will prune it anyway.
+export async function updatePoolForCheck(
+	db: D1Database,
+	ip: string,
+	ok: boolean,
+	rttMs: number | null,
+	checkedAt: Date,
+	scanMode: string,
+): Promise<void> {
+	const isIPv6 = ip.includes(":") ? 1 : 0;
+	const ts = toSQLiteDateTime(checkedAt);
+
+	// Try UPDATE first (common case: IP already in pool). reads 1 row by PK.
+	const result = await db
+		.prepare(
+			`UPDATE ip_pool SET
+				last_checked_at = ?,
+				last_check_ok = ?,
+				last_rtt_ms = CASE WHEN ? THEN ? ELSE last_rtt_ms END,
+				last_seen = CASE WHEN ? THEN ? ELSE last_seen END,
+				times_seen = CASE WHEN ? THEN times_seen + 1 ELSE times_seen END
+			 WHERE ip = ?`,
+		)
+		.bind(ts, ok ? 1 : 0, ok ? 1 : 0, rttMs ?? 0, ok ? 1 : 0, ts, ok ? 1 : 0, ip)
+		.run();
+
+	// IP not in pool and check succeeded: INSERT (mirrors refreshPoolForIPs's
+	// HAVING times_seen > 0 gate — only reachable IPs belong in the pool).
+	if (result.meta.changes === 0 && ok) {
+		await db
+			.prepare(
+				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)`,
+			)
+			.bind(ip, isIPv6, scanMode, ts, ts, rttMs ?? 0, ts)
+			.run();
+	}
 }

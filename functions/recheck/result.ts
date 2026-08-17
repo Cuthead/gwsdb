@@ -6,7 +6,7 @@
 // prunes old history, and reconciles published DNS records.
 import { checkBearerAuth } from "../../src/auth";
 import { syncPublish } from "../../src/publish";
-import { pruneCheckHistory, refreshPoolForIPs, saveRecheckResult } from "../../src/store";
+import { saveRecheckResult, updatePoolForCheck } from "../../src/store";
 import type { Env } from "../../src/env";
 
 interface ResultBody {
@@ -49,8 +49,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		checkedAt,
 		scanMode: body.scanMode,
 	});
-	await refreshPoolForIPs(env.DB, [body.ip]);
-	await pruneCheckHistory(env.DB, [body.ip]);
+	await updatePoolForCheck(env.DB, body.ip, body.ok, body.rttMs ?? null, checkedAt, body.scanMode);
 
 	// A recheck just changed this IP's status, so the top set may have
 	// shifted. Reconcile after responding so a slow Cloudflare API call
