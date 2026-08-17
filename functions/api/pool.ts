@@ -52,8 +52,8 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		count: apiIPs.length,
 		scanMode,
 		totalKnownIPs: stats.totalKnownIPs,
-		totalScans: stats.totalScans,
-		lastScanAt: formatTime(stats.lastScanAt),
+		totalChecks: stats.totalChecks,
+		lastCheckAt: formatTime(stats.lastCheckAt),
 	};
 	// max-age just bounds how long this colo holds the entry -- correctness
 	// doesn't depend on it, since a version bump already changes cacheKey.

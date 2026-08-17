@@ -298,8 +298,8 @@ import { decodeBest, countryCode } from './geo.js';
 
 	function renderData(data) {
 		document.getElementById('totalKnownIPs').textContent = data.totalKnownIPs;
-		document.getElementById('totalScans').textContent = data.totalScans;
-		document.getElementById('lastScan').textContent = data.lastScanAt + (data.scanMode ? ' (' + data.scanMode + ')' : '');
+		document.getElementById('totalChecks').textContent = data.totalChecks;
+		document.getElementById('lastCheck').textContent = data.lastCheckAt + (data.scanMode ? ' (' + data.scanMode + ')' : '');
 
 		var tbody = document.getElementById('ipTableBody');
 		tbody.textContent = '';

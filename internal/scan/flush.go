@@ -3,7 +3,6 @@ package scan
 import (
 	"context"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
@@ -11,12 +10,9 @@ import (
 )
 
 // runFlusher submits accumulated checks to the Cloudflare-hosted API on
-// a fixed cadence. One flush window becomes one store.Scan row (with
-// StartedAt/FinishedAt bracketing the window and ScannedCount/FoundCount
-// summarizing it), which is exactly the shape functions/ingest.ts
-// expects — so no Cloudflare-side change is needed. On ctx cancellation
-// it runs one final flush under a detached context so the last window's
-// checks aren't lost.
+// a fixed cadence. Checks are written directly to ip_checks (no per-flush
+// Scan row — the scans table is gone). On ctx cancellation it runs one
+// final flush under a detached context so the last window's checks aren't lost.
 func (s *Scanner) runFlusher(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.FlushInterval)
 	defer ticker.Stop()
@@ -31,19 +27,16 @@ func (s *Scanner) runFlusher(ctx context.Context) {
 	}
 }
 
-// flush drains the check buffer and submits it as one Scan. If either
-// the known-good fetch or the submit fails, the checks are requeued for
-// the next window rather than dropped. Safe to call with a cancelled
-// ctx only when passing context.Background() (final flush) — the fetch
-// and submit honor the ctx deadline.
+// flush drains the check buffer and submits it. If either the known-good
+// fetch or the submit fails, the checks are requeued for the next window
+// rather than dropped. Safe to call with a cancelled ctx only when passing
+// context.Background() (final flush).
 func (s *Scanner) flush(ctx context.Context) {
 	s.mu.Lock()
 	checks := s.checks
 	s.checks = nil
 	scanned := s.scannedCount
 	s.scannedCount = 0
-	startedAt := s.flushStart
-	s.flushStart = time.Now().UTC()
 	s.mu.Unlock()
 
 	if len(checks) == 0 {
@@ -51,10 +44,9 @@ func (s *Scanner) flush(ctx context.Context) {
 		return
 	}
 
-	// Deduped successes become the Scan's "results" (the authoritative
-	// hit list for this flush window), mirroring how ingest.Parse
-	// produces ScanResult from gscan_quic's output file. Failures stay
-	// in checks; FilterChecks will keep only the known-good ones.
+	// Deduped successes become the "results" (authoritative hit list for
+	// this flush window). Failures stay in checks; FilterChecks keeps only
+	// the known-good ones.
 	seen := make(map[string]bool, len(checks))
 	var results []store.ScanResult
 	for _, c := range checks {
@@ -75,44 +67,23 @@ func (s *Scanner) flush(ctx context.Context) {
 	}
 
 	filtered := ingest.FilterChecks(results, checks, knownGood, time.Now().UTC())
-
-	configJSON, err := store.MarshalConfig(s.cfg.ProbeConfig)
-	if err != nil {
-		log.Printf("scan: flush: marshal config: %v — retaining %d checks", err, len(checks))
-		s.requeue(checks, scanned)
-		return
+	// FilterChecks rebuilds IPChecks without ScanMode; re-apply it so the
+	// ip_checks rows carry the mode the scanner probed with.
+	for i := range filtered {
+		filtered[i].ScanMode = s.cfg.ScanMode
 	}
 
-	scan := &store.Scan{
-		ScanMode:         strings.ToUpper(s.cfg.ScanMode),
-		ServerName:       strings.Join(s.cfg.ProbeConfig.ServerName, ","),
-		VerifyCommonName: s.cfg.ProbeConfig.VerifyCommonName,
-		HTTPPath:         s.cfg.ProbeConfig.HTTPPath,
-		HTTPMethod:       s.cfg.ProbeConfig.HTTPMethod,
-		HTTPVerifyHosts:  strings.Join(s.cfg.ProbeConfig.HTTPVerifyHosts, ","),
-		ValidStatusCode:  s.cfg.ProbeConfig.ValidStatusCode,
-		InputFile:        s.cfg.InputFile,
-		OutputFile:       "", // no output file — scanner submits directly
-		Level:            s.cfg.ProbeConfig.Level,
-		ConfigJSON:       configJSON,
-		StartedAt:        startedAt,
-		FinishedAt:       time.Now().UTC(),
-		ScannedCount:     scanned,
-		FoundCount:       len(results),
-	}
-
-	scanID, err := ingest.Submit(flushCtx, s.cfg.APIBase, s.cfg.Token, scan, filtered)
-	if err != nil {
+	if err := ingest.Submit(flushCtx, s.cfg.APIBase, s.cfg.Token, filtered); err != nil {
 		log.Printf("scan: flush: submit: %v — retaining %d checks for next flush", err, len(checks))
 		s.requeue(checks, scanned)
 		return
 	}
-	log.Printf("scan: flushed scan #%d: %d probes, %d checks, %d found", scanID, scanned, len(filtered), len(results))
+	log.Printf("scan: flushed: %d probes, %d checks, %d found", scanned, len(filtered), len(results))
 }
 
 // requeue puts checks back at the front of the buffer if a flush failed,
 // so they're retried next window instead of being lost. scanned is
-// restored too so the Scan row's ScannedCount reflects the full window.
+// restored too so the next flush's probe count reflects the full window.
 func (s *Scanner) requeue(checks []store.IPCheck, scanned int) {
 	s.mu.Lock()
 	s.checks = append(checks, s.checks...)

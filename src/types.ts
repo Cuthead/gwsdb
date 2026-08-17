@@ -1,30 +1,6 @@
 // Ports internal/store/models.go's types, added incrementally as each
 // phase starts reading/writing the corresponding table.
 
-export interface Scan {
-	ScanMode: string;
-	ServerName: string;
-	VerifyCommonName: string;
-	HTTPPath: string;
-	HTTPMethod: string;
-	HTTPVerifyHosts: string;
-	ValidStatusCode: number;
-	InputFile: string;
-	OutputFile: string;
-	Level: number;
-	ConfigJSON: string;
-	StartedAt: Date | null;
-	FinishedAt: Date | null;
-	ScannedCount: number;
-	FoundCount: number;
-}
-
-// ScanRow is the read-path shape of a scans row (mirrors Scan plus its id),
-// used by listScans/latestScan.
-export interface ScanRow extends Scan {
-	id: number;
-}
-
 // IPStatus mirrors internal/store/models.go's IPStatus: the rolling
 // reachability record for one IP, derived live from the ip_pool view.
 export interface IPStatus {
@@ -33,7 +9,6 @@ export interface IPStatus {
 	scanMode: string;
 	firstSeen: Date | null;
 	lastSeen: Date | null; // last time this IP was confirmed reachable
-	lastScanId: number | null;
 	lastRttMs: number;
 	timesSeen: number;
 	lastCheckedAt: Date | null; // last time this IP was tested at all (pass or fail)
@@ -45,8 +20,9 @@ export interface IPStatus {
 // Stats holds simple aggregate counters shown on the home page.
 export interface Stats {
 	totalKnownIPs: number;
-	totalScans: number;
-	lastScanAt: Date | null;
+	totalChecks: number;
+	lastCheckAt: Date | null;
+	scanMode: string;
 }
 
 // PTRCacheEntry is a cached reverse-DNS lookup result for one IP.
@@ -90,14 +66,7 @@ export interface IPCheckHistoryRow {
 	reason: string;
 	detail: string;
 	checkedAt: Date | null;
-	recheck: boolean; // true when this check has no owning scan (scan_id IS NULL)
 	scanMode: string;
-	serverName: string;
-	httpPath: string;
-	httpMethod: string;
-	httpVerifyHosts: string;
-	verifyCommonName: string;
-	validStatusCode: number;
 }
 
 

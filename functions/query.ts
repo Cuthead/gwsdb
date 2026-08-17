@@ -34,28 +34,12 @@ function reasonLabel(reason: string, detail: string): string {
 	return REASON_LABELS[reason] ?? reason;
 }
 
-// describeProbe summarizes the request parameters a check was made with, so
-// a failure reason can be read alongside exactly what was sent/expected.
-function describeProbe(c: IPCheckHistoryRow): string {
-	const parts: string[] = [];
-	if (c.recheck) parts.push("recheck");
-	if (c.scanMode) parts.push(c.scanMode);
-	if (c.serverName) parts.push(`sni=${c.serverName}`);
-	if (c.httpMethod) parts.push(`method=${c.httpMethod}`);
-	if (c.httpPath) parts.push(`path=${c.httpPath}`);
-	if (c.httpVerifyHosts) parts.push(`host=${c.httpVerifyHosts}`);
-	if (c.verifyCommonName) parts.push(`want_cn=${c.verifyCommonName}`);
-	if (c.validStatusCode !== 0) parts.push(`want_code=${c.validStatusCode}`);
-	return parts.join(" ");
-}
-
 interface CheckRow {
 	time: string;
 	ok: boolean;
 	rtt: number;
 	reasonLabel: string;
 	detail: string;
-	probe: string;
 }
 
 interface AddrStatus {
@@ -203,7 +187,6 @@ async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, data: Q
 		rtt: c.rttMs,
 		reasonLabel: c.ok ? "" : reasonLabel(c.reason, c.detail),
 		detail: c.detail,
-		probe: describeProbe(c),
 	}));
 
 }
@@ -312,15 +295,14 @@ function renderIPBranch(data: QueryData): string {
 		? `<p></p>
 <div class="gwsdb-scroll">
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="5"><b>Check History</b> (last ${data.checks.length} checks, including the probe request sent at the time)</td></tr>
-<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>Probe Request</b></td><td><b>RTT</b></td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="4"><b>Check History</b> (last ${data.checks.length} checks)</td></tr>
+<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>RTT</b></td></tr>
 ${data.checks
 	.map(
 		(c) => `<tr>
 <td>${escapeHTML(c.time)}</td>
 <td>${c.ok ? `<font color="#008000">&#x2713; Reachable</font>` : `<font color="#CC0000">&#x2717; Unreachable</font>`}</td>
-<td>${c.reasonLabel ? escapeHTML(c.reasonLabel) : "-"}</td>
-<td><font size="-1">${c.probe ? `${escapeHTML(c.probe)}<br>` : ""}${c.detail ? `<tt>${escapeHTML(c.detail)}</tt>` : ""}</font></td>
+<td>${c.reasonLabel ? escapeHTML(c.reasonLabel) : "-"}${c.detail ? `<br><tt>${escapeHTML(c.detail)}</tt>` : ""}</td>
 <td>${c.rtt ? `${c.rtt} ms` : "-"}</td>
 </tr>`,
 	)

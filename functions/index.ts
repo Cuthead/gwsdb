@@ -135,8 +135,8 @@ ${table}
 <table border="0" cellpadding="2" cellspacing="0">
 <tr><td colspan="2"><b>Statistics</b></td></tr>
 <tr><td>Total Known IPs</td><td>${stats.totalKnownIPs}</td></tr>
-<tr><td>Total Scans</td><td>${stats.totalScans}</td></tr>
-<tr><td>Last Scan</td><td>${escapeHTML(formatTime(stats.lastScanAt))}${scanMode ? ` (${escapeHTML(scanMode)})` : ""}</td></tr>
+<tr><td>Total Checks</td><td>${stats.totalChecks}</td></tr>
+<tr><td>Last Check</td><td>${escapeHTML(formatTime(stats.lastCheckAt))}${scanMode ? ` (${escapeHTML(scanMode)})` : ""}</td></tr>
 </table>`;
 }
 
@@ -201,8 +201,8 @@ const jsShellBody = `<p>The table below lists tracked Google Web Server (GWS) IP
 <table border="0" cellpadding="2" cellspacing="0">
 <tr><td colspan="2"><b>Statistics</b></td></tr>
 <tr><td>Total Known IPs</td><td id="totalKnownIPs">-</td></tr>
-<tr><td>Total Scans</td><td id="totalScans">-</td></tr>
-<tr><td>Last Scan</td><td id="lastScan">-</td></tr>
+<tr><td>Total Checks</td><td id="totalChecks">-</td></tr>
+<tr><td>Last Check</td><td id="lastCheck">-</td></tr>
 </table>`;
 
 const nojsRefresh = `<noscript><meta http-equiv="refresh" content="0;url=/?nojs=1"></noscript>`;

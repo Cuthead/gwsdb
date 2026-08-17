@@ -39,8 +39,6 @@ func main() {
 	switch os.Args[1] {
 	case "ingest":
 		runIngest(os.Args[2:])
-	case "delete-scan":
-		runDeleteScan(os.Args[2:])
 	case "recheck":
 		runRecheck(os.Args[2:])
 	case "scan":
@@ -58,8 +56,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `gwsdb - GWS Database
 
 Usage:
-  gwsdb ingest -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
-  gwsdb delete-scan -id N                                     (deletes via $GWSDB_API/$GWSDB_INGEST_TOKEN)
+  gwsdb ingest      -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
   gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
   gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
                     [-workers 10] [-interval 1s] [-timeout 10s] [-flush 10m]
@@ -116,32 +113,14 @@ func runIngest(args []string) {
 		log.Fatalf("ingest: fetch known-good: %v", err)
 	}
 	filtered := ingest.FilterChecks(parsed.Results, parsed.Checks, knownGood, time.Now().UTC())
+	for i := range filtered {
+		filtered[i].ScanMode = strings.ToUpper(*mode)
+	}
 
-	scanID, err := ingest.Submit(ctx, apiBase, token, parsed.Scan, filtered)
-	if err != nil {
+	if err := ingest.Submit(ctx, apiBase, token, filtered); err != nil {
 		log.Fatalf("ingest: submit: %v", err)
 	}
-	log.Printf("ingested scan #%d", scanID)
-}
-
-func runDeleteScan(args []string) {
-	fs := flag.NewFlagSet("delete-scan", flag.ExitOnError)
-	id := fs.Int64("id", 0, "id of the scan to delete")
-	fs.Parse(args)
-
-	if *id == 0 {
-		fmt.Fprintln(os.Stderr, "delete-scan: -id is required")
-		fs.Usage()
-		os.Exit(2)
-	}
-
-	apiBase := requireEnv("GWSDB_API")
-	token := requireEnv("GWSDB_INGEST_TOKEN")
-
-	if err := ingest.DeleteScan(context.Background(), apiBase, token, *id); err != nil {
-		log.Fatalf("delete-scan: %v", err)
-	}
-	log.Printf("deleted scan #%d", *id)
+	log.Printf("ingested %d checks", len(filtered))
 }
 
 func runRecheck(args []string) {
@@ -199,23 +178,13 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 		fmt.Printf("FAIL ip=%s reason=%s detail=%s\n", ip, result.Reason, result.Detail)
 	}
 
-	// Best-effort: lets the query page's "Probe Request" column show this
-	// probe's request context (see FetchLatestScanID's comment). Not fatal
-	// if it fails -- the result is still worth submitting with
-	// config_scan_id NULL rather than not submitting at all.
-	configScanID, err := recheck.FetchLatestScanID(ctx, apiBase, token)
-	if err != nil {
-		log.Printf("recheck: fetch latest scan id: %v", err)
-	}
-
 	if err := recheck.Submit(ctx, apiBase, token, recheck.SubmitResult{
-		IP:           ip,
-		OK:           result.OK,
-		RTTMs:        result.RTTMs,
-		Reason:       result.Reason,
-		Detail:       result.Detail,
-		ScanMode:     recheck.DefaultScanMode,
-		ConfigScanID: configScanID,
+		IP:        ip,
+		OK:        result.OK,
+		RTTMs:     result.RTTMs,
+		Reason:    result.Reason,
+		Detail:    result.Detail,
+		ScanMode:  recheck.DefaultScanMode,
 		CheckedAt: time.Now().UTC(),
 	}); err != nil {
 		log.Fatalf("recheck: submit: %v", err)

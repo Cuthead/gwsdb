@@ -38,7 +38,6 @@ var summaryRE = regexp.MustCompile(`Scanned (\d+) IP in ([^,]+), found (\d+) rec
 // to be filtered (FilterChecks) and submitted (client.go's Submit) -- or,
 // for local/manual use, saved directly via store.Store.SaveScan.
 type Parsed struct {
-	Scan    *store.Scan
 	Results []store.ScanResult
 	Checks  []store.IPCheck // every attempted IP, success and failure alike -- not yet gated
 }
@@ -133,35 +132,7 @@ func Parse(opts Options) (*Parsed, error) {
 			RTTMs: sum.RTTByIP[ip],
 		})
 	}
-	foundCount := sum.FoundCount
-	if foundCount == 0 {
-		foundCount = len(results)
-	}
-
-	configJSON, err := store.MarshalConfig(sub)
-	if err != nil {
-		return nil, fmt.Errorf("marshal config: %w", err)
-	}
-
-	scan := &store.Scan{
-		ScanMode:         strings.ToUpper(mode),
-		ServerName:       strings.Join(sub.ServerName, ","),
-		VerifyCommonName: sub.VerifyCommonName,
-		HTTPPath:         sub.HTTPPath,
-		HTTPMethod:       sub.HTTPMethod,
-		HTTPVerifyHosts:  strings.Join(sub.HTTPVerifyHosts, ","),
-		ValidStatusCode:  sub.ValidStatusCode,
-		InputFile:        sub.InputFile,
-		OutputFile:       outputPath,
-		Level:            sub.Level,
-		ConfigJSON:       configJSON,
-		StartedAt:        sum.StartedAt,
-		FinishedAt:       sum.FinishedAt,
-		ScannedCount:     sum.ScannedCount,
-		FoundCount:       foundCount,
-	}
-
-	return &Parsed{Scan: scan, Results: results, Checks: sum.Checks}, nil
+	return &Parsed{Results: results, Checks: sum.Checks}, nil
 }
 
 // SanitizeNetErr strips the local (source) address from Go net error strings

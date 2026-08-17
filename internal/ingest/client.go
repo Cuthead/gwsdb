@@ -13,8 +13,8 @@ import (
 
 // FetchKnownGood asks the Cloudflare-hosted API for every IP in the tracked
 // pool, so FilterChecks can gate this run's failures without a DB round
-// trip per distinct failing IP. Bearer-authed with the same token
-// scan_and_ingest.sh/recheck -worker use for /ingest and /recheck/*.
+// trip per distinct failing IP. Bearer-authed with the same token the
+// scanner uses for /ingest.
 func FetchKnownGood(ctx context.Context, apiBase, token string) (map[string]bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/ingest", nil)
 	if err != nil {
@@ -47,64 +47,23 @@ func FetchKnownGood(ctx context.Context, apiBase, token string) (map[string]bool
 	return knownGood, nil
 }
 
-// submitPayload is the POST /ingest body -- scan/checks marshal with their
-// native store.Scan/store.IPCheck field names (PascalCase, no json tags),
-// which functions/ingest.ts consumes directly. Fields it doesn't need
-// (Scan.ID, Scan.LogText, IPCheck.Recheck/ConfigScanID) are harmlessly
-// ignored on the TS side.
+// submitPayload is the POST /ingest body -- just checks (no Scan row; the
+// scans table is gone, checks are written directly to ip_checks).
 type submitPayload struct {
-	Scan   *store.Scan     `json:"scan"`
 	Checks []store.IPCheck `json:"checks"`
 }
 
-// Submit posts one already-parsed-and-filtered scan (see Parse, FilterChecks)
-// to the Cloudflare-hosted API, returning the new scan's id.
-func Submit(ctx context.Context, apiBase, token string, scan *store.Scan, checks []store.IPCheck) (int64, error) {
-	body, err := json.Marshal(submitPayload{Scan: scan, Checks: checks})
+// Submit posts already-parsed-and-filtered checks to the Cloudflare-hosted
+// API (functions/ingest.ts), which writes them to ip_checks via
+// insertCheckRows.
+func Submit(ctx context.Context, apiBase, token string, checks []store.IPCheck) error {
+	body, err := json.Marshal(submitPayload{Checks: checks})
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/ingest", bytes.NewReader(body))
 	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("POST /ingest: %s: %s", resp.Status, respBody)
-	}
-
-	var out struct {
-		ScanID int64 `json:"scanId"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return 0, fmt.Errorf("decode /ingest response: %w", err)
-	}
-	return out.ScanID, nil
-}
-
-// DeleteScan asks the Cloudflare-hosted API to remove a scan and its owned
-// ip_checks rows (see functions/delete-scan.ts) -- "gwsdb delete-scan" (ops
-// CLI) uses this instead of a local sqlite file, same as ingest/recheck.
-func DeleteScan(ctx context.Context, apiBase, token string, id int64) error {
-	body, err := json.Marshal(struct {
-		ID int64 `json:"id"`
-	}{ID: id})
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/delete-scan", bytes.NewReader(body))
-	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -118,7 +77,7 @@ func DeleteScan(ctx context.Context, apiBase, token string, id int64) error {
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("POST /delete-scan: %s: %s", resp.Status, respBody)
+		return fmt.Errorf("POST /ingest: %s: %s", resp.Status, respBody)
 	}
 	return nil
 }

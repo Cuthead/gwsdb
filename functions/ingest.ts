@@ -8,8 +8,7 @@
 import { checkBearerAuth } from "../src/auth";
 import { runPTRRefresh } from "../src/ptrRefresh";
 import { syncPublish } from "../src/publish";
-import { allKnownGoodIPs, type CheckRow, insertCheckRows, insertScan, pruneCheckHistory, refreshPoolForIPs } from "../src/store";
-import type { Scan } from "../src/types";
+import { allKnownGoodIPs, type CheckRow, insertCheckRows, pruneCheckHistory, refreshPoolForIPs } from "../src/store";
 import type { Env } from "../src/env";
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -21,28 +20,10 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	return Response.json({ ips });
 };
 
-// WireScan/WireCheck mirror internal/store's Go Scan/IPCheck structs
-// (PascalCase, no json tags -- Go's encoding/json marshals field names
-// as-is), so the China box can send its native types straight across
-// without a parallel wire-format struct on the Go side.
-interface WireScan {
-	ScanMode: string;
-	ServerName: string;
-	VerifyCommonName: string;
-	HTTPPath: string;
-	HTTPMethod: string;
-	HTTPVerifyHosts: string;
-	ValidStatusCode: number;
-	InputFile: string;
-	OutputFile: string;
-	Level: number;
-	ConfigJSON: string;
-	StartedAt: string | null;
-	FinishedAt: string | null;
-	ScannedCount: number;
-	FoundCount: number;
-}
-
+// WireCheck mirrors internal/store's Go IPCheck struct (PascalCase, no json
+// tags -- Go's encoding/json marshals field names as-is), so the China box
+// can send its native type straight across without a parallel wire-format
+// struct on the Go side.
 interface WireCheck {
 	IP: string;
 	OK: boolean;
@@ -50,10 +31,10 @@ interface WireCheck {
 	Reason: string;
 	Detail: string;
 	CheckedAt: string;
+	ScanMode: string;
 }
 
 interface IngestBody {
-	scan: WireScan;
 	checks: WireCheck[];
 }
 
@@ -78,38 +59,18 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	} catch (err) {
 		return new Response(`invalid JSON body: ${(err as Error).message}`, { status: 400 });
 	}
-	if (!body.scan || !Array.isArray(body.checks)) {
-		return new Response("body must include 'scan' and 'checks'", { status: 400 });
+	if (!Array.isArray(body.checks)) {
+		return new Response("body must include 'checks'", { status: 400 });
 	}
 
-	const scan: Scan = {
-		ScanMode: body.scan.ScanMode,
-		ServerName: body.scan.ServerName,
-		VerifyCommonName: body.scan.VerifyCommonName,
-		HTTPPath: body.scan.HTTPPath,
-		HTTPMethod: body.scan.HTTPMethod,
-		HTTPVerifyHosts: body.scan.HTTPVerifyHosts,
-		ValidStatusCode: body.scan.ValidStatusCode,
-		InputFile: body.scan.InputFile,
-		OutputFile: body.scan.OutputFile,
-		Level: body.scan.Level,
-		ConfigJSON: body.scan.ConfigJSON,
-		StartedAt: body.scan.StartedAt ? new Date(body.scan.StartedAt) : null,
-		FinishedAt: body.scan.FinishedAt ? new Date(body.scan.FinishedAt) : null,
-		ScannedCount: body.scan.ScannedCount,
-		FoundCount: body.scan.FoundCount,
-	};
-	const scanId = await insertScan(env.DB, scan);
-
 	const rows: CheckRow[] = body.checks.map((c) => ({
-		scanId,
 		ip: c.IP,
 		ok: c.OK,
 		rttMs: c.OK ? c.RTTMs || null : null,
 		reason: c.OK ? null : c.Reason || null,
 		detail: c.OK ? null : c.Detail || null,
 		checkedAt: new Date(c.CheckedAt),
-		scanMode: scan.ScanMode,
+		scanMode: c.ScanMode,
 	}));
 	await insertCheckRows(env.DB, rows);
 
@@ -134,5 +95,5 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	// waitUntil/non-fatal treatment as publish above.
 	waitUntil(runPTRRefresh(env.DB).catch((err) => console.error("ingest: ptr-refresh:", err)));
 
-	return Response.json({ scanId, scannedCount: scan.ScannedCount, foundCount: scan.FoundCount });
+	return Response.json({ checks: rows.length });
 }

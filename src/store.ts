@@ -14,8 +14,6 @@ import type {
 	IPCheckHistoryRow,
 	IPStatus,
 	PTRCacheEntry,
-	Scan,
-	ScanRow,
 	Stats,
 } from "./types";
 
@@ -32,39 +30,7 @@ function toSQLiteDateTime(d: Date | null): string | null {
 	return d ? d.toISOString() : null;
 }
 
-export async function insertScan(db: D1Database, scan: Scan): Promise<number> {
-	const res = await db
-		.prepare(
-			`INSERT INTO scans (
-				scan_mode, server_name, verify_common_name, http_path, http_method, http_verify_hosts,
-				valid_status_code, input_file, output_file, level, config_json, log_text,
-				started_at, finished_at, scanned_count, found_count
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.bind(
-			scan.ScanMode,
-			scan.ServerName,
-			scan.VerifyCommonName,
-			scan.HTTPPath,
-			scan.HTTPMethod,
-			scan.HTTPVerifyHosts,
-			scan.ValidStatusCode,
-			scan.InputFile,
-			scan.OutputFile,
-			scan.Level,
-			scan.ConfigJSON,
-			null, // log_text: the raw log is uploaded/decoded on the fly, never held whole, so it isn't persisted verbatim
-			toSQLiteDateTime(scan.StartedAt),
-			toSQLiteDateTime(scan.FinishedAt),
-			scan.ScannedCount,
-			scan.FoundCount,
-		)
-		.run();
-	return res.meta.last_row_id;
-}
-
 export interface CheckRow {
-	scanId: number;
 	ip: string;
 	ok: boolean;
 	rttMs: number | null;
@@ -74,7 +40,7 @@ export interface CheckRow {
 	scanMode: string;
 }
 
-const insertCheckSQL = `INSERT INTO ip_checks (scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+const insertCheckSQL = `INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode) VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
 // insertCheckRows writes rows in chunks of MAX_BATCH, each chunk atomic via
 // db.batch() but not atomic across chunks -- see the module comment.
@@ -86,7 +52,6 @@ export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise
 				db
 					.prepare(insertCheckSQL)
 					.bind(
-						row.scanId,
 						row.ip,
 						row.ok ? 1 : 0,
 						row.rttMs,
@@ -126,10 +91,10 @@ export async function refreshPoolForIPs(db: D1Database, ips: string[]): Promise<
 		const placeholders = chunk.map(() => "?").join(",");
 		await db
 			.prepare(
-				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
+				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
 				WITH ranked AS (
 					SELECT
-						ip, ok, rtt_ms, scan_id, scan_mode, checked_at,
+						ip, ok, rtt_ms, scan_mode, checked_at,
 						ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn_any,
 						ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at DESC, id DESC) AS rn_ok_desc,
 						ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at ASC, id ASC) AS rn_ok_asc
@@ -152,7 +117,6 @@ export async function refreshPoolForIPs(db: D1Database, ips: string[]): Promise<
 					last_ok.scan_mode    AS scan_mode,
 					first_ok.checked_at  AS first_seen,
 					last_ok.checked_at   AS last_seen,
-					last_ok.scan_id      AS last_scan_id,
 					last_ok.rtt_ms       AS last_rtt_ms,
 					counts.times_seen    AS times_seen,
 					last_any.checked_at  AS last_checked_at,
@@ -166,45 +130,12 @@ export async function refreshPoolForIPs(db: D1Database, ips: string[]): Promise<
 					scan_mode = excluded.scan_mode,
 					first_seen = excluded.first_seen,
 					last_seen = excluded.last_seen,
-					last_scan_id = excluded.last_scan_id,
 					last_rtt_ms = excluded.last_rtt_ms,
 					times_seen = excluded.times_seen,
 					last_checked_at = excluded.last_checked_at,
 					last_check_ok = excluded.last_check_ok`,
 			)
 			.bind(...chunk, ...chunk)
-			.run();
-	}
-}
-
-// deleteScan removes a scan and its owned ip_checks rows -- ports
-// internal/store/queries.go's DeleteScan. That Go version could just delete
-// and walk away: ip_pool was a live view/derivation there, so a deleted IP's
-// aggregate fell out "on its own." ip_pool is now a maintained table, so
-// this has to redo that bookkeeping by hand: affected IPs that still have
-// ok=1 history elsewhere get recomputed via refreshPoolForIPs (upsert-only);
-// IPs left with none get explicitly deleted from ip_pool, since
-// refreshPoolForIPs would otherwise leave their now-stale row untouched.
-export async function deleteScan(db: D1Database, id: number): Promise<void> {
-	const { results } = await db.prepare(`SELECT DISTINCT ip FROM ip_checks WHERE scan_id = ?`).bind(id).all<{ ip: string }>();
-	const affectedIPs = results.map((r) => r.ip);
-
-	await db.batch([
-		db.prepare(`DELETE FROM ip_checks WHERE scan_id = ?`).bind(id),
-		// Recheck rows referencing this scan's config survive; they just lose
-		// their probe-request context.
-		db.prepare(`UPDATE ip_checks SET config_scan_id = NULL WHERE config_scan_id = ?`).bind(id),
-		db.prepare(`DELETE FROM scans WHERE id = ?`).bind(id),
-	]);
-
-	if (affectedIPs.length === 0) return;
-	await refreshPoolForIPs(db, affectedIPs);
-	for (let i = 0; i < affectedIPs.length; i += POOL_REFRESH_CHUNK) {
-		const chunk = affectedIPs.slice(i, i + POOL_REFRESH_CHUNK);
-		const placeholders = chunk.map(() => "?").join(",");
-		await db
-			.prepare(`DELETE FROM ip_pool WHERE ip IN (${placeholders}) AND NOT EXISTS (SELECT 1 FROM ip_checks WHERE ip = ip_pool.ip AND ok = 1)`)
-			.bind(...chunk)
 			.run();
 	}
 }
@@ -323,7 +254,6 @@ interface IPPoolRow {
 	scan_mode: string | null;
 	first_seen: string | null;
 	last_seen: string | null;
-	last_scan_id: number | null;
 	last_rtt_ms: number | null;
 	times_seen: number;
 	last_checked_at: string | null;
@@ -338,7 +268,6 @@ function rowToIPStatus(row: IPPoolRow): IPStatus {
 		scanMode: row.scan_mode ?? "",
 		firstSeen: fromSQLiteDateTime(row.first_seen),
 		lastSeen: fromSQLiteDateTime(row.last_seen),
-		lastScanId: row.last_scan_id,
 		lastRttMs: row.last_rtt_ms ?? 0,
 		timesSeen: row.times_seen,
 		lastCheckedAt: fromSQLiteDateTime(row.last_checked_at),
@@ -352,7 +281,7 @@ function rowToIPStatus(row: IPPoolRow): IPStatus {
 export async function ipStatusFor(db: D1Database, ip: string): Promise<IPStatus | null> {
 	const row = await db
 		.prepare(
-			`SELECT ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok
+			`SELECT ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok
 			FROM ip_pool WHERE ip = ?`,
 		)
 		.bind(ip)
@@ -360,19 +289,21 @@ export async function ipStatusFor(db: D1Database, ip: string): Promise<IPStatus 
 	return row ? rowToIPStatus(row) : null;
 }
 
-// overview returns aggregate stats for the home page.
+// overview returns aggregate stats for the home page — now check-based
+// (the scans table is gone; Total Checks / Last Check come from ip_checks).
 export async function overview(db: D1Database): Promise<Stats> {
-	const [poolCount, scanCount, lastScan] = await Promise.all([
+	const [poolCount, checkCount, lastCheck] = await Promise.all([
 		db.prepare(`SELECT COUNT(*) AS n FROM ip_pool`).first<{ n: number }>(),
-		db.prepare(`SELECT COUNT(*) AS n FROM scans`).first<{ n: number }>(),
+		db.prepare(`SELECT COUNT(*) AS n FROM ip_checks`).first<{ n: number }>(),
 		db
-			.prepare(`SELECT started_at, created_at FROM scans ORDER BY started_at DESC, created_at DESC LIMIT 1`)
-			.first<{ started_at: string | null; created_at: string }>(),
+			.prepare(`SELECT checked_at, scan_mode FROM ip_checks ORDER BY checked_at DESC, id DESC LIMIT 1`)
+			.first<{ checked_at: string | null; scan_mode: string | null }>(),
 	]);
 	return {
 		totalKnownIPs: poolCount?.n ?? 0,
-		totalScans: scanCount?.n ?? 0,
-		lastScanAt: lastScan ? fromSQLiteDateTime(lastScan.started_at ?? lastScan.created_at) : null,
+		totalChecks: checkCount?.n ?? 0,
+		lastCheckAt: lastCheck ? fromSQLiteDateTime(lastCheck.checked_at) : null,
+		scanMode: lastCheck?.scan_mode ?? "",
 	};
 }
 
@@ -382,15 +313,6 @@ export async function overview(db: D1Database): Promise<Stats> {
 // refetching, instead of recomputing the view on every visit.
 export async function poolVersion(db: D1Database): Promise<number> {
 	const row = await db.prepare(`SELECT COALESCE(MAX(id), 0) AS v FROM ip_checks`).first<{ v: number }>();
-	return row?.v ?? 0;
-}
-
-// scansVersion returns scans' highest row id, a cheap (rowid-indexed) signal
-// that changes whenever a scan run is imported. scans rows are insert-only
-// (never updated in place -- see ingest.ts), so this is a valid cache key for
-// the /scans page's edge cache, mirroring poolVersion above.
-export async function scansVersion(db: D1Database): Promise<number> {
-	const row = await db.prepare(`SELECT COALESCE(MAX(id), 0) AS v FROM scans`).first<{ v: number }>();
 	return row?.v ?? 0;
 }
 
@@ -425,7 +347,7 @@ export async function listKnownIPs(db: D1Database, opts: ListKnownIPsOptions): P
 	const col = listKnownIPsSortColumns[opts.sortBy ?? ""] ?? "last_seen";
 	const dir = opts.sortDesc ? "DESC" : "ASC";
 
-	let q = `SELECT ip_pool.ip, is_ipv6, scan_mode, first_seen, last_seen, last_scan_id, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '') AS ptr_hostname
+	let q = `SELECT ip_pool.ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '') AS ptr_hostname
 		FROM ip_pool
 		LEFT JOIN ptr_cache ON ptr_cache.ip = ip_pool.ip`;
 
@@ -450,89 +372,9 @@ export async function listKnownIPs(db: D1Database, opts: ListKnownIPsOptions): P
 	return results.map(rowToIPStatus);
 }
 
-interface ScanQueryRow {
-	id: number;
-	scan_mode: string;
-	server_name: string | null;
-	verify_common_name: string | null;
-	http_path: string | null;
-	http_method: string | null;
-	http_verify_hosts: string | null;
-	valid_status_code: number | null;
-	input_file: string | null;
-	output_file: string | null;
-	level: number | null;
-	config_json: string | null;
-	started_at: string | null;
-	finished_at: string | null;
-	scanned_count: number | null;
-	found_count: number | null;
-}
-
-function rowToScan(row: ScanQueryRow): ScanRow {
-	return {
-		id: row.id,
-		ScanMode: row.scan_mode,
-		ServerName: row.server_name ?? "",
-		VerifyCommonName: row.verify_common_name ?? "",
-		HTTPPath: row.http_path ?? "",
-		HTTPMethod: row.http_method ?? "",
-		HTTPVerifyHosts: row.http_verify_hosts ?? "",
-		ValidStatusCode: row.valid_status_code ?? 0,
-		InputFile: row.input_file ?? "",
-		OutputFile: row.output_file ?? "",
-		Level: row.level ?? 0,
-		ConfigJSON: row.config_json ?? "",
-		StartedAt: fromSQLiteDateTime(row.started_at),
-		FinishedAt: fromSQLiteDateTime(row.finished_at),
-		ScannedCount: row.scanned_count ?? 0,
-		FoundCount: row.found_count ?? 0,
-	};
-}
-
-// latestScan returns the most recent scan, optionally restricted to
-// scanMode, or null if none exist yet.
-export async function latestScan(db: D1Database, scanMode: string): Promise<ScanRow | null> {
-	const q = scanMode
-		? `SELECT id, scan_mode, started_at, finished_at, scanned_count, found_count FROM scans WHERE scan_mode = ? ORDER BY started_at DESC, id DESC LIMIT 1`
-		: `SELECT id, scan_mode, started_at, finished_at, scanned_count, found_count FROM scans ORDER BY started_at DESC, id DESC LIMIT 1`;
-	const stmt = scanMode ? db.prepare(q).bind(scanMode) : db.prepare(q);
-	const row = await stmt.first<Pick<ScanQueryRow, "id" | "scan_mode" | "started_at" | "finished_at" | "scanned_count" | "found_count">>();
-	if (!row) return null;
-	return rowToScan({
-		...row,
-		server_name: null,
-		verify_common_name: null,
-		http_path: null,
-		http_method: null,
-		http_verify_hosts: null,
-		valid_status_code: null,
-		input_file: null,
-		output_file: null,
-		level: null,
-		config_json: null,
-	});
-}
-
-// listScans returns full scan records (including config fields), newest
-// first, up to limit rows.
-export async function listScans(db: D1Database, limit: number): Promise<ScanRow[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT id, scan_mode, server_name, verify_common_name, http_path, http_method, http_verify_hosts,
-				valid_status_code, input_file, output_file, level, config_json,
-				started_at, finished_at, scanned_count, found_count
-			FROM scans ORDER BY started_at DESC, id DESC LIMIT ?`,
-		)
-		.bind(limit)
-		.all<ScanQueryRow>();
-	return results.map(rowToScan);
-}
-
-// --- PTR / host / ASN caches, IP history, community reports, recheck
-// queue -- ports of the matching functions in internal/store/queries.go,
-// used by functions/query.ts, functions/report.ts, and (PTR only)
-// ptrRefresh.ts. ---
+// --- PTR / host / ASN caches, IP history -- ports of the matching
+// functions in internal/store/queries.go, used by functions/query.ts and
+// (PTR only) ptrRefresh.ts. ---
 
 interface PTRCacheRow {
 	ip: string;
@@ -781,30 +623,17 @@ interface IPHistoryRow {
 	reason: string | null;
 	detail: string | null;
 	checked_at: string | null;
-	scan_id: number | null;
-	config_scan_id: number | null;
 	scan_mode: string | null;
-	server_name: string | null;
-	http_path: string | null;
-	http_method: string | null;
-	http_verify_hosts: string | null;
-	verify_common_name: string | null;
-	valid_status_code: number | null;
 }
 
-// ipHistory returns ip's most recent pass/fail checks, newest first, each
-// joined against its owning (or, for rechecks, config) scan for the
-// request-context columns.
+// ipHistory returns ip's most recent pass/fail checks, newest first.
 export async function ipHistory(db: D1Database, ip: string, limit: number): Promise<IPCheckHistoryRow[]> {
 	const { results } = await db
 		.prepare(
-			`SELECT
-				c.ip, c.ok, c.rtt_ms, c.reason, c.detail, c.checked_at, c.scan_id, c.config_scan_id,
-				s.scan_mode, s.server_name, s.http_path, s.http_method, s.http_verify_hosts, s.verify_common_name, s.valid_status_code
-			FROM ip_checks c
-			LEFT JOIN scans s ON s.id = COALESCE(c.scan_id, c.config_scan_id)
-			WHERE c.ip = ?
-			ORDER BY c.checked_at DESC LIMIT ?`,
+			`SELECT ip, ok, rtt_ms, reason, detail, checked_at, scan_mode
+			FROM ip_checks
+			WHERE ip = ?
+			ORDER BY checked_at DESC LIMIT ?`,
 		)
 		.bind(ip, limit)
 		.all<IPHistoryRow>();
@@ -815,14 +644,7 @@ export async function ipHistory(db: D1Database, ip: string, limit: number): Prom
 		reason: row.reason ?? "",
 		detail: row.detail ?? "",
 		checkedAt: fromSQLiteDateTime(row.checked_at),
-		recheck: row.scan_id === null,
 		scanMode: row.scan_mode ?? "",
-		serverName: row.server_name ?? "",
-		httpPath: row.http_path ?? "",
-		httpMethod: row.http_method ?? "",
-		httpVerifyHosts: row.http_verify_hosts ?? "",
-		verifyCommonName: row.verify_common_name ?? "",
-		validStatusCode: row.valid_status_code ?? 0,
 	}));
 }
 
@@ -855,17 +677,6 @@ export async function checkRateLimit(db: D1Database, clientIP: string, limit: nu
 	return true;
 }
 
-// latestScanConfig returns the id and config_json of the most recent scan
-// for scanMode, or null if none exists yet.
-export async function latestScanConfig(db: D1Database, scanMode: string): Promise<{ scanId: number; configJSON: string } | null> {
-	const row = await db
-		.prepare(`SELECT id, config_json FROM scans WHERE scan_mode = ? ORDER BY started_at DESC, id DESC LIMIT 1`)
-		.bind(scanMode)
-		.first<{ id: number; config_json: string | null }>();
-	if (!row || !row.config_json) return null;
-	return { scanId: row.id, configJSON: row.config_json };
-}
-
 export interface RecheckResult {
 	ip: string;
 	ok: boolean;
@@ -874,24 +685,22 @@ export interface RecheckResult {
 	detail: string | null;
 	checkedAt: Date;
 	scanMode: string;
-	configScanId: number | null;
 }
 
-// saveRecheckResult records the outcome of a single report-triggered recheck
-// probe: an ip_checks row with no owning scan (scan_id NULL, config_scan_id
-// pointing at the scan whose config the probe used) -- ports
+// saveRecheckResult records the outcome of a single ad-hoc or on-demand
+// probe: an ip_checks row (no owning scan — the scans table is gone). Ports
 // internal/store/queries.go's SaveRecheck exactly, including its asymmetric
 // branches. A failure is only recorded if the IP has some prior ok=1
-// history (isKnownGood) -- probing arbitrary reported IPs can't grow
-// permanent state for IPs nobody has ever seen reachable.
+// history (isKnownGood) -- probing arbitrary IPs can't grow permanent state
+// for IPs nobody has ever seen reachable.
 export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promise<void> {
 	if (r.ok) {
 		await db
 			.prepare(
-				`INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
-				VALUES (NULL, ?, ?, 1, ?, NULL, NULL, ?, ?)`,
+				`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+				VALUES (?, 1, ?, NULL, NULL, ?, ?)`,
 			)
-			.bind(r.configScanId, r.ip, r.rttMs, toSQLiteDateTime(r.checkedAt), r.scanMode)
+			.bind(r.ip, r.rttMs, toSQLiteDateTime(r.checkedAt), r.scanMode)
 			.run();
 		return;
 	}
@@ -900,9 +709,9 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 
 	await db
 		.prepare(
-			`INSERT INTO ip_checks (scan_id, config_scan_id, ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
-			VALUES (NULL, ?, ?, 0, NULL, ?, ?, ?, ?)`,
+			`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+			VALUES (?, 0, NULL, ?, ?, ?, ?)`,
 		)
-		.bind(r.configScanId, r.ip, r.reason, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
+		.bind(r.ip, r.reason, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 		.run();
 }

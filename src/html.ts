@@ -77,8 +77,8 @@ function footerHTML(build: BuildInfo): string {
 // report_confirm.tmpl is Chinese (<html lang="zh">, "首页/查询/扫描记录") while
 // every other page is English -- documented as intentional per-page i18n in
 // AGENTS.md, not a bug to normalize away.
-const NAV_EN = { home: "Home", query: "Query", scans: "Scans" };
-const NAV_ZH = { home: "首页", query: "查询", scans: "扫描记录" };
+const NAV_EN = { home: "Home", query: "Query" };
+const NAV_ZH = { home: "首页", query: "查询" };
 
 // pageShell wraps body in the same table-based chrome (title bar, nav,
 // footer) shared by home.tmpl/scans.tmpl/query.tmpl. extraHead is injected
@@ -115,8 +115,7 @@ ${opts.extraHead ?? ""}
 <td>
 <font face="Arial,Helvetica,sans-serif" size="-1">
 <a href="/">${nav.home}</a> |
-<a href="/query">${nav.query}</a> |
-<a href="/scans">${nav.scans}</a>
+<a href="/query">${nav.query}</a>
 </font>
 </td>
 </tr>

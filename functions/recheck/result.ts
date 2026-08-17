@@ -10,14 +10,12 @@ import { pruneCheckHistory, refreshPoolForIPs, saveRecheckResult } from "../../s
 import type { Env } from "../../src/env";
 
 interface ResultBody {
-	id: number;
 	ip: string;
 	ok: boolean;
 	rttMs: number | null;
 	reason: string | null;
 	detail: string | null;
 	scanMode: string;
-	configScanId: number | null;
 	checkedAt: string;
 }
 
@@ -33,7 +31,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	} catch {
 		return new Response("invalid JSON body", { status: 400 });
 	}
-	if (!body.ip || typeof body.id !== "number" || typeof body.ok !== "boolean" || !body.checkedAt) {
+	if (!body.ip || typeof body.ok !== "boolean" || !body.checkedAt) {
 		return new Response("missing required fields", { status: 400 });
 	}
 
@@ -50,7 +48,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		detail: body.detail ?? null,
 		checkedAt,
 		scanMode: body.scanMode,
-		configScanId: body.configScanId || null, // 0 means "no D1 scan config" (ad-hoc probes use a local config file, not a stored scan) -- never a real scan id, which starts at 1
 	});
 	await refreshPoolForIPs(env.DB, [body.ip]);
 	await pruneCheckHistory(env.DB, [body.ip]);

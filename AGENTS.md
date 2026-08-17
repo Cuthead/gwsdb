@@ -9,8 +9,8 @@ gwsdb ("GWS Database") tracks which Google Web Server IPs are reachable from Chi
 "GWS" is Google's own server identifier (the `Server: gws` response header), not "Google Web Search" — these are not crawler/spider IPs. China's GFW blocks most Google IPs; this project exists to find and track the ones still reachable, so don't describe the tracked IPs as a "search crawler" or "web search crawler" anywhere (UI copy, meta tags, comments).
 
 The stack is split across two runtimes:
-- **`cmd/gwsdb`** (Go) — runs only the probe-side pieces that must stay on real China-based network infrastructure: the always-on scanner (`gwsdb scan -worker`, which also serves on-demand probes via a VPC proxy Worker), ad-hoc `gwsdb recheck -ip`, and `gwsdb ingest`/`delete-scan` for manual ops. It holds no local database; every subcommand talks to the Cloudflare-hosted API over HTTP.
-- **`functions/` + `src/`** (TypeScript, Cloudflare Pages Functions + D1) — everything else: web UI, `/api/*`, ingest/delete-scan/recheck endpoints, PTR/ASN caching, on-demand probes. This is the full replacement for what used to be a Go `net/http` server (`internal/web`) backed by local SQLite (`internal/store`'s DB layer) — both are gone; see git history around the Cloudflare migration if you need the old implementation for reference.
+- **`cmd/gwsdb`** (Go) — runs only the probe-side pieces that must stay on real China-based network infrastructure: the always-on scanner (`gwsdb scan -worker`, which also serves on-demand probes via a VPC proxy Worker), ad-hoc `gwsdb recheck -ip`, and `gwsdb ingest` for manual ops. It holds no local database; every subcommand talks to the Cloudflare-hosted API over HTTP.
+- **`functions/` + `src/`** (TypeScript, Cloudflare Pages Functions + D1) — everything else: web UI, `/api/*`, ingest/recheck endpoints, PTR/ASN caching, on-demand probes. This is the full replacement for what used to be a Go `net/http` server (`internal/web`) backed by local SQLite (`internal/store`'s DB layer) — both are gone; see git history around the Cloudflare migration if you need the old implementation for reference.
 
 ## Commands
 
@@ -31,16 +31,15 @@ go vet ./...
 
 `internal/ingest` has a test suite (`internal/ingest/ingest_test.go`); nothing else in the Go tree does — don't assume `go test ./...` coverage exists elsewhere.
 
-Go CLI has four subcommands (see `cmd/gwsdb/main.go`), all of which submit to the Cloudflare-hosted API via `$GWSDB_API`/`$GWSDB_INGEST_TOKEN`:
+Go CLI has three subcommands (see `cmd/gwsdb/main.go`), all of which submit to the Cloudflare-hosted API via `$GWSDB_API`/`$GWSDB_INGEST_TOKEN`:
 ```
 gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
                   [-workers 10] [-interval 1s] [-timeout 10s] [-flush 10m]
-                  [-probe-addr 127.0.0.1:8787] [-probe-token SECRET]
+                  [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
                                 (always-on: probes random IPs from CIDR range files, flushes to $GWSDB_API
                                  every -flush, serves on-demand probes via VPC proxy Worker)
-gwsdb ingest      -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH] [-log-only]
-gwsdb delete-scan -id N
-gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc single probe)
+gwsdb ingest      -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
+gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
 ```
 
 `GWSDB_API`/`GWSDB_INGEST_TOKEN` can come from the environment or a `KEY=VALUE` file (`~/.config/gwsdb/env` by default, or `$GWSDB_ENV_FILE`); chmod 600 it, it holds a bearer token.
@@ -49,12 +48,11 @@ gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc single pr
 
 ## Architecture
 
-**Data flow** (always-on scanner): `gwsdb scan -worker` runs N probe goroutines each looping `sleep(interval) → pick a random IP from the CIDR range files → recheck.CheckSNI probe → record` (mirroring XX-Net's IpManager shape). A flush ticker periodically drains the accumulated checks: `FetchKnownGood` → `FilterChecks` → `Submit` POSTs one `store.Scan` + `[]store.IPCheck` per flush window to `/ingest` (`functions/ingest.ts`) → D1 via `src/store.ts`. One flush window = one `scans` row. The probe config comes from gscan_quic's `config.user.json` (SNI block), so the scanner probes with the same ServerName/HTTPPath/timeout settings a manual scan would.
+**Data flow** (always-on scanner): `gwsdb scan -worker` runs N probe goroutines each looping `sleep(interval) → pick a random IP from the CIDR range files → recheck.CheckSNI probe → record` (mirroring XX-Net's IpManager shape). A flush ticker periodically drains the accumulated checks: `FetchKnownGood` → `FilterChecks` → `Submit` POSTs `[]store.IPCheck` to `/ingest` (`functions/ingest.ts`), which writes them directly to `ip_checks` via `src/store.ts` (no `scans` row — that table is gone). The probe config comes from gscan_quic's `config.user.json` (SNI block), so the scanner probes with the same ServerName/HTTPPath/timeout settings a manual scan would.
 
 **`internal/store`** (Go) now holds only data-shape types (`Scan`, `ScanResult`, `IPCheck`, etc. in `models.go`) shared between the ingest CLI and its JSON submission to Cloudflare — no SQL, no `*sql.DB`. The real database logic lives in `src/store.ts` against D1.
 
 **D1 schema** (`migrations/*.sql`, applied via `wrangler d1 migrations apply`). Key tables:
-- `scans` — one row per ingest run (config snapshot + counts).
 - `ip_pool` — a maintained table (not a live view — SQLite's `db.SetMaxOpenConns(1)` + window-function view trick from the old Go/SQLite version doesn't carry over to D1's HTTP-based access model) kept in sync by `refreshPoolForIPs`/`deleteScan` in `src/store.ts`. This is what the home page lists.
 - `ip_checks` — full pass/fail timeline, source of truth `ip_pool` is derived from. Successes come from the scan's output-file results (plus log-only successes the output file missed); failures are kept *only* for IPs that already have at least one recorded success. Each row carries `scan_mode`.
 - `ptr_cache` / `asn_cache` — TTL'd caches for reverse-DNS and Team Cymru ASN lookups, to avoid re-querying on every page view.
@@ -66,7 +64,7 @@ gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc single pr
 
 **`internal/scan`** (Go) is the always-on scanner package (`gwsdb scan -worker`): `IPRangeSource` loads CIDR range files (gscan_quic's `iprange/*.txt` format, v4/v6 mixed) and picks a random address per probe; `Scanner` runs N worker goroutines + a flush ticker + a network monitor (HEADs bing.com, sleeps workers when the network looks down — mirrors XX-Net's check_local_network); `probeserver.go` serves `POST /probe` on localhost, reachable from the `gwsdb-probe` Worker (`worker/`) over Cloudflare Mesh so the query page's on-demand probe button can synchronously call it (`functions/check.ts` → service binding → `worker/` → VPC → `recheck.CheckSNI` → response, ~1-3s round trip). The probe server authenticates with `X-Probe-Token` (crypto/subtle.ConstantTimeCompare against `-probe-token`). No queue, no delay — on-demand probes are synchronous.
 
-**`functions/`** is the Cloudflare Pages Functions app (framework-free, one file per route). `functions/_middleware.ts` applies security headers (CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`) to every response, including static assets under `public/static/`. Routes: `functions/index.ts` (home page shell — the known-IP list itself is fetched client-side, see below), `functions/api/pool.ts` (JSON: full known-IP list + summary stats), `functions/api/pool/version.ts` (JSON: cheap `{version}` signal, `src/store.ts`'s `poolVersion` — `MAX(id) FROM ip_checks`), `functions/query.ts` (single IP lookup + history + on-demand probe button), `functions/check.ts` (POST — calls the gwsdb-probe Worker via service binding, which VPC-fetches the China box's probe server over Cloudflare Mesh, writes the result, rate-limited per client IP), `functions/scans.ts` (scan history), `functions/ingest.ts` / `functions/delete-scan.ts` (bearer-token-gated, called by the Go CLI), `functions/recheck/result.ts` / `functions/recheck/latest-scan-id.ts` (ad-hoc recheck -ip submission, bearer-token-gated).
+**`functions/`** is the Cloudflare Pages Functions app (framework-free, one file per route). `functions/_middleware.ts` applies security headers (CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`) to every response, including static assets under `public/static/`. Routes: `functions/index.ts` (home page shell — the known-IP list itself is fetched client-side, see below), `functions/api/pool.ts` (JSON: full known-IP list + summary stats), `functions/api/pool/version.ts` (JSON: cheap `{version}` signal, `src/store.ts`'s `poolVersion` — `MAX(id) FROM ip_checks`), `functions/query.ts` (single IP lookup + history + on-demand probe button), `functions/check.ts` (POST — calls the gwsdb-probe Worker via service binding, which VPC-fetches the China box's probe server over Cloudflare Mesh, writes the result, rate-limited per client IP), `functions/ingest.ts` (bearer-token-gated, called by the Go CLI), `functions/recheck/result.ts` (ad-hoc recheck -ip submission, bearer-token-gated).
 
 **`worker/`** is a standalone Cloudflare Worker (`gwsdb-probe`) that exists only because Pages Functions can't bind `vpc_networks` (Pages rejects the field). It holds the VPC Network binding (`cf1:network`, Cloudflare Mesh) and proxies probe requests from `functions/check.ts` to the China box's internal probe server over the Mesh — no public hostname, no `workers.dev` URL (`workers_dev: false`, reachable only via the Pages project's `PROBE_PROXY` service binding). `worker/src/index.ts` authenticates with `X-Probe-Token` (same secret as the probe server) and `env.PROBE_NETWORK.fetch()`es the probe server's private IP:port. Deploy separately: `cd worker && npx wrangler deploy`.
 

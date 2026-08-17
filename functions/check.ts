@@ -8,7 +8,7 @@
 import { isGoogleASN, lookupGoogleASN } from "../src/dnsCache";
 import { isIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
-import { checkRateLimit, latestScanConfig, pruneCheckHistory, refreshPoolForIPs, saveRecheckResult } from "../src/store";
+import { checkRateLimit, pruneCheckHistory, refreshPoolForIPs, saveRecheckResult } from "../src/store";
 import { syncPublish } from "../src/publish";
 import type { ASNInfo } from "../src/asn";
 import type { Env } from "../src/env";
@@ -60,12 +60,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		return Response.json({ error: "this IP does not belong to a Google ASN" }, { status: 400 });
 	}
 
-	// Point the probe's config_scan_id at the latest SNI scan, same as
-	// ad-hoc `gwsdb recheck -ip`, so the query page's "Probe Request"
-	// column joins against a real scans row.
-	const config = await latestScanConfig(env.DB, DEFAULT_SCAN_MODE);
-	const configScanId = config?.scanId ?? null;
-
 	// Call the gwsdb-probe Worker via service binding — it VPC-fetches the
 	// China box's probe server over Cloudflare Mesh. PROBE_TOKEN
 	// authenticates both hops (Pages -> Worker, Worker -> probe server).
@@ -99,7 +93,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		detail: result.detail ?? null,
 		checkedAt,
 		scanMode: DEFAULT_SCAN_MODE,
-		configScanId,
 	});
 	await refreshPoolForIPs(env.DB, [ip]);
 	await pruneCheckHistory(env.DB, [ip]);
