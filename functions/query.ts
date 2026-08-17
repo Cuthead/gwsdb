@@ -27,11 +27,11 @@ const REASON_LABELS: Record<string, string> = {
 	cn: "tls: Certificate CN mismatch",
 	http: "http: HTTP timeout",
 	status: "http: HTTP status code mismatch",
-	ping: "icmp: Ping timeout / no reply",
+	ping: "icmp: ICMP ping timeout",
 };
 
 function reasonLabel(reason: string, detail: string): string {
-	if (reason === "ping") return detail.includes("rtt_too_low") ? "icmp: RTT too low" : "icmp: Ping timeout / no reply";
+	if (reason === "ping") return detail.includes("rtt_too_low") ? "icmp: RTT too low" : "icmp: ICMP ping timeout";
 	return REASON_LABELS[reason] ?? reason;
 }
 

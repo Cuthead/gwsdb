@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/cuthead/gwsdb/internal/ingest"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -105,23 +106,30 @@ func Ping(ctx context.Context, ip string) PingResult {
 		dstAddr = &net.IPAddr{IP: net.ParseIP(addr.String())}
 	}
 
+	var lastErr error
 	for range PingCount {
 		start := time.Now()
 		if _, err := conn.WriteTo(body, dstAddr); err != nil {
+			lastErr = err
 			continue
 		}
 		buf := make([]byte, 1500)
 		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		rm, err := icmp.ParseMessage(proto, buf[:n])
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		if rm.Type == replyType {
 			return PingResult{OK: true, RTTMs: int(time.Since(start).Milliseconds())}
 		}
 	}
-	return PingResult{Err: "no reply"}
+	if lastErr != nil {
+		return PingResult{Err: ingest.SanitizeNetErr(lastErr.Error())}
+	}
+	return PingResult{Err: "i/o timeout"}
 }

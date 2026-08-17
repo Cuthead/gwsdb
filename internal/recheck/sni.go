@@ -148,7 +148,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			req, err := http.NewRequest(method, "https://"+net.JoinHostPort(ip, "443")+cfg.HTTPPath, nil)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "http", Detail: fmt.Sprintf("%s error=build request: %s", params, err.Error())}
+				return Result{Reason: "http", Detail: fmt.Sprintf("%s error=%s", params, err.Error())}
 			}
 			req.Host = host
 			tlsconn.SetDeadline(time.Now().Add(scanMaxRTT - time.Since(start)))
