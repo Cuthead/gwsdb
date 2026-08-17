@@ -134,9 +134,22 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 
 		totalRTT += time.Since(start)
 		if cfg.Level > 2 {
-			details = append(details, fmt.Sprintf("sni=%s host=%s method=%s path=%s", serverName, host, method, cfg.HTTPPath))
+			var parts []string
+			parts = append(parts, fmt.Sprintf("sni=%s host=%s method=%s path=%s", serverName, host, method, cfg.HTTPPath))
+			if cfg.VerifyCommonName != "" {
+				parts = append(parts, fmt.Sprintf("want_cn=%s", cfg.VerifyCommonName))
+			}
+			if cfg.ValidStatusCode != 0 {
+				parts = append(parts, fmt.Sprintf("want_code=%d", cfg.ValidStatusCode))
+			}
+			details = append(details, strings.Join(parts, " "))
 		} else if cfg.Level > 1 {
-			details = append(details, fmt.Sprintf("sni=%s cn=%s", serverName, cfg.VerifyCommonName))
+			var parts []string
+			parts = append(parts, fmt.Sprintf("sni=%s", serverName))
+			if cfg.VerifyCommonName != "" {
+				parts = append(parts, fmt.Sprintf("want_cn=%s", cfg.VerifyCommonName))
+			}
+			details = append(details, strings.Join(parts, " "))
 		} else {
 			details = append(details, fmt.Sprintf("sni=%s", serverName))
 		}
