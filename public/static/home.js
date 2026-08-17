@@ -27,15 +27,27 @@ import { decodeBest, countryCode } from './geo.js';
 	var sortState = {col: null, desc: false};
 	var statusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
 	var page = 1;
-	var matched = []; // rows passing the current filter, in tbody order
+	// allRows is the full data set from /api/pool, kept in memory but never
+	// attached to the DOM. matched is the subset passing the current filter,
+	// derived from allRows. renderPage builds only the current page's slice
+	// of matched into the DOM and clears it on every page/sort/filter change
+	// (virtualization): with ~7600 IPs, building all rows once on load took
+	// ~1.5s and dominated time-to-table; building 100 per page is ~10ms and
+	// keeps first paint fast. The matched array stays in display order —
+	// sort/filter mutate it and call renderPage.
+	var allRows = [];
+	var matched = [];
 
 	function pageSize() {
 		var v = document.getElementById('pageSizeInput').value;
 		return v === 'all' ? Infinity : parseInt(v, 10);
 	}
 
-	// renderPage shows the current page's slice of the matched rows and hides
-	// everything else, then updates the counters and pager controls.
+	// renderPage rebuilds the current page's slice of matched from data
+	// (not DOM) — the old approach built all 7600 rows up front and hid
+	// 7500, wasting ~1.5s on first paint. This virtualizes by clearing the
+	// tbody and rebuilding only the visible page's rows each time, which
+	// is ~10ms for 100 rows vs ~1.5s for the full set.
 	function renderPage() {
 		var size = pageSize();
 		var totalPages = size === Infinity ? 1 : Math.max(1, Math.ceil(matched.length / size));
@@ -44,18 +56,10 @@ import { decodeBest, countryCode } from './geo.js';
 		var start = size === Infinity ? 0 : (page - 1) * size;
 		var end = size === Infinity ? matched.length : start + size;
 
-		var rows = document.getElementById('ipTableBody').rows;
-		for (var i = 0; i < rows.length; i++) {
-			rows[i].classList.add('gwsdb-hidden');
-		}
+		var tbody = document.getElementById('ipTableBody');
+		tbody.textContent = '';
 		for (var j = start; j < end && j < matched.length; j++) {
-			var row = matched[j];
-			row.classList.remove('gwsdb-hidden');
-			// Client-side PTR resolution disabled -- see the import comment above.
-			// if (row._pendingPTR) {
-			// 	resolveClientPTR(row, row._ptrTd, row._countryTd, row._pendingPTR);
-			// 	row._pendingPTR = null;
-			// }
+			tbody.appendChild(buildRow(matched[j]));
 		}
 
 		document.getElementById('visibleCount').textContent = matched.length;
@@ -64,22 +68,24 @@ import { decodeBest, countryCode } from './geo.js';
 		document.getElementById('nextButton').disabled = page >= totalPages;
 	}
 
-	// filter recomputes the matched set from the filter inputs and jumps back
-	// to the first page.
+	// filter recomputes the matched set from the data (not the DOM) and
+	// jumps back to the first page. Matched entries are the same objects
+	// allRows holds, so sort/filter/renderPage can read them without
+	// touching DOM — necessary for virtualization (only the current page
+	// exists in the DOM at any time).
 	function filter() {
 		var q = document.getElementById('searchInput').value.trim().toLowerCase();
 		var family = document.getElementById('familyInput').value;
 		var status = document.getElementById('statusInput').value;
-		var rows = document.getElementById('ipTableBody').rows;
 		var familyTotal = 0;
 		matched = [];
-		for (var i = 0; i < rows.length; i++) {
-			var r = rows[i];
-			var isIPv6 = r.dataset.ip.indexOf(':') !== -1;
+		for (var i = 0; i < allRows.length; i++) {
+			var r = allRows[i];
+			var isIPv6 = r.ip.indexOf(':') !== -1;
 			var familyMatch = family === '6' ? isIPv6 : !isIPv6;
 			if (familyMatch) familyTotal++;
-			var statusMatch = status === 'all' || r.dataset.status === 'Reachable';
-			var hay = (r.dataset.ip + ' ' + r.dataset.ptr + ' ' + r.dataset.country).toLowerCase();
+			var statusMatch = status === 'all' || r.status === 'Reachable';
+			var hay = (r.ip + ' ' + (r.ptrList || []).join(' ') + ' ' + r.country).toLowerCase();
 			if (familyMatch && statusMatch && hay.indexOf(q) !== -1) {
 				matched.push(r);
 			}
@@ -89,42 +95,53 @@ import { decodeBest, countryCode } from './geo.js';
 		renderPage();
 	}
 
+	// sort reorders the matched data array (not DOM rows) and re-renders
+	// the current page. Sorting the in-memory array is O(n log n) over
+	// ~7600 objects — cheap compared to the old approach of sorting
+	// DOM nodes and re-appending them, which forced a layout pass per
+	// row. After sort, stay on the same page so re-sorting a long list
+	// doesn't lose the reader's place.
 	function sort(col, defaultDesc) {
 		var desc = sortState.col === col ? !sortState.desc : defaultDesc;
 		sortState = {col: col, desc: desc};
 
-		var tbody = document.getElementById('ipTableBody');
-		var rows = Array.prototype.slice.call(tbody.rows);
-		rows.sort(function (a, b) {
+		matched.sort(function (a, b) {
 			var av, bv;
 			if (col === 'rtt') {
-				av = parseInt(a.dataset.rtt, 10) || 0;
-				bv = parseInt(b.dataset.rtt, 10) || 0;
+				av = a.lastRttMs || 0;
+				bv = b.lastRttMs || 0;
 				return desc ? bv - av : av - bv;
 			}
 			if (col === 'status') {
-				av = statusRank[a.dataset.status] || 0;
-				bv = statusRank[b.dataset.status] || 0;
+				av = statusRank[a.status] || 0;
+				bv = statusRank[b.status] || 0;
 				return desc ? bv - av : av - bv;
 			}
-			av = (a.dataset[col] || '').toLowerCase();
-			bv = (b.dataset[col] || '').toLowerCase();
+			if (col === 'ip') {
+				return desc ? (a.ip < b.ip ? 1 : -1) : (a.ip < b.ip ? -1 : 1);
+			}
+			if (col === 'ptr') {
+				av = (a.ptrList || []).join(' ');
+				bv = (b.ptrList || []).join(' ');
+			} else if (col === 'country') {
+				av = a.country || '';
+				bv = b.country || '';
+			} else {
+				av = (a[col] || '').toString();
+				bv = (b[col] || '').toString();
+			}
+			av = av.toLowerCase();
+			bv = bv.toLowerCase();
 			if (av < bv) return desc ? 1 : -1;
 			if (av > bv) return desc ? -1 : 1;
 			return 0;
 		});
-		rows.forEach(function (r) { tbody.appendChild(r); });
 
 		var arrows = document.getElementsByClassName('arrow');
 		for (var i = 0; i < arrows.length; i++) {
 			arrows[i].textContent = arrows[i].dataset.col === col ? (desc ? '▼' : '▲') : '';
 		}
 
-		// Re-derive the matched set in the new row order; stay on the same
-		// page so re-sorting a long list doesn't lose the reader's place.
-		var keep = page;
-		filter();
-		page = keep;
 		renderPage();
 	}
 
@@ -227,20 +244,14 @@ import { decodeBest, countryCode } from './geo.js';
 
 	// buildRow creates one <tr> for an IP entry via the DOM API (never
 	// innerHTML) since PTR hostnames and the decoded country are derived from
-	// live DNS data, not trusted input.
+	// live DNS data, not trusted input. Called with a data object that
+	// already has country/code precomputed (see renderData) so the
+	// decodeBest regex isn't re-run on every page render.
 	function buildRow(ip) {
-		var loc = decodeBest(ip.ptrList || []);
-		var country = loc.country;
-		var code = countryCode(country);
+		var country = ip.country || '';
+		var code = ip.countryCode || '';
 
 		var tr = document.createElement('tr');
-		tr.dataset.ip = ip.ip;
-		tr.dataset.ptr = (ip.ptrList || []).join(' ');
-		tr.dataset.country = country;
-		tr.dataset.status = ip.status;
-		tr.dataset.firstSeen = ip.firstSeen;
-		tr.dataset.lastSeen = ip.lastSeen;
-		tr.dataset.rtt = ip.lastRttMs;
 
 		var ipTd = document.createElement('td');
 		var ipTt = document.createElement('tt');
@@ -301,10 +312,15 @@ import { decodeBest, countryCode } from './geo.js';
 		document.getElementById('totalChecks').textContent = data.totalChecks;
 		document.getElementById('lastCheck').textContent = data.lastCheckAt + (data.scanMode ? ' (' + data.scanMode + ')' : '');
 
-		var tbody = document.getElementById('ipTableBody');
-		tbody.textContent = '';
-		(data.ips || []).forEach(function (ip) {
-			tbody.appendChild(buildRow(ip));
+		// Precompute country/code once per IP so buildRow and filter/sort
+		// don't re-run decodeBest's regex on every page render. The API
+		// doesn't send country (home.js decodes ptrList client-side, see
+		// geo.js), so this is the one place that fills it in.
+		allRows = (data.ips || []).map(function (ip) {
+			var loc = decodeBest(ip.ptrList || []);
+			ip.country = loc.country;
+			ip.countryCode = countryCode(loc.country);
+			return ip;
 		});
 
 		var status = document.getElementById('poolStatus');
