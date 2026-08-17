@@ -8,7 +8,7 @@
 import { checkBearerAuth } from "../src/auth";
 import { runPTRRefresh } from "../src/ptrRefresh";
 import { syncPublish } from "../src/publish";
-import { allKnownGoodIPs, type CheckRow, insertCheckRows, pruneCheckHistory, refreshPoolForIPs } from "../src/store";
+import { allKnownGoodIPs, type CheckRow, insertCheckRows, pruneCheckHistory, updatePoolBatch } from "../src/store";
 import type { Env } from "../src/env";
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -73,16 +73,12 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 		scanMode: c.ScanMode,
 	}));
 	await insertCheckRows(env.DB, rows);
+	await updatePoolBatch(env.DB, rows);
 
-	// Tracks every IP this run wrote an ip_checks row for, so ip_pool only
-	// gets recomputed for the IPs that could have actually changed -- see
-	// refreshPoolForIPs's module comment.
+	// Prune history asynchronously in the background so it doesn't add
+	// latency to the ingest response.
 	const touchedIPs = [...new Set(rows.map((r) => r.ip))];
-	await refreshPoolForIPs(env.DB, touchedIPs);
-
-	// Bounds ip_checks growth: only the IPs just written to can have crossed
-	// CHECK_HISTORY_RETENTION, so this never scans IPs untouched by this run.
-	await pruneCheckHistory(env.DB, touchedIPs);
+	waitUntil(pruneCheckHistory(env.DB, touchedIPs).catch((err) => console.error("ingest: prune:", err)));
 
 	// A bulk ingest can shift the top set a lot; reconcile published DNS
 	// records after responding so a slow Cloudflare API call doesn't add

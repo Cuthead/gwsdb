@@ -65,133 +65,89 @@ export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise
 	}
 }
 
-// POOL_REFRESH_CHUNK caps how many IPs one refreshPoolForIPs statement
-// covers. Each IP appears twice in the generated SQL (once per CTE's WHERE
-// ip IN (...)), and D1's actual limit is 100 bound parameters *per query*
-// (not per db.batch() call, and not SQLite's classic ~999 default) --
-// confirmed the hard way in production: a chunk size of 100 (200 params)
-// failed with "D1_ERROR: too many SQL variables" on a real multi-hundred-IP
-// ingest. 45 keeps every query at 90 params, comfortably under the cap.
-const POOL_REFRESH_CHUNK = 45;
+// POOL_UPSERT_CHUNK caps how many statements one updatePoolBatch db.batch()
+// call covers. D1 Free caps db.batch() at 1,000 statements; 400 is safely under.
+const POOL_UPSERT_CHUNK = 400;
 
-// refreshPoolForIPs recomputes and upserts the ip_pool row for each of ips,
-// scoped to just those IPs -- the same aggregation migrations/
-// 0002_materialize_ip_pool.sql's backfill used to populate the whole table,
-// just with `WHERE ip_checks.ip IN (...)` added to both CTEs so SQLite can
-// filter before doing the per-IP window-function ranking, rather than
-// recomputing the aggregate over the entire ip_checks table. Callers must
-// invoke this after every ip_checks write (insertCheckRows, saveRecheckResult)
-// -- upsert-only is safe here because both callers only ever add a check
-// row for an IP that already has (or now has) an ok=1 history, so the
-// `HAVING times_seen > 0` gate below is always satisfied for a just-written IP.
-export async function refreshPoolForIPs(db: D1Database, ips: string[]): Promise<void> {
-	const unique = [...new Set(ips)];
-	for (let i = 0; i < unique.length; i += POOL_REFRESH_CHUNK) {
-		const chunk = unique.slice(i, i + POOL_REFRESH_CHUNK);
-		const placeholders = chunk.map(() => "?").join(",");
-		await db
-			.prepare(
-				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
-				WITH ranked AS (
-					SELECT
-						ip, ok, rtt_ms, scan_mode, checked_at,
-						ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn_any,
-						ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at DESC, id DESC) AS rn_ok_desc,
-						ROW_NUMBER() OVER (PARTITION BY ip, ok ORDER BY checked_at ASC, id ASC) AS rn_ok_asc
-					FROM ip_checks
-					WHERE ip IN (${placeholders})
-				),
-				counts AS (
-					SELECT
-						ip,
-						CASE WHEN instr(ip, ':') > 0 THEN 1 ELSE 0 END AS is_ipv6,
-						COUNT(CASE WHEN ok = 1 THEN 1 END) AS times_seen
-					FROM ip_checks
-					WHERE ip IN (${placeholders})
-					GROUP BY ip
-					HAVING times_seen > 0
+// updatePoolBatch incrementally updates ip_pool directly from the incoming
+// batch of checks. Unlike the old refreshPoolForIPs (which re-scanned all
+// historical ip_checks rows for every touched IP with 3 window functions —
+// executing 169 complex queries and reading 12M rows per ingest), this executes
+// direct PK upserts/updates on ip_pool using db.batch():
+// - ok = 1 checks: INSERT INTO ip_pool ... ON CONFLICT(ip) DO UPDATE
+// - ok = 0 checks: UPDATE ip_pool SET last_checked_at=?, last_check_ok=0 WHERE ip=?
+// Total queries per ingest drops from ~700 to ~19, reading 0 rows from ip_checks!
+export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise<void> {
+	// Deduplicate per IP within this batch, keeping the latest check.
+	const latestByIP = new Map<string, CheckRow>();
+	for (const r of rows) {
+		const existing = latestByIP.get(r.ip);
+		if (!existing || r.checkedAt >= existing.checkedAt) {
+			latestByIP.set(r.ip, r);
+		}
+	}
+
+	const uniqueRows = Array.from(latestByIP.values());
+
+	for (let i = 0; i < uniqueRows.length; i += POOL_UPSERT_CHUNK) {
+		const chunk = uniqueRows.slice(i, i + POOL_UPSERT_CHUNK);
+		const statements = chunk.map((r) => {
+			const isIPv6 = r.ip.includes(":") ? 1 : 0;
+			const ts = toSQLiteDateTime(r.checkedAt);
+			if (r.ok) {
+				return db
+					.prepare(
+						`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
+						 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)
+						 ON CONFLICT(ip) DO UPDATE SET
+							scan_mode = excluded.scan_mode,
+							last_seen = excluded.last_seen,
+							last_rtt_ms = excluded.last_rtt_ms,
+							times_seen = ip_pool.times_seen + 1,
+							last_checked_at = excluded.last_checked_at,
+							last_check_ok = 1`,
+					)
+					.bind(r.ip, isIPv6, r.scanMode, ts, ts, r.rttMs ?? 0, ts);
+			}
+			return db
+				.prepare(
+					`UPDATE ip_pool SET
+						last_checked_at = ?,
+						last_check_ok = 0
+					 WHERE ip = ?`,
 				)
-				SELECT
-					counts.ip            AS ip,
-					counts.is_ipv6       AS is_ipv6,
-					last_ok.scan_mode    AS scan_mode,
-					first_ok.checked_at  AS first_seen,
-					last_ok.checked_at   AS last_seen,
-					last_ok.rtt_ms       AS last_rtt_ms,
-					counts.times_seen    AS times_seen,
-					last_any.checked_at  AS last_checked_at,
-					last_any.ok          AS last_check_ok
-				FROM counts
-				JOIN ranked last_ok  ON last_ok.ip = counts.ip  AND last_ok.ok = 1 AND last_ok.rn_ok_desc = 1
-				JOIN ranked first_ok ON first_ok.ip = counts.ip AND first_ok.ok = 1 AND first_ok.rn_ok_asc = 1
-				JOIN ranked last_any ON last_any.ip = counts.ip AND last_any.rn_any = 1
-				ON CONFLICT(ip) DO UPDATE SET
-					is_ipv6 = excluded.is_ipv6,
-					scan_mode = excluded.scan_mode,
-					first_seen = excluded.first_seen,
-					last_seen = excluded.last_seen,
-					last_rtt_ms = excluded.last_rtt_ms,
-					times_seen = excluded.times_seen,
-					last_checked_at = excluded.last_checked_at,
-					last_check_ok = excluded.last_check_ok`,
-			)
-			.bind(...chunk, ...chunk)
-			.run();
+				.bind(ts, r.ip);
+		});
+		await db.batch(statements);
 	}
 }
 
 // CHECK_HISTORY_RETENTION caps how many ip_checks rows survive per IP.
 // functions/query.ts's history view only ever shows the most recent 30
 // (MAX_HISTORY_ROWS), and ip_pool's first_seen/times_seen are allowed to
-// drift to "within the retained window" rather than true lifetime values
-// (product decision -- see conversation, not derivable from code). Retention
-// only needs to be >= MAX_HISTORY_ROWS so pruning never trims a row the
-// history view would otherwise have shown; the surplus is deliberate, kept
-// so first_seen/times_seen drift over a much longer window.
+// drift to "within the retained window" rather than true lifetime values.
 const CHECK_HISTORY_RETENTION = 300;
 
 // pruneCheckHistory deletes ip_checks rows beyond CHECK_HISTORY_RETENTION
-// per IP (oldest first) for the given ips, then refreshes ip_pool for
-// whichever of them still have surviving ok=1 history and explicitly
-// deletes the ip_pool row for any that don't -- same bookkeeping deleteScan
-// does, needed because refreshPoolForIPs alone is upsert-only (see its
-// module comment) and can't clear a row for an IP with no history left.
-// Call with the same IP set each ingest already refreshes ip_pool for, so
-// this only ever touches IPs that could have just crossed the retention
-// threshold.
+// per IP (oldest first) for the given ips. Run asynchronously via waitUntil.
 export async function pruneCheckHistory(db: D1Database, ips: string[]): Promise<void> {
 	const unique = [...new Set(ips)];
-	const affectedIPs = new Set<string>();
-	for (let i = 0; i < unique.length; i += POOL_REFRESH_CHUNK) {
-		const chunk = unique.slice(i, i + POOL_REFRESH_CHUNK);
+	for (let i = 0; i < unique.length; i += 100) {
+		const chunk = unique.slice(i, i + 100);
 		const placeholders = chunk.map(() => "?").join(",");
-		const { results } = await db
+		await db
 			.prepare(
 				`DELETE FROM ip_checks
-				WHERE id IN (
+				 WHERE id IN (
 					SELECT id FROM (
 						SELECT id, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn
 						FROM ip_checks
 						WHERE ip IN (${placeholders})
 					)
 					WHERE rn > ?
-				)
-				RETURNING ip`,
+				 )`,
 			)
 			.bind(...chunk, CHECK_HISTORY_RETENTION)
-			.all<{ ip: string }>();
-		for (const row of results) affectedIPs.add(row.ip);
-	}
-
-	if (affectedIPs.size === 0) return;
-	const affected = [...affectedIPs];
-	await refreshPoolForIPs(db, affected);
-	for (let i = 0; i < affected.length; i += POOL_REFRESH_CHUNK) {
-		const chunk = affected.slice(i, i + POOL_REFRESH_CHUNK);
-		const placeholders = chunk.map(() => "?").join(",");
-		await db
-			.prepare(`DELETE FROM ip_pool WHERE ip IN (${placeholders}) AND NOT EXISTS (SELECT 1 FROM ip_checks WHERE ip = ip_pool.ip AND ok = 1)`)
-			.bind(...chunk)
 			.run();
 	}
 }
