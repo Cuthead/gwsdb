@@ -68,7 +68,7 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 		ok: c.OK,
 		rttMs: c.OK ? c.RTTMs || null : null,
 		reason: c.OK ? null : c.Reason || null,
-		detail: c.OK ? null : c.Detail || null,
+		detail: c.Detail || null,
 		checkedAt: new Date(c.CheckedAt),
 		scanMode: c.ScanMode,
 	}));
