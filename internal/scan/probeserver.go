@@ -42,11 +42,13 @@ func (s *Scanner) runProbeServer(ctx context.Context, addr, token string) error 
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Probe-Token")), []byte(token)) != 1 {
+			log.Printf("scan: probe unauthorized: from=%s", r.RemoteAddr)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		var req probeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			log.Printf("scan: probe bad request: from=%s err=%v", r.RemoteAddr, err)
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -54,9 +56,12 @@ func (s *Scanner) runProbeServer(ctx context.Context, addr, token string) error 
 			http.Error(w, "missing ip", http.StatusBadRequest)
 			return
 		}
+		log.Printf("scan: probe request: ip=%s from=%s", req.IP, r.RemoteAddr)
 		probeCtx, cancel := context.WithTimeout(r.Context(), s.cfg.ProbeTimeout)
 		result := recheck.CheckSNI(probeCtx, req.IP, s.cfg.ProbeConfig)
 		cancel()
+		log.Printf("scan: probe result: ip=%s ok=%t rtt=%dms reason=%s detail=%s",
+			req.IP, result.OK, result.RTTMs, result.Reason, result.Detail)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(probeResponse{
 			OK:     result.OK,

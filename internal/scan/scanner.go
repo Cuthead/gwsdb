@@ -135,6 +135,12 @@ func (s *Scanner) Run(ctx context.Context) error {
 		s.runStatusLogger(ctx, 60*time.Second)
 	}()
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.runFlusher(ctx)
+	}()
+
 	for range s.cfg.Workers {
 		wg.Add(1)
 		go func() {
