@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,6 +105,11 @@ func New(cfg Config) *Scanner {
 func (s *Scanner) Run(ctx context.Context) error {
 	log.Printf("scan: starting: %d workers, interval=%s, flush=%s, probe=%s, %d CIDR prefixes",
 		s.cfg.Workers, s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, s.cfg.IPRange.Len())
+	log.Printf("scan: probe config: sni=%s path=%s method=%s level=%d want_code=%d cn=%s",
+		strings.Join(s.cfg.ProbeConfig.ServerName, ","),
+		s.cfg.ProbeConfig.HTTPPath, s.cfg.ProbeConfig.HTTPMethod,
+		s.cfg.ProbeConfig.Level, s.cfg.ProbeConfig.ValidStatusCode,
+		s.cfg.ProbeConfig.VerifyCommonName)
 
 	var wg sync.WaitGroup
 
