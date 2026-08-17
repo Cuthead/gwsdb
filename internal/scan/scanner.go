@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,11 +116,9 @@ func (s *Scanner) Run(ctx context.Context) error {
 	v4, v6 := s.cfg.IPRange.Counts()
 	log.Printf("scan: starting: %d workers (%d scan + %d recheck), interval=%s, flush=%s, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
 		s.cfg.Workers, scanN, recheckN, s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, s.cfg.IPRange.Len(), v4, v6)
-	log.Printf("scan: probe config: sni=%s path=%s method=%s level=%d want_code=%d cn=%s",
-		strings.Join(s.cfg.ProbeConfig.ServerName, ","),
-		s.cfg.ProbeConfig.HTTPPath, s.cfg.ProbeConfig.HTTPMethod,
-		s.cfg.ProbeConfig.Level, s.cfg.ProbeConfig.ValidStatusCode,
-		s.cfg.ProbeConfig.VerifyCommonName)
+	log.Printf("scan: probe config: level=%d %s",
+		s.cfg.ProbeConfig.Level,
+		recheck.ProbeParams(s.cfg.ProbeConfig))
 
 	var wg sync.WaitGroup
 
