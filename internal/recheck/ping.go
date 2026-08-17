@@ -107,6 +107,7 @@ func Ping(ctx context.Context, ip string) PingResult {
 	}
 
 	var lastErr error
+	var lastType icmp.Type
 	for range PingCount {
 		start := time.Now()
 		if _, err := conn.WriteTo(body, dstAddr); err != nil {
@@ -127,9 +128,13 @@ func Ping(ctx context.Context, ip string) PingResult {
 		if rm.Type == replyType {
 			return PingResult{OK: true, RTTMs: int(time.Since(start).Milliseconds())}
 		}
+		lastType = rm.Type
 	}
 	if lastErr != nil {
 		return PingResult{Err: ingest.SanitizeNetErr(lastErr.Error())}
 	}
-	return PingResult{Err: "i/o timeout"}
+	if lastType != nil {
+		return PingResult{Err: fmt.Sprintf("got icmp %v", lastType)}
+	}
+	return PingResult{Err: ingest.SanitizeNetErr(os.ErrDeadlineExceeded.Error())}
 }
