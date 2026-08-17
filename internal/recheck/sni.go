@@ -53,6 +53,29 @@ func CheckSNI(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
 	return Result{OK: true, RTTMs: int((totalRTT / time.Duration(count)).Milliseconds()), Detail: lastDetail}
 }
 
+func probeParams(serverName, host, method string, cfg *ingest.ScanConfig) string {
+	var parts []string
+	if serverName != "" {
+		parts = append(parts, "sni="+serverName)
+	}
+	if host != "" && cfg.Level > 2 {
+		parts = append(parts, "host="+host)
+	}
+	if method != "" && cfg.Level > 2 {
+		parts = append(parts, "method="+method)
+	}
+	if cfg.HTTPPath != "" && cfg.Level > 2 {
+		parts = append(parts, "path="+cfg.HTTPPath)
+	}
+	if cfg.VerifyCommonName != "" && cfg.Level > 1 {
+		parts = append(parts, "want_cn="+cfg.VerifyCommonName)
+	}
+	if cfg.ValidStatusCode != 0 && cfg.Level > 2 {
+		parts = append(parts, fmt.Sprintf("want_code=%d", cfg.ValidStatusCode))
+	}
+	return strings.Join(parts, " ")
+}
+
 // checkSNIOnce mirrors gscan_quic's testSni for a single pass over
 // cfg.ServerName, summing RTT across every server name tested.
 func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
@@ -73,13 +96,14 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 	var totalRTT time.Duration
 	var details []string
 	for _, serverName := range cfg.ServerName {
+		params := probeParams(serverName, host, method, cfg)
 		start := time.Now()
 
 		dialCtx, cancel := context.WithTimeout(ctx, scanMaxRTT)
 		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(ip, "443"))
 		cancel()
 		if err != nil {
-			return Result{Reason: "dial", Detail: fmt.Sprintf("sni=%s error=%s", serverName, ingest.SanitizeNetErr(err.Error()))}
+			return Result{Reason: "dial", Detail: fmt.Sprintf("%s error=%s", params, ingest.SanitizeNetErr(err.Error()))}
 		}
 
 		tlscfg.ServerName = serverName
@@ -87,7 +111,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		tlsconn.SetDeadline(time.Now().Add(handshakeTimeout))
 		if err := tlsconn.Handshake(); err != nil {
 			tlsconn.Close()
-			return Result{Reason: "handshake", Detail: fmt.Sprintf("sni=%s error=%s", serverName, ingest.SanitizeNetErr(err.Error()))}
+			return Result{Reason: "handshake", Detail: fmt.Sprintf("%s error=%s", params, ingest.SanitizeNetErr(err.Error()))}
 		}
 
 		if cfg.Level > 1 {
@@ -98,7 +122,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			}
 			if len(pcs) == 0 || gotCN != cfg.VerifyCommonName {
 				tlsconn.Close()
-				return Result{Reason: "cn", Detail: fmt.Sprintf("sni=%s want_cn=%s got_cn=%s", serverName, cfg.VerifyCommonName, gotCN)}
+				return Result{Reason: "cn", Detail: fmt.Sprintf("%s got_cn=%s", params, gotCN)}
 			}
 		}
 
@@ -106,7 +130,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			req, err := http.NewRequest(method, "https://"+net.JoinHostPort(ip, "443")+cfg.HTTPPath, nil)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "http", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=build request: %s", serverName, host, method, cfg.HTTPPath, err.Error())}
+				return Result{Reason: "http", Detail: fmt.Sprintf("%s error=build request: %s", params, err.Error())}
 			}
 			req.Host = host
 			tlsconn.SetDeadline(time.Now().Add(scanMaxRTT - time.Since(start)))
@@ -122,37 +146,18 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 			resp, err := httpconn.Do(req)
 			if err != nil {
 				tlsconn.Close()
-				return Result{Reason: "http", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s error=%s", serverName, host, method, cfg.HTTPPath, ingest.SanitizeNetErr(err.Error()))}
+				return Result{Reason: "http", Detail: fmt.Sprintf("%s error=%s", params, ingest.SanitizeNetErr(err.Error()))}
 			}
 			if resp.StatusCode != cfg.ValidStatusCode {
 				tlsconn.Close()
-				return Result{Reason: "status", Detail: fmt.Sprintf("sni=%s host=%s method=%s path=%s want_code=%d got_code=%d", serverName, host, method, cfg.HTTPPath, cfg.ValidStatusCode, resp.StatusCode)}
+				return Result{Reason: "status", Detail: fmt.Sprintf("%s got_code=%d", params, resp.StatusCode)}
 			}
 		}
 
 		tlsconn.Close()
 
 		totalRTT += time.Since(start)
-		if cfg.Level > 2 {
-			var parts []string
-			parts = append(parts, fmt.Sprintf("sni=%s host=%s method=%s path=%s", serverName, host, method, cfg.HTTPPath))
-			if cfg.VerifyCommonName != "" {
-				parts = append(parts, fmt.Sprintf("want_cn=%s", cfg.VerifyCommonName))
-			}
-			if cfg.ValidStatusCode != 0 {
-				parts = append(parts, fmt.Sprintf("want_code=%d", cfg.ValidStatusCode))
-			}
-			details = append(details, strings.Join(parts, " "))
-		} else if cfg.Level > 1 {
-			var parts []string
-			parts = append(parts, fmt.Sprintf("sni=%s", serverName))
-			if cfg.VerifyCommonName != "" {
-				parts = append(parts, fmt.Sprintf("want_cn=%s", cfg.VerifyCommonName))
-			}
-			details = append(details, strings.Join(parts, " "))
-		} else {
-			details = append(details, fmt.Sprintf("sni=%s", serverName))
-		}
+		details = append(details, params)
 	}
 
 	return Result{OK: true, RTTMs: int(totalRTT.Milliseconds()), Detail: strings.Join(details, " ")}
