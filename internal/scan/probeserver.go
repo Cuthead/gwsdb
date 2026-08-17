@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -64,12 +65,13 @@ func (s *Scanner) runProbeServer(ctx context.Context, addr, token string) error 
 		ping := recheck.Ping(pingCtx, req.IP)
 		pingCancel()
 		if !ping.OK {
-			log.Printf("scan: probe result: ip=%s ok=false reason=ping detail=%s", req.IP, ping.Err)
+			detail := fmt.Sprintf("%s error=%s", recheck.ProbeParams(s.cfg.ProbeConfig), ping.Err)
+			log.Printf("scan: probe result: ip=%s ok=false reason=ping detail=%s", req.IP, detail)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(probeResponse{
 				OK:     false,
 				Reason: "ping",
-				Detail: ping.Err,
+				Detail: detail,
 			})
 			return
 		}

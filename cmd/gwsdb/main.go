@@ -175,7 +175,10 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 	pingCancel()
 	var result recheck.Result
 	if !ping.OK {
-		result = recheck.Result{Reason: "ping", Detail: ping.Err}
+		result = recheck.Result{
+			Reason: "ping",
+			Detail: fmt.Sprintf("%s error=%s", recheck.ProbeParams(cfg), ping.Err),
+		}
 	} else {
 		probeCtx, cancel := context.WithTimeout(ctx, timeout)
 		result = recheck.CheckSNI(probeCtx, ip, cfg)

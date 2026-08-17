@@ -53,6 +53,24 @@ func CheckSNI(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
 	return Result{OK: true, RTTMs: int((totalRTT / time.Duration(count)).Milliseconds()), Detail: lastDetail}
 }
 
+// ProbeParams returns a string summarizing cfg's target request and
+// expectation parameters.
+func ProbeParams(cfg *ingest.ScanConfig) string {
+	serverName := ""
+	if len(cfg.ServerName) > 0 {
+		serverName = cfg.ServerName[0]
+	}
+	host := ""
+	if len(cfg.HTTPVerifyHosts) > 0 {
+		host = cfg.HTTPVerifyHosts[0]
+	}
+	method := cfg.HTTPMethod
+	if method == "" {
+		method = "HEAD"
+	}
+	return probeParams(serverName, host, method, cfg)
+}
+
 func probeParams(serverName, host, method string, cfg *ingest.ScanConfig) string {
 	var parts []string
 	if serverName != "" {

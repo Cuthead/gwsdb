@@ -2,6 +2,7 @@ package scan
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -222,7 +223,10 @@ func (s *Scanner) runWorker(ctx context.Context) {
 		ping := recheck.Ping(pingCtx, ip)
 		pingCancel()
 		if !ping.OK {
-			s.record(ip, recheck.Result{Reason: "ping", Detail: ping.Err})
+			s.record(ip, recheck.Result{
+				Reason: "ping",
+				Detail: fmt.Sprintf("%s error=%s", recheck.ProbeParams(s.cfg.ProbeConfig), ping.Err),
+			})
 			continue
 		}
 
