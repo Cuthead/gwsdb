@@ -103,8 +103,9 @@ func New(cfg Config) *Scanner {
 // but-unflushed checks aren't lost (the flusher's ctx.Done case runs a
 // detached-context flush before returning).
 func (s *Scanner) Run(ctx context.Context) error {
-	log.Printf("scan: starting: %d workers, interval=%s, flush=%s, probe=%s, %d CIDR prefixes",
-		s.cfg.Workers, s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, s.cfg.IPRange.Len())
+	v4, v6 := s.cfg.IPRange.Counts()
+	log.Printf("scan: starting: %d workers, interval=%s, flush=%s, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
+		s.cfg.Workers, s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, s.cfg.IPRange.Len(), v4, v6)
 	log.Printf("scan: probe config: sni=%s path=%s method=%s level=%d want_code=%d cn=%s",
 		strings.Join(s.cfg.ProbeConfig.ServerName, ","),
 		s.cfg.ProbeConfig.HTTPPath, s.cfg.ProbeConfig.HTTPMethod,

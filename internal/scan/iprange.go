@@ -31,8 +31,25 @@ import (
 // v4/v6 agnostic (a single source can hold both; netip handles the
 // address-family distinction, and recheck.CheckSNI dials both the same
 // way via net.JoinHostPort).
+// IPRangeSource holds a set of CIDR prefixes loaded from one or more
+// range files (gscan_quic's iprange/iprange_gws_a.txt format: one CIDR
+// per line, v4 or v6). GetIP picks a random prefix, then a random
+// address within it — the same shape as XX-Net's Ipv4RangeSource but
+// CIDR-based (gscan_quic's format) rather than begin-end-based, and
+// v4/v6 agnostic (a single source can hold both; netip handles the
+// address-family distinction, and recheck.CheckSNI dials both the same
+// way via net.JoinHostPort).
+//
+// Prefixes are split into v4 and v6 buckets so GetIP can give each
+// address family an equal share of probes regardless of how many
+// prefixes each family has — otherwise a v6-heavy range file would
+// starve v4 (GetIP previously chose uniformly over all prefixes, so
+// the family with more prefixes got proportionally more probes).
 type IPRangeSource struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
+	v4        []netip.Prefix
+	v6        []netip.Prefix
+	// prefixes is kept for Len() (total count, for startup logging).
 	prefixes []netip.Prefix
 }
 
@@ -41,7 +58,7 @@ type IPRangeSource struct {
 // may mix v4 and v6 CIDRs freely. Returns an error only if no valid
 // prefix is loaded from any file.
 func LoadIPRanges(paths []string) (*IPRangeSource, error) {
-	var prefixes []netip.Prefix
+	src := &IPRangeSource{}
 	for _, p := range paths {
 		if err := func() error {
 			f, err := os.Open(p)
@@ -59,25 +76,45 @@ func LoadIPRanges(paths []string) (*IPRangeSource, error) {
 				if err != nil {
 					continue
 				}
-				prefixes = append(prefixes, prefix.Masked())
+				prefix = prefix.Masked()
+				src.prefixes = append(src.prefixes, prefix)
+				if prefix.Addr().Is4() {
+					src.v4 = append(src.v4, prefix)
+				} else {
+					src.v6 = append(src.v6, prefix)
+				}
 			}
 			return sc.Err()
 		}(); err != nil {
 			return nil, err
 		}
 	}
-	if len(prefixes) == 0 {
+	if len(src.prefixes) == 0 {
 		return nil, fmt.Errorf("no valid CIDR prefixes loaded from %v", paths)
 	}
-	return &IPRangeSource{prefixes: prefixes}, nil
+	return src, nil
 }
 
 // GetIP returns a uniformly random address within a randomly chosen
-// prefix. Caller doesn't need to know whether it's v4 or v6 —
+// prefix. v4 and v6 each get half the probes regardless of how many
+// prefixes each family has — if one family is empty, the other is used
+// for all probes. Caller doesn't need to know whether it's v4 or v6 —
 // recheck.CheckSNI dials via net.JoinHostPort which handles both.
 func (s *IPRangeSource) GetIP() string {
 	s.mu.Lock()
-	prefix := s.prefixes[rand.Intn(len(s.prefixes))]
+	var prefix netip.Prefix
+	switch {
+	case len(s.v4) > 0 && len(s.v6) > 0:
+		if rand.Intn(2) == 0 {
+			prefix = s.v4[rand.Intn(len(s.v4))]
+		} else {
+			prefix = s.v6[rand.Intn(len(s.v6))]
+		}
+	case len(s.v4) > 0:
+		prefix = s.v4[rand.Intn(len(s.v4))]
+	default:
+		prefix = s.v6[rand.Intn(len(s.v6))]
+	}
 	s.mu.Unlock()
 	return randomAddrInPrefix(prefix).String()
 }
@@ -87,6 +124,13 @@ func (s *IPRangeSource) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.prefixes)
+}
+
+// Counts returns the v4 and v6 prefix counts (for startup logging).
+func (s *IPRangeSource) Counts() (v4, v6 int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.v4), len(s.v6)
 }
 
 // randomAddrInPrefix returns a random address within prefix. The prefix
