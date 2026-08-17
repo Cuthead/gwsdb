@@ -169,9 +169,17 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 	// and PullAndRun's shape) -- Submit gets its own budget below so a slow
 	// probe can't starve the HTTP call that reports its result.
 	ctx := context.Background()
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	result := recheck.CheckSNI(probeCtx, ip, cfg)
-	cancel()
+	pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
+	ping := recheck.Ping(pingCtx, ip)
+	pingCancel()
+	var result recheck.Result
+	if !ping.OK {
+		result = recheck.Result{Reason: "ping", Detail: ping.Err}
+	} else {
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		result = recheck.CheckSNI(probeCtx, ip, cfg)
+		cancel()
+	}
 	if result.OK {
 		fmt.Printf("OK ip=%s rtt=%dms\n", ip, result.RTTMs)
 	} else {

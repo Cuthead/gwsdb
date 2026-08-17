@@ -181,6 +181,18 @@ func (s *Scanner) runWorker(ctx context.Context) {
 
 		ip := s.cfg.IPRange.GetIP()
 
+		// Ping gate: skip the TCP/SNI probe entirely if ICMP echo gets
+		// no reply — most unreachable IPs fail ping too, so this saves a
+		// ~10s dial timeout per dead IP and lets workers move on faster.
+		// Ping uses unprivileged ICMP (udp4/udp6 datagram), no root needed.
+		pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
+		ping := recheck.Ping(pingCtx, ip)
+		pingCancel()
+		if !ping.OK {
+			s.record(ip, recheck.Result{Reason: "ping", Detail: ping.Err})
+			continue
+		}
+
 		probeCtx, cancel := context.WithTimeout(ctx, s.cfg.ProbeTimeout)
 		result := recheck.CheckSNI(probeCtx, ip, s.cfg.ProbeConfig)
 		cancel()

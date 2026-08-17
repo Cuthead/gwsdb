@@ -57,6 +57,22 @@ func (s *Scanner) runProbeServer(ctx context.Context, addr, token string) error 
 			return
 		}
 		log.Printf("scan: probe request: ip=%s from=%s", req.IP, r.RemoteAddr)
+		// Ping gate before the TCP/SNI probe — same rationale as the
+		// scanner worker: a dead-IP ping is faster to fail than a dial
+		// timeout, and lets us report "ping" as the failure reason.
+		pingCtx, pingCancel := context.WithTimeout(r.Context(), recheck.PingTimeout)
+		ping := recheck.Ping(pingCtx, req.IP)
+		pingCancel()
+		if !ping.OK {
+			log.Printf("scan: probe result: ip=%s ok=false reason=ping detail=%s", req.IP, ping.Err)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(probeResponse{
+				OK:     false,
+				Reason: "ping",
+				Detail: ping.Err,
+			})
+			return
+		}
 		probeCtx, cancel := context.WithTimeout(r.Context(), s.cfg.ProbeTimeout)
 		result := recheck.CheckSNI(probeCtx, req.IP, s.cfg.ProbeConfig)
 		cancel()
