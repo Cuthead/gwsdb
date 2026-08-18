@@ -32,12 +32,22 @@ function cfErr(op: string, errors: CFError[]): Error {
 	return new Error(`${op}: cloudflare error ${errors[0]!.code}: ${errors[0]!.message}`);
 }
 
+// Per-isolate throttle: syncPublish also runs from functions/check.ts per
+// on-demand probe, but the top set rarely shifts on a single probe -- and
+// each run reads ~6.6k rows (topIPsForPublish × 2 families) from D1. The
+// ingest's every-10-minute sync is the real reconciler; the /check path
+// only piggybacks if one hasn't happened recently.
+const MIN_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+let lastSyncAt = 0;
+
 // syncPublish reconciles both A and AAAA records for env.DNS_PUBLISH_NAME.
 // A no-op if DNS_PUBLISH_NAME is unset -- publishing stays off until
 // configured, mirroring Go's Config.Name gate. Errors from one family don't
 // abort the other; the first error seen is thrown.
 export async function syncPublish(env: Env, db: D1Database): Promise<void> {
 	if (!env.DNS_PUBLISH_NAME) return;
+	if (Date.now() - lastSyncAt < MIN_SYNC_INTERVAL_MS) return;
+	lastSyncAt = Date.now();
 
 	let firstErr: unknown;
 	for (const { family, dnsType } of [
