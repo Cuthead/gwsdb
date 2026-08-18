@@ -69,6 +69,12 @@ type Scanner struct {
 	scannedCount int
 	flushStart   time.Time
 
+	// known-good set for FilterChecks' failure gate, owned by runFlusher's
+	// goroutine (no locking needed). Refreshed hourly, extended locally
+	// with each flush's discoveries — see flush.go.
+	knownGood          map[string]bool
+	knownGoodFetchedAt time.Time
+
 	// Cumulative counters across flush windows, for the periodic status
 	// log — scannedCount in flush.go resets each window.
 	totalScanned atomic.Int64

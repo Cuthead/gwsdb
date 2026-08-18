@@ -8,7 +8,7 @@
 import { checkBearerAuth } from "../src/auth";
 import { runPTRRefresh } from "../src/ptrRefresh";
 import { syncPublish } from "../src/publish";
-import { allKnownGoodIPs, type CheckRow, insertCheckRows, poolVersion, pruneCheckHistory, updatePoolBatch } from "../src/store";
+import { allKnownGoodIPs, type CheckRow, insertCheckRows, pruneCheckHistory, updatePoolBatch } from "../src/store";
 import type { Env } from "../src/env";
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -16,23 +16,14 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	if (!checkBearerAuth(request, env)) {
 		return new Response("unauthorized", { status: 401 });
 	}
-	// Edge-cached like /api/pool (same version-keyed scheme, see
-	// functions/api/pool.ts): the scanner fetches this once per flush to
-	// pre-filter failures, and a full-pool SELECT is 7.8k rows read per
-	// call. Version bumps on every ip_checks write (ingest, check,
-	// recheck), so each flush's fetch sees data as fresh as the last
-	// write -- exactly as fresh as the uncached query would have been.
-	const version = await poolVersion(env.DB);
-	const cache = caches.default;
-	const cacheKey = new Request(`${new URL(request.url).origin}/ingest?v=${version}`, request);
-	const cached = await cache.match(cacheKey);
-	if (cached) {
-		return new Response(cached.body, cached);
-	}
+	// No edge cache here, deliberately: the only caller is the scanner's
+	// flusher, which fetches once per flush and then POSTs — bumping
+	// poolVersion — so every subsequent GET sees a fresh version and a
+	// version-keyed cache would never hit. The scanner instead keeps the
+	// known-good set in memory and refreshes it hourly (see
+	// internal/scan/flush.go), so this endpoint is only hit ~24x/day.
 	const ips = await allKnownGoodIPs(env.DB);
-	const resp = Response.json({ ips }, { headers: { "Cache-Control": "public, max-age=86400" } });
-	context.waitUntil(cache.put(cacheKey, resp.clone()));
-	return resp;
+	return Response.json({ ips });
 };
 
 // WireCheck mirrors internal/store's Go IPCheck struct (PascalCase, no json
