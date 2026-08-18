@@ -48,21 +48,26 @@ func FetchKnownGood(ctx context.Context, apiBase, token string) (map[string]bool
 	return knownGood, nil
 }
 
-// poolResponse is the /api/pool payload. Only ip + lastSeen are needed —
-// the recheck feeder sorts by lastSeen ascending so the oldest-checked
-// IPs are rechecked first (mirrors XX-Net's get_ip_sni_host pointer
-// walking the handshake-sorted ip_list from the front).
+// poolResponse is the /api/pool payload. Only ip + lastSeen + status are
+// needed — the recheck feeder sorts by lastSeen ascending so the oldest-
+// checked IPs are rechecked first (mirrors XX-Net's get_ip_sni_host
+// pointer walking the handshake-sorted ip_list from the front). Only
+// Reachable IPs are returned: re-checking a known-dead IP just burns a
+// 2s ping timeout per IP with no useful outcome (it's already marked
+// Unreachable in the pool, and re-probing it won't restore it).
 type poolResponse struct {
 	IPs []struct {
 		IP       string `json:"ip"`
 		LastSeen string `json:"lastSeen"` // "YYYY-MM-DD HH:MM:SS" or "-"
+		Status   string `json:"status"`   // "Reachable" / "Unreachable" / "-"
 	} `json:"ips"`
 }
 
-// FetchPool returns every IP currently in the tracked pool, sorted by
-// lastSeen ascending (oldest first). No auth — /api/pool is the same
-// public endpoint the home page fetches. The response is edge-cached
-// keyed by poolVersion, so a fetch right after a flush sees fresh data.
+// FetchPool returns every currently-reachable IP in the tracked pool,
+// sorted by lastSeen ascending (oldest first). No auth — /api/pool is
+// the same public endpoint the home page fetches. The response is
+// edge-cached keyed by poolVersion, so a fetch right after a flush sees
+// fresh data.
 func FetchPool(ctx context.Context, apiBase string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/api/pool", nil)
 	if err != nil {
@@ -81,11 +86,23 @@ func FetchPool(ctx context.Context, apiBase string) ([]string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode /api/pool: %w", err)
 	}
-	sort.SliceStable(out.IPs, func(i, j int) bool {
-		return out.IPs[i].LastSeen < out.IPs[j].LastSeen
+	reachable := make([]struct {
+		IP       string
+		LastSeen string
+	}, 0, len(out.IPs))
+	for _, r := range out.IPs {
+		if r.Status == "Reachable" {
+			reachable = append(reachable, struct {
+				IP       string
+				LastSeen string
+			}{r.IP, r.LastSeen})
+		}
+	}
+	sort.SliceStable(reachable, func(i, j int) bool {
+		return reachable[i].LastSeen < reachable[j].LastSeen
 	})
-	ips := make([]string, len(out.IPs))
-	for i, r := range out.IPs {
+	ips := make([]string, len(reachable))
+	for i, r := range reachable {
 		ips[i] = r.IP
 	}
 	return ips, nil
