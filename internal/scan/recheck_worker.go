@@ -16,8 +16,10 @@ import (
 // (sorted oldest-first by lastSeen) and pushes each IP into jobs. It
 // blocks on jobs when workers are slow, so a full pool cycle naturally
 // takes pool_size / recheck_workers * interval — the feeder doesn't
-// re-fetch until the previous batch has been consumed, preventing
-// double-queueing. Stops on ctx cancellation.
+// re-fetch until the previous batch has been consumed and one flush
+// interval has passed, preventing an unchanged remote pool from being
+// queued again while its latest checks are still buffered locally.
+// Stops on ctx cancellation.
 //
 // This mirrors XX-Net's IpManager scan_ip_worker recheck mode: when the
 // pool is full, the scan worker stops scanning new IPs and instead
@@ -83,6 +85,12 @@ func (s *Scanner) runRecheckFeeder(ctx context.Context, ipv4Jobs, ipv6Jobs chan<
 		feed(ipv4Jobs, ipv4)
 		feed(ipv6Jobs, ipv6)
 		wg.Wait()
+		log.Printf("scan: recheck feeder: cycle consumed — waiting %s for pending checks to flush", s.cfg.FlushInterval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(s.cfg.FlushInterval):
+		}
 	}
 }
 
