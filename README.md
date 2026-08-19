@@ -7,7 +7,7 @@ GWS Database (gwsdb) tracks which Google Web Server (GWS) IP addresses are reach
 ## Stack
 
 - **Go CLI** (`cmd/gwsdb`) — the probe side that must run on a China box:
-  - `gwsdb scan -worker` — always-on scanner. N goroutines continuously probe random IPs from CIDR range files (1/3 re-check known IPs from the pool, 2/3 scan for new ones); a flusher submits accumulated results to the Cloudflare-hosted API every few minutes; a probe server serves on-demand probes from the query page via a VPC proxy Worker.
+  - `gwsdb scan` — always-on scanner. Independently sized IPv4/IPv6 goroutine pools scan random addresses and re-check known IPs; a flusher submits accumulated results to the Cloudflare-hosted API every few minutes; a probe server serves on-demand probes from the query page via a VPC proxy Worker.
   - `gwsdb recheck -ip` — ad-hoc: probe one IP, print result, submit it.
   - `gwsdb ingest` — manual ops: parse a captured gscan_quic scan, submit checks.
 - **Cloudflare Pages Functions + D1** (`functions/`, `src/`) — everything else:
@@ -59,11 +59,13 @@ npx wrangler d1 migrations apply gwsdb --remote
 
 ```
 gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
-                  [-workers 10] [-recheck-workers -1] [-interval 1s] [-timeout 10s] [-flush 10m]
+                  [-ipv4-worker 6] [-ipv6-worker 1]
+                  [-ipv4-recheck-worker 2] [-ipv6-recheck-worker 1]
+                  [-interval 1s] [-timeout 10s] [-flush 10m]
                   [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
 ```
 
-Always-on: probes random IPs from CIDR range files, flushes to `$GWSDB_API` every `-flush`, serves on-demand probes via VPC proxy Worker. `-recheck-workers` carves out goroutines to re-probe known IPs from the pool, oldest-first; `-1` = workers/3, `0` = disable (all scan).
+Always-on: probes random IPs from CIDR range files, flushes to `$GWSDB_API` every `-flush`, serves on-demand probes via VPC proxy Worker. IPv4 and IPv6 scan/recheck worker counts are independent; each option accepts `0` to disable that worker class. Setting all four to `0` leaves only the on-demand probe server running. Known IPs are re-checked oldest-first within the shared pool order.
 
 Probe pipeline per IP: ICMP ping gate (unprivileged `udp4`/`udp6` datagram, no root needed on Linux) → `CheckSNI` (TLS handshake + CN verification + HTTP status check, per `config.user.json`'s SNI block). Ping failures skip the TCP probe entirely.
 

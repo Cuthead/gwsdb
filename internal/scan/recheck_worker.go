@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
@@ -23,7 +25,7 @@ import (
 // IPs. Here the feeder is split into its own goroutine so N recheck
 // workers can consume in parallel without contending for a single
 // shared pointer.
-func (s *Scanner) runRecheckFeeder(ctx context.Context, jobs chan<- string) {
+func (s *Scanner) runRecheckFeeder(ctx context.Context, ipv4Jobs, ipv6Jobs chan<- string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -49,13 +51,63 @@ func (s *Scanner) runRecheckFeeder(ctx context.Context, jobs chan<- string) {
 			}
 			continue
 		}
-		log.Printf("scan: recheck feeder: queued %d IPs (oldest first)", len(pool))
-		for _, ip := range pool {
+		ipv4, ipv6 := splitPoolByFamily(pool)
+		log.Printf("scan: recheck feeder: queued %d IPs (IPv4=%d, IPv6=%d; oldest first)", len(pool), len(ipv4), len(ipv6))
+		matching := 0
+		if ipv4Jobs != nil {
+			matching += len(ipv4)
+		}
+		if ipv6Jobs != nil {
+			matching += len(ipv6)
+		}
+		if matching == 0 {
+			log.Printf("scan: recheck feeder: no IPs match enabled recheck workers — waiting 60s")
 			select {
 			case <-ctx.Done():
 				return
-			case jobs <- ip:
+			case <-time.After(60 * time.Second):
 			}
+			continue
+		}
+		var wg sync.WaitGroup
+		feed := func(jobs chan<- string, ips []string) {
+			if jobs == nil {
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				feedRecheckJobs(ctx, jobs, ips)
+			}()
+		}
+		feed(ipv4Jobs, ipv4)
+		feed(ipv6Jobs, ipv6)
+		wg.Wait()
+	}
+}
+
+func splitPoolByFamily(pool []string) (ipv4, ipv6 []string) {
+	for _, ip := range pool {
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			log.Printf("scan: recheck feeder: invalid IP %q: %v", ip, err)
+			continue
+		}
+		if addr.Is4() {
+			ipv4 = append(ipv4, ip)
+		} else {
+			ipv6 = append(ipv6, ip)
+		}
+	}
+	return ipv4, ipv6
+}
+
+func feedRecheckJobs(ctx context.Context, jobs chan<- string, ips []string) {
+	for _, ip := range ips {
+		select {
+		case <-ctx.Done():
+			return
+		case jobs <- ip:
 		}
 	}
 }

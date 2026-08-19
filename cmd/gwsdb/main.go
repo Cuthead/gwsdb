@@ -59,11 +59,11 @@ Usage:
   gwsdb ingest      -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
   gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
   gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
-                    [-workers 10] [-recheck-workers -1] [-interval 1s] [-timeout 10s] [-flush 10m]
+                    [-ipv4-worker 6] [-ipv6-worker 1] [-ipv4-recheck-worker 2] [-ipv6-recheck-worker 1]
+                    [-interval 1s] [-timeout 10s] [-flush 10m]
                     [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
                                 (always-on: probes random IPs from CIDR range files, flushes to $GWSDB_API
-                                 every -flush, serves on-demand probes via VPC proxy Worker — replaces scan_and_ingest.sh + recheck_and_submit.sh.
-                                 -recheck-workers carves out goroutines to re-probe known IPs from the pool, oldest-first; -1 = workers/3, 0 = disable)
+                                 every -flush, serves on-demand probes via VPC proxy Worker — replaces scan_and_ingest.sh + recheck_and_submit.sh)
 
 GWSDB_API/GWSDB_INGEST_TOKEN/GWSDB_PROBE_TOKEN can also come from a KEY=VALUE
 file instead of being exported by hand: ~/.config/gwsdb/env by default, or
@@ -238,14 +238,22 @@ func runScan(args []string) {
 	mode := fs.String("mode", "SNI", "scan mode block to use from the config")
 	var extraRanges stringSliceFlag
 	fs.Var(&extraRanges, "ip-range", "IP range file (CIDR per line, v4 or v6); may be repeated; when given, replaces the config's InputFile entirely")
-	workers := fs.Int("workers", 10, "number of probe worker goroutines (scan + recheck combined)")
-	recheckWorkers := fs.Int("recheck-workers", -1, "goroutines carved out for re-checking known IPs from the pool; -1 = workers/3, 0 = disable (all scan)")
+	ipv4Workers := fs.Int("ipv4-worker", 6, "goroutines scanning random IPv4 addresses; 0 = disable")
+	ipv6Workers := fs.Int("ipv6-worker", 1, "goroutines scanning random IPv6 addresses; 0 = disable")
+	ipv4RecheckWorkers := fs.Int("ipv4-recheck-worker", 2, "goroutines re-checking known IPv4 addresses; 0 = disable")
+	ipv6RecheckWorkers := fs.Int("ipv6-recheck-worker", 1, "goroutines re-checking known IPv6 addresses; 0 = disable")
 	interval := fs.Duration("interval", time.Second, "per-worker sleep between probes")
 	probeTimeout := fs.Duration("timeout", 10*time.Second, "per-probe timeout")
 	flushInterval := fs.Duration("flush", 10*time.Minute, "how often to flush accumulated checks to the API")
 	probeAddr := fs.String("probe-addr", "0.0.0.0:8787", "address for the on-demand probe HTTP server (reached by the gwsdb-probe Worker via Cloudflare Mesh); empty disables it")
 	probeToken := fs.String("probe-token", "", "shared secret authenticating probe requests (X-Probe-Token header); must match the Cloudflare side's PROBE_TOKEN. Required if -probe-addr is set")
 	fs.Parse(args)
+	workerCounts := []int{*ipv4Workers, *ipv6Workers, *ipv4RecheckWorkers, *ipv6RecheckWorkers}
+	for _, count := range workerCounts {
+		if count < 0 {
+			log.Fatal("scan: worker counts must not be negative")
+		}
+	}
 
 	if *scannerConfigPath == "" {
 		fmt.Fprintln(os.Stderr, "scan: -scanner-config is required")
@@ -286,7 +294,7 @@ func runScan(args []string) {
 		}
 		rangePaths = append(rangePaths, p)
 	}
-	if len(rangePaths) == 0 {
+	if len(rangePaths) == 0 && *ipv4Workers+*ipv6Workers > 0 {
 		if sub.InputFile == "" {
 			log.Fatalf("scan: no IP range files (no -ip-range given, and config has no InputFile for %s)", *mode)
 		}
@@ -297,9 +305,12 @@ func runScan(args []string) {
 		rangePaths = append(rangePaths, p)
 	}
 
-	ipRange, err := scan.LoadIPRanges(rangePaths)
-	if err != nil {
-		log.Fatalf("scan: load IP ranges: %v", err)
+	var ipRange *scan.IPRangeSource
+	if len(rangePaths) > 0 {
+		ipRange, err = scan.LoadIPRanges(rangePaths)
+		if err != nil {
+			log.Fatalf("scan: load IP ranges: %v", err)
+		}
 	}
 
 	apiBase := requireEnv("GWSDB_API")
@@ -314,19 +325,21 @@ func runScan(args []string) {
 	}
 
 	sc := scan.New(scan.Config{
-		ProbeConfig:    sub,
-		ScanMode:       strings.ToUpper(*mode),
-		IPRange:        ipRange,
-		InputFile:      strings.Join(rangePaths, ","),
-		Workers:        *workers,
-		RecheckWorkers: *recheckWorkers,
-		Interval:       *interval,
-		ProbeTimeout:   *probeTimeout,
-		FlushInterval:  *flushInterval,
-		ProbeAddr:      *probeAddr,
-		ProbeToken:     probeTokenVal,
-		APIBase:        apiBase,
-		Token:          token,
+		ProbeConfig:        sub,
+		ScanMode:           strings.ToUpper(*mode),
+		IPRange:            ipRange,
+		InputFile:          strings.Join(rangePaths, ","),
+		IPv4Workers:        *ipv4Workers,
+		IPv6Workers:        *ipv6Workers,
+		IPv4RecheckWorkers: *ipv4RecheckWorkers,
+		IPv6RecheckWorkers: *ipv6RecheckWorkers,
+		Interval:           *interval,
+		ProbeTimeout:       *probeTimeout,
+		FlushInterval:      *flushInterval,
+		ProbeAddr:          *probeAddr,
+		ProbeToken:         probeTokenVal,
+		APIBase:            apiBase,
+		Token:              token,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

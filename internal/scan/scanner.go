@@ -22,17 +22,20 @@ type Config struct {
 	// ("SNI"). Must match recheck.DefaultScanMode since the probe is
 	// SNI-specific.
 	ScanMode string
-	// IPRange is the source of candidate IPs.
+	// IPRange is the source of candidate IPs. It may be nil when both scan
+	// worker counts are zero and the process only rechecks known IPs.
 	IPRange *IPRangeSource
 	// InputFile is recorded on the Scan row for provenance (the
 	// config's InputFile plus any extra -ip-range files, comma-joined).
 	InputFile string
 
-	Workers        int           // probe goroutine count (scan + recheck combined)
-	RecheckWorkers int           // recheck goroutines carve-out; -1 = Workers/3, 0 = disable
-	Interval       time.Duration // per-worker sleep between probes
-	ProbeTimeout   time.Duration // per-probe deadline (bounds CheckSNI)
-	FlushInterval  time.Duration // how often to submit accumulated checks
+	IPv4Workers        int           // random IPv4 scan goroutines
+	IPv6Workers        int           // random IPv6 scan goroutines
+	IPv4RecheckWorkers int           // known IPv4 recheck goroutines
+	IPv6RecheckWorkers int           // known IPv6 recheck goroutines
+	Interval           time.Duration // per-worker sleep between probes
+	ProbeTimeout       time.Duration // per-probe deadline (bounds CheckSNI)
+	FlushInterval      time.Duration // how often to submit accumulated checks
 
 	// ProbeAddr is the address the on-demand probe HTTP server listens
 	// on (e.g. "0.0.0.0:8787"), reached by the gwsdb-probe Worker (worker/)
@@ -83,12 +86,8 @@ type Scanner struct {
 	netMon networkMonitor
 }
 
-// New returns a Scanner with defaults applied for any zero/invalid
-// Config field.
+// New returns a Scanner with defaults applied for zero/invalid durations.
 func New(cfg Config) *Scanner {
-	if cfg.Workers <= 0 {
-		cfg.Workers = 10
-	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = time.Second
 	}
@@ -110,18 +109,30 @@ func New(cfg Config) *Scanner {
 // but-unflushed checks aren't lost (the flusher's ctx.Done case runs a
 // detached-context flush before returning).
 func (s *Scanner) Run(ctx context.Context) error {
-	recheckN := s.cfg.RecheckWorkers
-	if recheckN < 0 {
-		recheckN = s.cfg.Workers / 3
+	counts := []int{s.cfg.IPv4Workers, s.cfg.IPv6Workers, s.cfg.IPv4RecheckWorkers, s.cfg.IPv6RecheckWorkers}
+	for _, count := range counts {
+		if count < 0 {
+			return fmt.Errorf("worker counts must not be negative")
+		}
 	}
-	if recheckN > s.cfg.Workers {
-		recheckN = s.cfg.Workers
+	ipv4ScanN, ipv6ScanN := s.cfg.IPv4Workers, s.cfg.IPv6Workers
+	v4, v6, prefixCount := 0, 0, 0
+	if s.cfg.IPRange != nil {
+		v4, v6 = s.cfg.IPRange.Counts()
+		prefixCount = s.cfg.IPRange.Len()
 	}
-	scanN := s.cfg.Workers - recheckN
-
-	v4, v6 := s.cfg.IPRange.Counts()
-	log.Printf("scan: starting: %d workers (%d scan + %d recheck), interval=%s, flush=%s, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
-		s.cfg.Workers, scanN, recheckN, s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, s.cfg.IPRange.Len(), v4, v6)
+	if ipv4ScanN > 0 && v4 == 0 {
+		log.Printf("scan: no IPv4 prefixes loaded; disabling %d IPv4 scan workers", ipv4ScanN)
+		ipv4ScanN = 0
+	}
+	if ipv6ScanN > 0 && v6 == 0 {
+		log.Printf("scan: no IPv6 prefixes loaded; disabling %d IPv6 scan workers", ipv6ScanN)
+		ipv6ScanN = 0
+	}
+	totalWorkers := ipv4ScanN + ipv6ScanN + s.cfg.IPv4RecheckWorkers + s.cfg.IPv6RecheckWorkers
+	log.Printf("scan: starting: %d workers (IPv4 scan=%d recheck=%d, IPv6 scan=%d recheck=%d), interval=%s, flush=%s, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
+		totalWorkers, ipv4ScanN, s.cfg.IPv4RecheckWorkers, ipv6ScanN, s.cfg.IPv6RecheckWorkers,
+		s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, prefixCount, v4, v6)
 	log.Printf("scan: probe config: level=%d %s",
 		s.cfg.ProbeConfig.Level,
 		recheck.ProbeParams(s.cfg.ProbeConfig))
@@ -156,34 +167,51 @@ func (s *Scanner) Run(ctx context.Context) error {
 		s.runFlusher(ctx)
 	}()
 
-	// Recheck workers: a feeder fetches the tracked pool from /api/pool
-	// (oldest-first by lastSeen) and feeds IPs through an unbuffered
-	// channel to N recheck workers, which re-probe each with the same
-	// ping gate + CheckSNI as scan workers. The unbuffered channel means
-	// the feeder blocks until a worker takes each IP, so it doesn't
-	// re-fetch until the previous full cycle has been consumed — natural
-	// backpressure, no double-queueing. See recheck_worker.go.
-	if recheckN > 0 {
-		jobs := make(chan string)
+	// Recheck workers: a feeder fetches the tracked pool from /api/pool,
+	// splits it by address family, and concurrently feeds each family to
+	// its worker pool. It doesn't re-fetch until both queues consume the
+	// previous cycle. See recheck_worker.go.
+	if s.cfg.IPv4RecheckWorkers+s.cfg.IPv6RecheckWorkers > 0 {
+		var ipv4Jobs, ipv6Jobs chan string
+		if s.cfg.IPv4RecheckWorkers > 0 {
+			ipv4Jobs = make(chan string)
+		}
+		if s.cfg.IPv6RecheckWorkers > 0 {
+			ipv6Jobs = make(chan string)
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.runRecheckFeeder(ctx, jobs)
+			s.runRecheckFeeder(ctx, ipv4Jobs, ipv6Jobs)
 		}()
-		for range recheckN {
+		for range s.cfg.IPv4RecheckWorkers {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s.runRecheckWorker(ctx, jobs)
+				s.runRecheckWorker(ctx, ipv4Jobs)
+			}()
+		}
+		for range s.cfg.IPv6RecheckWorkers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.runRecheckWorker(ctx, ipv6Jobs)
 			}()
 		}
 	}
 
-	for range scanN {
+	for range ipv4ScanN {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.runWorker(ctx)
+			s.runWorker(ctx, false)
+		}()
+	}
+	for range ipv6ScanN {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.runWorker(ctx, true)
 		}()
 	}
 
@@ -197,7 +225,7 @@ func (s *Scanner) Run(ctx context.Context) error {
 // runWorker is the XX-Net scan_ip_worker equivalent: loop forever
 // sleeping then probing a random IP, recording each result for the
 // flusher to submit. Stops on ctx.Done.
-func (s *Scanner) runWorker(ctx context.Context) {
+func (s *Scanner) runWorker(ctx context.Context, ipv6 bool) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -216,7 +244,13 @@ func (s *Scanner) runWorker(ctx context.Context) {
 			continue
 		}
 
-		ip := s.cfg.IPRange.GetIP()
+		ip, ok := s.cfg.IPRange.GetIPv4()
+		if ipv6 {
+			ip, ok = s.cfg.IPRange.GetIPv6()
+		}
+		if !ok {
+			return
+		}
 
 		// Ping gate: skip the TCP/SNI probe entirely if ICMP echo gets
 		// no reply — most unreachable IPs fail ping too, so this saves a
