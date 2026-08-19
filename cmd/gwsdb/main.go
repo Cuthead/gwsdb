@@ -228,16 +228,16 @@ func (f *stringSliceFlag) Set(v string) error {
 // The probe config comes from gscan_quic's config.user.json (same file
 // `gwsdb ingest`/`recheck` read), so the scanner probes with the exact
 // same ServerName/HTTPPath/timeout settings the last manual scan used.
-// The default IP range is the config's InputFile (typically v4); add
-// more with -ip-range (e.g. the v6 range file). Stops cleanly on
-// SIGINT/SIGTERM with one final flush.
+// IP ranges come from -ip-range when given (fully replacing the config's
+// InputFile); otherwise the config's InputFile is the default (typically
+// v4). Stops cleanly on SIGINT/SIGTERM with one final flush.
 func runScan(args []string) {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	scannerConfigPath := fs.String("scanner-config", "", "path to gscan_quic config.json/config.user.json (probe config + default IP range source)")
 	scanDir := fs.String("scanner-dir", "", "dir gscan_quic ran in; base for relative InputFile paths (defaults to -scanner-config's dir)")
 	mode := fs.String("mode", "SNI", "scan mode block to use from the config")
 	var extraRanges stringSliceFlag
-	fs.Var(&extraRanges, "ip-range", "additional IP range file (CIDR per line, v4 or v6); may be repeated")
+	fs.Var(&extraRanges, "ip-range", "IP range file (CIDR per line, v4 or v6); may be repeated; when given, replaces the config's InputFile entirely")
 	workers := fs.Int("workers", 10, "number of probe worker goroutines (scan + recheck combined)")
 	recheckWorkers := fs.Int("recheck-workers", -1, "goroutines carved out for re-checking known IPs from the pool; -1 = workers/3, 0 = disable (all scan)")
 	interval := fs.Duration("interval", time.Second, "per-worker sleep between probes")
@@ -271,23 +271,15 @@ func runScan(args []string) {
 		sub.HTTPMethod = "HEAD"
 	}
 
-	// Default IP range comes from the config's InputFile (gscan_quic's
-	// convention), resolved relative to scanDir or the config's dir.
-	// Extra -ip-range files append to it so v4 and v6 can be scanned
-	// together (the China box needs v6 connectivity for v6 probes to
-	// succeed; v6 failures don't affect v4 scanning).
+	// IP ranges: -ip-range, when given, fully replaces the config's
+	// InputFile; otherwise the default is the config's InputFile
+	// (gscan_quic's convention), resolved relative to scanDir or the
+	// config's dir.
 	base := *scanDir
 	if base == "" {
 		base = filepath.Dir(*scannerConfigPath)
 	}
-	var rangePaths []string
-	if sub.InputFile != "" {
-		p := sub.InputFile
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(base, p)
-		}
-		rangePaths = append(rangePaths, p)
-	}
+	rangePaths := make([]string, 0, len(extraRanges))
 	for _, p := range extraRanges {
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(base, p)
@@ -295,7 +287,14 @@ func runScan(args []string) {
 		rangePaths = append(rangePaths, p)
 	}
 	if len(rangePaths) == 0 {
-		log.Fatalf("scan: no IP range files (config has no InputFile for %s, and no -ip-range given)", *mode)
+		if sub.InputFile == "" {
+			log.Fatalf("scan: no IP range files (no -ip-range given, and config has no InputFile for %s)", *mode)
+		}
+		p := sub.InputFile
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(base, p)
+		}
+		rangePaths = append(rangePaths, p)
 	}
 
 	ipRange, err := scan.LoadIPRanges(rangePaths)
