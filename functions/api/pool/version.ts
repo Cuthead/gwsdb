@@ -1,7 +1,7 @@
 // Pages Function for GET /api/pool/version -- ports
 // internal/web/server.go's handleAPIPoolVersion: a single cheap query the
-// home page's JS polls to decide, without refetching the full payload,
-// whether its localStorage-cached copy of /api/pool is still current.
+// lightweight version signal retained for API consumers. The home page now
+// asks /api/pool/changes directly, which returns this version with its delta.
 import { poolVersion } from "../../../src/store";
 import type { Env } from "../../../src/env";
 

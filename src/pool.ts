@@ -3,11 +3,12 @@
 // (functions/api/pool.ts) -- mirrors internal/web/server.go's loadPool.
 import { countryCode, decodeBest } from "./geo";
 import { formatTime } from "./html";
-import { listKnownIPs, overview } from "./store";
+import { listKnownIPs, listKnownIPsChanged, overview } from "./store";
 import type { IPStatus, Stats } from "./types";
 
 export interface IPRow {
 	ip: string;
+	revision: number;
 	ptrList: string[];
 	country: string;
 	countryCode: string;
@@ -32,6 +33,7 @@ function toIPRow(st: IPStatus): IPRow {
 	}
 	return {
 		ip: st.ip,
+		revision: st.revision,
 		ptrList: st.ptrHostname,
 		country,
 		countryCode: code,
@@ -77,4 +79,12 @@ export async function loadPool(db: D1Database, opts: LoadPoolOptions = {}): Prom
 	}
 	const stats = await overview(db);
 	return { ips, scanMode: stats.scanMode, stats };
+}
+
+export async function loadPoolChanges(db: D1Database, afterRevision: number, throughRevision: number): Promise<Pool> {
+	const [known, stats] = await Promise.all([
+		listKnownIPsChanged(db, afterRevision, throughRevision),
+		overview(db),
+	]);
+	return { ips: known.map(toIPRow), scanMode: stats.scanMode, stats };
 }

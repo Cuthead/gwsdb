@@ -26,6 +26,10 @@ function joinStrings(values: string[]): string {
 
 const MAX_BATCH = 500; // comfortably under D1's 1,000/batch free-tier cap
 
+function bumpPoolRevision(db: D1Database): D1PreparedStatement {
+	return db.prepare(`UPDATE pool_revision SET version = version + 1 WHERE singleton = 1`);
+}
+
 function toSQLiteDateTime(d: Date | null): string | null {
 	return d ? d.toISOString() : null;
 }
@@ -88,6 +92,7 @@ export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise
 	}
 
 	const uniqueRows = Array.from(latestByIP.values());
+	if (uniqueRows.length === 0) return;
 
 	for (let i = 0; i < uniqueRows.length; i += POOL_UPSERT_CHUNK) {
 		const chunk = uniqueRows.slice(i, i + POOL_UPSERT_CHUNK);
@@ -97,15 +102,16 @@ export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise
 			if (r.ok) {
 				return db
 					.prepare(
-						`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
-						 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)
+						`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, revision)
+						 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, (SELECT version FROM pool_revision WHERE singleton = 1))
 						 ON CONFLICT(ip) DO UPDATE SET
 							scan_mode = excluded.scan_mode,
 							last_seen = excluded.last_seen,
 							last_rtt_ms = excluded.last_rtt_ms,
 							times_seen = ip_pool.times_seen + 1,
 							last_checked_at = excluded.last_checked_at,
-							last_check_ok = 1`,
+							last_check_ok = 1,
+							revision = excluded.revision`,
 					)
 					.bind(r.ip, isIPv6, r.scanMode, ts, ts, r.rttMs ?? 0, ts);
 			}
@@ -113,12 +119,13 @@ export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise
 				.prepare(
 					`UPDATE ip_pool SET
 						last_checked_at = ?,
-						last_check_ok = 0
+						last_check_ok = 0,
+						revision = (SELECT version FROM pool_revision WHERE singleton = 1)
 					 WHERE ip = ?`,
 				)
 				.bind(ts, r.ip);
 		});
-		await db.batch(statements);
+		await db.batch([bumpPoolRevision(db), ...statements]);
 	}
 }
 
@@ -206,6 +213,7 @@ function splitStrings(joined: string): string[] {
 
 interface IPPoolRow {
 	ip: string;
+	revision: number;
 	is_ipv6: number;
 	scan_mode: string | null;
 	first_seen: string | null;
@@ -220,6 +228,7 @@ interface IPPoolRow {
 function rowToIPStatus(row: IPPoolRow): IPStatus {
 	return {
 		ip: row.ip,
+		revision: row.revision,
 		isIPv6: row.is_ipv6 !== 0,
 		scanMode: row.scan_mode ?? "",
 		firstSeen: fromSQLiteDateTime(row.first_seen),
@@ -237,7 +246,7 @@ function rowToIPStatus(row: IPPoolRow): IPStatus {
 export async function ipStatusFor(db: D1Database, ip: string): Promise<IPStatus | null> {
 	const row = await db
 		.prepare(
-			`SELECT ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok
+			`SELECT ip, revision, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok
 			FROM ip_pool WHERE ip = ?`,
 		)
 		.bind(ip)
@@ -272,12 +281,11 @@ export async function overview(db: D1Database): Promise<Stats> {
 	};
 }
 
-// poolVersion returns ip_checks' highest row id, a cheap (rowid-indexed)
-// signal that changes whenever ingest or recheck writes a new check. The
-// home page's client-side cache polls this to decide whether ip_pool needs
-// refetching, instead of recomputing the view on every visit.
+// poolVersion returns the latest published ip_pool revision. Check and PTR
+// writers allocate one revision per logical batch, allowing clients to query
+// rows changed after a prior snapshot.
 export async function poolVersion(db: D1Database): Promise<number> {
-	const row = await db.prepare(`SELECT COALESCE(MAX(id), 0) AS v FROM ip_checks`).first<{ v: number }>();
+	const row = await db.prepare(`SELECT version AS v FROM pool_revision WHERE singleton = 1`).first<{ v: number }>();
 	return row?.v ?? 0;
 }
 
@@ -312,7 +320,7 @@ export async function listKnownIPs(db: D1Database, opts: ListKnownIPsOptions): P
 	const col = listKnownIPsSortColumns[opts.sortBy ?? ""] ?? "last_seen";
 	const dir = opts.sortDesc ? "DESC" : "ASC";
 
-	let q = `SELECT ip_pool.ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '') AS ptr_hostname
+	let q = `SELECT ip_pool.ip, revision, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '') AS ptr_hostname
 		FROM ip_pool
 		LEFT JOIN ptr_cache ON ptr_cache.ip = ip_pool.ip`;
 
@@ -334,6 +342,27 @@ export async function listKnownIPs(db: D1Database, opts: ListKnownIPsOptions): P
 	}
 
 	const { results } = await db.prepare(q).bind(...args).all<IPPoolRow>();
+	return results.map(rowToIPStatus);
+}
+
+// listKnownIPsChanged returns the current representation of rows touched in
+// (afterRevision, throughRevision]. Repeated mutations collapse naturally to
+// one row, so no retained change-log table is needed.
+export async function listKnownIPsChanged(
+	db: D1Database,
+	afterRevision: number,
+	throughRevision: number,
+): Promise<IPStatus[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT ip_pool.ip, revision, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, COALESCE(ptr_cache.ptr_hostname, '') AS ptr_hostname
+			 FROM ip_pool
+			 LEFT JOIN ptr_cache ON ptr_cache.ip = ip_pool.ip
+			 WHERE revision > ? AND revision <= ?
+			 ORDER BY revision ASC, ip_pool.ip ASC`,
+		)
+		.bind(afterRevision, throughRevision)
+		.all<IPPoolRow>();
 	return results.map(rowToIPStatus);
 }
 
@@ -377,6 +406,7 @@ export async function getPTR(db: D1Database, ip: string): Promise<PTRCacheEntry 
 export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
 	const checkedAt = toSQLiteDateTime(e.checkedAt);
 	await db.batch([
+		bumpPoolRevision(db),
 		db
 			.prepare(
 				`INSERT INTO ptr_cache (ip, ptr_hostname, lookup_ok, ttl_seconds, checked_at)
@@ -388,7 +418,11 @@ export async function savePTR(db: D1Database, e: PTRCacheEntry): Promise<void> {
 					checked_at   = excluded.checked_at`,
 			)
 			.bind(e.ip, joinStrings(e.ptrHostnames), e.lookupOk ? 1 : 0, e.ttlSeconds, checkedAt),
-		db.prepare(`UPDATE ip_pool SET ptr_checked_at = ? WHERE ip = ?`).bind(checkedAt, e.ip),
+		db
+			.prepare(
+				`UPDATE ip_pool SET ptr_checked_at = ?, revision = (SELECT version FROM pool_revision WHERE singleton = 1) WHERE ip = ?`,
+			)
+			.bind(checkedAt, e.ip),
 	]);
 }
 
@@ -408,6 +442,7 @@ const PTR_BATCH_CHUNK = 400;
 // the whole write phase at a handful of subrequests regardless of how many
 // IPs were resolved.
 export async function savePTRBatch(db: D1Database, entries: PTRCacheEntry[]): Promise<void> {
+	if (entries.length === 0) return;
 	for (let i = 0; i < entries.length; i += PTR_BATCH_CHUNK) {
 		const chunk = entries.slice(i, i + PTR_BATCH_CHUNK);
 		const statements = chunk.flatMap((e) => {
@@ -424,10 +459,14 @@ export async function savePTRBatch(db: D1Database, entries: PTRCacheEntry[]): Pr
 							checked_at   = excluded.checked_at`,
 					)
 					.bind(e.ip, joinStrings(e.ptrHostnames), e.lookupOk ? 1 : 0, e.ttlSeconds, checkedAt),
-				db.prepare(`UPDATE ip_pool SET ptr_checked_at = ? WHERE ip = ?`).bind(checkedAt, e.ip),
+				db
+					.prepare(
+						`UPDATE ip_pool SET ptr_checked_at = ?, revision = (SELECT version FROM pool_revision WHERE singleton = 1) WHERE ip = ?`,
+					)
+					.bind(checkedAt, e.ip),
 			];
 		});
-		await db.batch(statements);
+		await db.batch([bumpPoolRevision(db), ...statements]);
 	}
 }
 
@@ -708,28 +747,43 @@ export async function updatePoolForCheck(
 	const ts = toSQLiteDateTime(checkedAt);
 
 	// Try UPDATE first (common case: IP already in pool). reads 1 row by PK.
-	const result = await db
-		.prepare(
+	const results = await db.batch([
+		bumpPoolRevision(db),
+		db
+			.prepare(
 			`UPDATE ip_pool SET
 				last_checked_at = ?,
 				last_check_ok = ?,
 				last_rtt_ms = CASE WHEN ? THEN ? ELSE last_rtt_ms END,
 				last_seen = CASE WHEN ? THEN ? ELSE last_seen END,
-				times_seen = CASE WHEN ? THEN times_seen + 1 ELSE times_seen END
+				times_seen = CASE WHEN ? THEN times_seen + 1 ELSE times_seen END,
+				revision = (SELECT version FROM pool_revision WHERE singleton = 1)
 			 WHERE ip = ?`,
 		)
-		.bind(ts, ok ? 1 : 0, ok ? 1 : 0, rttMs ?? 0, ok ? 1 : 0, ts, ok ? 1 : 0, ip)
-		.run();
+			.bind(ts, ok ? 1 : 0, ok ? 1 : 0, rttMs ?? 0, ok ? 1 : 0, ts, ok ? 1 : 0, ip),
+	]);
+	const result = results[1];
+	if (!result) throw new Error("pool update result missing");
 
 	// IP not in pool and check succeeded: INSERT (mirrors refreshPoolForIPs's
 	// HAVING times_seen > 0 gate — only reachable IPs belong in the pool).
 	if (result.meta.changes === 0 && ok) {
-		await db
-			.prepare(
-				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok)
-				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1)`,
+		await db.batch([
+			bumpPoolRevision(db),
+			db
+				.prepare(
+				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, revision)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, (SELECT version FROM pool_revision WHERE singleton = 1))
+				 ON CONFLICT(ip) DO UPDATE SET
+					scan_mode = excluded.scan_mode,
+					last_seen = excluded.last_seen,
+					last_rtt_ms = excluded.last_rtt_ms,
+					times_seen = ip_pool.times_seen + 1,
+					last_checked_at = excluded.last_checked_at,
+					last_check_ok = 1,
+					revision = excluded.revision`,
 			)
-			.bind(ip, isIPv6, scanMode, ts, ts, rttMs ?? 0, ts)
-			.run();
+				.bind(ip, isIPv6, scanMode, ts, ts, rttMs ?? 0, ts),
+		]);
 	}
 }

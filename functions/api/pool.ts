@@ -1,17 +1,15 @@
 // Pages Function for GET /api/pool -- ports internal/web/server.go's
 // handleAPIPool. Search, sort, filter, and pagination are all handled
-// client-side by static/home.js over this payload, so it's fetched once,
-// unfiltered, newest-first, and cached in the browser until
-// /api/pool/version moves.
+// client-side by static/home.js over this payload. It supplies the initial
+// IndexedDB snapshot; later visits merge /api/pool/changes responses.
 import { formatTime } from "../../src/html";
 import { loadPool } from "../../src/pool";
 import { poolVersion } from "../../src/store";
 import type { Env } from "../../src/env";
 
 // version is baked into the cache key (not just the response body) so this
-// edge cache and the browser's localStorage cache (home.js) invalidate on
-// exactly the same signal: a version bump makes both look like a miss,
-// nothing in between requires manual purging. Populated lazily per colo --
+// edge cache and the browser's IndexedDB snapshot use the same revision
+// signal. Populated lazily per colo --
 // the first request after a version bump in each colo still pays the D1
 // read, every later request/colo hits the edge cache instead.
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -19,6 +17,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
 	const cache = caches.default;
 	const cacheURL = new URL(context.request.url);
+	cacheURL.searchParams.set("schema", "2");
 	cacheURL.searchParams.set("v", String(version));
 	const cacheKey = new Request(cacheURL.toString(), context.request);
 
@@ -37,6 +36,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	}
 
 	const { ips, scanMode, stats } = await loadPool(context.env.DB);
+	if ((await poolVersion(context.env.DB)) !== version) {
+		return Response.json({ error: "pool changed while loading" }, { status: 503, headers: { "Cache-Control": "no-store" } });
+	}
 
 	// country/countryCode are dropped here -- the browser decodes ptrList
 	// itself (see public/static/home.js + geo.js), so shipping the

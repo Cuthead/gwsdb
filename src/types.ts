@@ -5,6 +5,7 @@
 // reachability record for one IP, derived live from the ip_pool view.
 export interface IPStatus {
 	ip: string;
+	revision: number;
 	isIPv6: boolean;
 	scanMode: string;
 	firstSeen: Date | null;
@@ -68,5 +69,4 @@ export interface IPCheckHistoryRow {
 	checkedAt: Date | null;
 	scanMode: string;
 }
-
 

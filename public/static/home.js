@@ -1,13 +1,11 @@
 // @license magnet:?xt=urn:btih:1f739d935676111cfff4b4693e3816e664797050&dn=gpl-3.0.txt GPL-3.0
 
-// Fetches the known-IP pool from /api/pool, caches it in localStorage, and
+// Fetches the known-IP pool from /api/pool, caches rows in IndexedDB, and
 // renders + provides client-side search/sort/filter/pagination over it.
 //
-// The pool is only ever refetched when /api/pool/version (a single cheap
-// query) reports a version the cache doesn't have -- ingest and recheck are
-// the only things that bump it, since both write ip_checks rows. A repeat
-// visit between those events renders entirely from localStorage, no request
-// to /api/pool at all.
+// Cached rows render before any network request. The background sync asks
+// /api/pool/changes for rows changed after the cached revision and merges
+// them by IP; only an empty/new cache downloads /api/pool in full.
 //
 // /api/pool sends ptrList only, not a precomputed country -- this decodes
 // each row's PTR hostnames client-side with the same logic the server uses
@@ -22,7 +20,12 @@ import { decodeBest, countryCode } from './geo.js';
 // import { resolvePTR } from './ptrResolve.js';
 
 (function () {
-	var CACHE_KEY = 'gwsdb_pool_v1';
+	var DB_NAME = 'gwsdb';
+	var DB_VERSION = 1;
+	var ROW_STORE = 'pool';
+	var META_STORE = 'meta';
+	var META_KEY = 'snapshot';
+	var OLD_CACHE_KEY = 'gwsdb_pool_v1';
 
 	var sortState = {col: null, desc: false};
 	var statusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
@@ -342,52 +345,165 @@ import { decodeBest, countryCode } from './geo.js';
 		}
 	}
 
-	function readCache() {
-		try {
-			var raw = localStorage.getItem(CACHE_KEY);
-			return raw ? JSON.parse(raw) : null;
-		} catch (e) {
-			return null;
+	function openCache() {
+		return new Promise(function (resolve, reject) {
+			if (!window.indexedDB) {
+				reject(new Error('IndexedDB unavailable'));
+				return;
+			}
+			var settled = false;
+			var request = indexedDB.open(DB_NAME, DB_VERSION);
+			request.onupgradeneeded = function () {
+				var db = request.result;
+				if (!db.objectStoreNames.contains(ROW_STORE)) db.createObjectStore(ROW_STORE, {keyPath: 'ip'});
+				if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE);
+			};
+			request.onsuccess = function () {
+				if (settled) {
+					request.result.close();
+					return;
+				}
+				settled = true;
+				request.result.onversionchange = function () { request.result.close(); };
+				resolve(request.result);
+			};
+			request.onerror = function () {
+				if (settled) return;
+				settled = true;
+				reject(request.error || new Error('could not open IndexedDB'));
+			};
+			request.onblocked = function () {
+				if (settled) return;
+				settled = true;
+				reject(new Error('IndexedDB upgrade blocked'));
+			};
+		});
+	}
+
+	function readCache(db) {
+		return new Promise(function (resolve, reject) {
+			var tx = db.transaction([ROW_STORE, META_STORE], 'readonly');
+			var rowsRequest = tx.objectStore(ROW_STORE).getAll();
+			var metaRequest = tx.objectStore(META_STORE).get(META_KEY);
+			tx.oncomplete = function () {
+				var meta = metaRequest.result;
+				if (!meta) {
+					resolve(null);
+					return;
+				}
+				meta.ips = rowsRequest.result || [];
+				resolve(meta);
+			};
+			tx.onerror = function () { reject(tx.error || new Error('could not read IndexedDB')); };
+		});
+	}
+
+	function metadata(data) {
+		return {
+			version: data.version,
+			count: data.count,
+			scanMode: data.scanMode,
+			totalKnownIPs: data.totalKnownIPs,
+			totalChecks: data.totalChecks,
+			lastCheckAt: data.lastCheckAt
+		};
+	}
+
+	function removeOldCache() {
+		try { localStorage.removeItem(OLD_CACHE_KEY); } catch (e) {}
+	}
+
+	function writeFullCache(db, data) {
+		return new Promise(function (resolve, reject) {
+			var tx = db.transaction([ROW_STORE, META_STORE], 'readwrite');
+			var rows = tx.objectStore(ROW_STORE);
+			var metas = tx.objectStore(META_STORE);
+			var currentRequest = metas.get(META_KEY);
+			currentRequest.onsuccess = function () {
+				var current = currentRequest.result;
+				if (current && current.version > data.version) return;
+				rows.clear();
+				(data.ips || []).forEach(function (row) { rows.put(row); });
+				metas.put(metadata(data), META_KEY);
+			};
+			tx.oncomplete = function () {
+				removeOldCache();
+				resolve();
+			};
+			tx.onerror = function () { reject(tx.error || new Error('could not write IndexedDB')); };
+		});
+	}
+
+	function applyChanges(db, data) {
+		return new Promise(function (resolve, reject) {
+			var tx = db.transaction([ROW_STORE, META_STORE], 'readwrite');
+			var rows = tx.objectStore(ROW_STORE);
+			var metas = tx.objectStore(META_STORE);
+			var currentRequest = metas.get(META_KEY);
+
+			(data.ips || []).forEach(function (row) {
+				var oldRequest = rows.get(row.ip);
+				oldRequest.onsuccess = function () {
+					var old = oldRequest.result;
+					if (!old || (old.revision || 0) <= row.revision) rows.put(row);
+				};
+			});
+			currentRequest.onsuccess = function () {
+				var current = currentRequest.result;
+				if (!current || current.version <= data.version) metas.put(metadata(data), META_KEY);
+			};
+			tx.oncomplete = function () { resolve(); };
+			tx.onerror = function () { reject(tx.error || new Error('could not update IndexedDB')); };
+		});
+	}
+
+	function fetchJSON(url) {
+		return fetch(url).then(function (resp) {
+			if (!resp.ok) throw new Error('bad status');
+			return resp.json();
+		});
+	}
+
+	function fetchFull(db) {
+		return fetchJSON('/api/pool').then(function (data) {
+			return writeFullCache(db, data).then(function () { return readCache(db); });
+		});
+	}
+
+	function syncCache(db, cache) {
+		if (!cache) return fetchFull(db);
+		return fetchJSON('/api/pool/changes?since=' + encodeURIComponent(cache.version)).then(function (data) {
+			if (data.reset) return fetchFull(db);
+			if (data.version === cache.version) return cache;
+			return applyChanges(db, data).then(function () { return readCache(db); });
+		});
+	}
+
+	function showLoadError(cache) {
+		var status = document.getElementById('poolStatus');
+		if (cache) {
+			status.textContent = 'Showing cached data -- could not reach the server to check for updates.';
+			status.classList.remove('gwsdb-hidden');
+		} else {
+			status.textContent = 'Could not load data from the server.';
 		}
 	}
 
-	function writeCache(data) {
-		try {
-			localStorage.setItem(CACHE_KEY, JSON.stringify(data));
-		} catch (e) {
-			// Storage full or unavailable (e.g. private browsing) -- the page
-			// still works, just refetches every visit.
-		}
+	function loadWithoutCache() {
+		fetchJSON('/api/pool').then(renderData).catch(function () { showLoadError(null); });
 	}
 
 	function load() {
-		var cache = readCache();
-
-		fetch('/api/pool/version').then(function (resp) {
-			if (!resp.ok) throw new Error('bad status');
-			return resp.json();
-		}).then(function (v) {
-			if (cache && cache.version === v.version) {
-				renderData(cache);
-				return;
-			}
-			return fetch('/api/pool').then(function (resp) {
-				if (!resp.ok) throw new Error('bad status');
-				return resp.json();
-			}).then(function (data) {
-				writeCache(data);
-				renderData(data);
+		openCache().then(function (db) {
+			return readCache(db).then(function (cache) {
+				if (cache) renderData(cache);
+				return syncCache(db, cache).then(function (fresh) {
+					if (fresh && (!cache || fresh.version !== cache.version)) renderData(fresh);
+				}).catch(function () {
+					showLoadError(cache);
+				});
 			});
-		}).catch(function () {
-			var status = document.getElementById('poolStatus');
-			if (cache) {
-				renderData(cache);
-				status.textContent = 'Showing cached data -- could not reach the server to check for updates.';
-				status.classList.remove('gwsdb-hidden');
-			} else {
-				status.textContent = 'Could not load data from the server.';
-			}
-		});
+		}).catch(loadWithoutCache);
 	}
 
 	function init() {
