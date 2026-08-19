@@ -61,11 +61,11 @@ npx wrangler d1 migrations apply gwsdb --remote
 gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
                   [-ipv4-worker 6] [-ipv6-worker 1]
                   [-ipv4-recheck-worker 2] [-ipv6-recheck-worker 1]
-                  [-interval 1s] [-timeout 10s] [-flush 10m]
+                  [-interval 1s] [-timeout 10s] [-flush 10s] [-flush-size 100]
                   [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
 ```
 
-Always-on: probes random IPs from CIDR range files, flushes to `$GWSDB_API` every `-flush`, serves on-demand probes via VPC proxy Worker. IPv4 and IPv6 scan/recheck worker counts are independent; each option accepts `0` to disable that worker class. Setting all four to `0` leaves only the on-demand probe server running. Known IPs are re-checked oldest-first within the shared pool order.
+Always-on: probes random IPs from CIDR range files and flushes to `$GWSDB_API` after `-flush` or `-flush-size`, whichever comes first. Failed batches remain buffered and retry with exponential backoff. IPv4 and IPv6 scan/recheck worker counts are independent; each option accepts `0` to disable that worker class. Setting all four to `0` leaves only the on-demand probe server running. Known IPs are re-checked oldest-first within the shared pool order.
 
 Probe pipeline per IP: ICMP ping gate (unprivileged `udp4`/`udp6` datagram, no root needed on Linux) → `CheckSNI` (TLS handshake + CN verification + HTTP status check, per `config.user.json`'s SNI block). Ping failures skip the TCP probe entirely.
 

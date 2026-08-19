@@ -9,10 +9,10 @@ import (
 	"github.com/cuthead/gwsdb/internal/store"
 )
 
-// runFlusher submits accumulated checks to the Cloudflare-hosted API on
-// a fixed cadence. Checks are written directly to ip_checks (no per-flush
-// Scan row — the scans table is gone). On ctx cancellation it runs one
-// final flush under a detached context so the last window's checks aren't lost.
+// runFlusher submits accumulated checks when either the maximum interval or
+// batch size is reached. Checks are written directly to ip_checks (no per-flush
+// Scan row — the scans table is gone). Run performs the final flush after all
+// producers stop, avoiding a shutdown race with checks still being recorded.
 //
 // The known-good set (which IPs may have failure rows submitted) is kept
 // in memory and refreshed hourly rather than fetched per flush: the only
@@ -22,15 +22,79 @@ import (
 func (s *Scanner) runFlusher(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.FlushInterval)
 	defer ticker.Stop()
+	wake := (<-chan struct{})(s.flushReady)
+	var retryTimer *time.Timer
+	var retry <-chan time.Time
+	var backoff time.Duration
+	resetBackoff := func() {
+		backoff = 0
+		retry = nil
+		wake = s.flushReady
+	}
+	scheduleRetry := func() {
+		if backoff == 0 {
+			backoff = min(s.cfg.FlushInterval, time.Minute)
+		} else {
+			backoff = min(backoff*2, time.Minute)
+		}
+		if retryTimer == nil {
+			retryTimer = time.NewTimer(backoff)
+		} else {
+			retryTimer.Reset(backoff)
+		}
+		retry = retryTimer.C
+		wake = nil
+		log.Printf("scan: flush: retrying in %s", backoff)
+	}
+	defer func() {
+		if retryTimer != nil {
+			retryTimer.Stop()
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
-			s.flush(context.Background())
 			return
 		case <-ticker.C:
-			s.flush(ctx)
+			if retry == nil && !s.flush(ctx) {
+				scheduleRetry()
+			}
+		case <-wake:
+			if !s.flush(ctx) {
+				scheduleRetry()
+			}
+		case <-retry:
+			if s.flush(ctx) {
+				resetBackoff()
+			} else {
+				scheduleRetry()
+			}
 		}
 	}
+}
+
+// flushFinal runs after every producer goroutine has stopped, so no check can
+// arrive after the buffer is drained. It retries transient failures within a
+// bounded shutdown window instead of dropping the first failed final batch.
+func (s *Scanner) flushFinal() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	for attempt := 1; attempt <= 3; attempt++ {
+		if s.flush(ctx) {
+			return
+		}
+		if attempt == 3 {
+			break
+		}
+		delay := time.Duration(1<<(attempt-1)) * time.Second
+		select {
+		case <-ctx.Done():
+			log.Printf("scan: final flush: %v", ctx.Err())
+			return
+		case <-time.After(delay):
+		}
+	}
+	log.Printf("scan: final flush: giving up with buffered checks retained only in memory")
 }
 
 // knownGoodRefreshInterval is how often the scanner re-fetches the full
@@ -42,12 +106,16 @@ func (s *Scanner) runFlusher(ctx context.Context) {
 // ip_checks but updatePoolBatch's UPDATE is a no-op for a non-pool IP.
 const knownGoodRefreshInterval = time.Hour
 
+// maintenanceInterval keeps expensive PTR refresh and DNS publication work
+// on the old cadence while check ingestion runs as frequent micro-batches.
+const maintenanceInterval = 10 * time.Minute
+
 // flush drains the check buffer and submits it. If the submit fails, the
 // checks are requeued for the next window rather than dropped. Safe to
 // call with a cancelled ctx only when passing context.Background() (final
 // flush). Only runFlusher's goroutine calls this, so s.knownGood needs no
 // locking.
-func (s *Scanner) flush(ctx context.Context) {
+func (s *Scanner) flush(ctx context.Context) bool {
 	s.mu.Lock()
 	checks := s.checks
 	s.checks = nil
@@ -57,7 +125,7 @@ func (s *Scanner) flush(ctx context.Context) {
 
 	if len(checks) == 0 {
 		log.Printf("scan: flush: nothing to flush")
-		return
+		return true
 	}
 
 	// Deduped successes become the "results" (authoritative hit list for
@@ -81,7 +149,7 @@ func (s *Scanner) flush(ctx context.Context) {
 			if s.knownGood == nil {
 				log.Printf("scan: flush: fetch known-good: %v — retaining %d checks for next flush", err, len(checks))
 				s.requeue(checks, scanned)
-				return
+				return false
 			}
 			// Stale set is still serviceable; retry the fetch next flush.
 			log.Printf("scan: flush: fetch known-good: %v — using stale set (age %s)", err, time.Since(s.knownGoodFetchedAt).Round(time.Minute))
@@ -98,10 +166,14 @@ func (s *Scanner) flush(ctx context.Context) {
 		filtered[i].ScanMode = s.cfg.ScanMode
 	}
 
-	if err := ingest.Submit(flushCtx, s.cfg.APIBase, s.cfg.Token, filtered); err != nil {
+	maintenance := s.lastMaintenanceAt.IsZero() || time.Since(s.lastMaintenanceAt) >= maintenanceInterval
+	if err := ingest.Submit(flushCtx, s.cfg.APIBase, s.cfg.Token, filtered, maintenance); err != nil {
 		log.Printf("scan: flush: submit: %v — retaining %d checks for next flush", err, len(checks))
 		s.requeue(checks, scanned)
-		return
+		return false
+	}
+	if maintenance {
+		s.lastMaintenanceAt = time.Now().UTC()
 	}
 	// Extend the in-memory set with this window's discoveries so failures
 	// for them pass the filter in later windows without waiting for the
@@ -111,6 +183,7 @@ func (s *Scanner) flush(ctx context.Context) {
 	}
 	log.Printf("scan: flushed: %d probes, %d checks, %d found (known-good %d, refreshed %s ago)",
 		scanned, len(filtered), len(results), len(s.knownGood), time.Since(s.knownGoodFetchedAt).Round(time.Minute))
+	return true
 }
 
 // requeue puts checks back at the front of the buffer if a flush failed,

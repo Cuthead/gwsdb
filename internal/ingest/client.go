@@ -111,14 +111,15 @@ func FetchPool(ctx context.Context, apiBase string) ([]string, error) {
 // submitPayload is the POST /ingest body -- just checks (no Scan row; the
 // scans table is gone, checks are written directly to ip_checks).
 type submitPayload struct {
-	Checks []store.IPCheck `json:"checks"`
+	Checks      []store.IPCheck `json:"checks"`
+	Maintenance bool            `json:"maintenance"`
 }
 
 // Submit posts already-parsed-and-filtered checks to the Cloudflare-hosted
 // API (functions/ingest.ts), which writes them to ip_checks via
 // insertCheckRows.
-func Submit(ctx context.Context, apiBase, token string, checks []store.IPCheck) error {
-	body, err := json.Marshal(submitPayload{Checks: checks})
+func Submit(ctx context.Context, apiBase, token string, checks []store.IPCheck, maintenance bool) error {
+	body, err := json.Marshal(submitPayload{Checks: checks, Maintenance: maintenance})
 	if err != nil {
 		return err
 	}
@@ -140,5 +141,9 @@ func Submit(ctx context.Context, apiBase, token string, checks []store.IPCheck) 
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("POST /ingest: %s: %s", resp.Status, respBody)
 	}
+	// Reading to EOF lets http.Transport reuse HTTP/1.1 connections; HTTP/2
+	// already multiplexes streams. A 200 means D1 committed, so a drain error
+	// must not cause a retry that would duplicate accepted checks.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }

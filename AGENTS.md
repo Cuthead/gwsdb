@@ -29,28 +29,28 @@ Vet:
 go vet ./...
 ```
 
-`internal/ingest` has a test suite (`internal/ingest/ingest_test.go`); nothing else in the Go tree does — don't assume `go test ./...` coverage exists elsewhere.
+`internal/ingest` and `internal/scan` have focused tests; don't assume broad `go test ./...` coverage exists elsewhere.
 
 Go CLI has three subcommands (see `cmd/gwsdb/main.go`), all of which submit to the Cloudflare-hosted API via `$GWSDB_API`/`$GWSDB_INGEST_TOKEN`:
 ```
 gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
                   [-ipv4-worker 6] [-ipv6-worker 1]
                   [-ipv4-recheck-worker 2] [-ipv6-recheck-worker 1]
-                  [-interval 1s] [-timeout 10s] [-flush 10m]
+                  [-interval 1s] [-timeout 10s] [-flush 10s] [-flush-size 100]
                   [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
                                 (always-on: probes random IPs from CIDR range files, flushes to $GWSDB_API
-                                 every -flush, serves on-demand probes via VPC proxy Worker)
+                                 after -flush or -flush-size, serves on-demand probes via VPC proxy Worker)
 gwsdb ingest      -scanner-config PATH [-scanner-dir PATH] [-log PATH] [-mode SNI|QUIC|TLS|PING] [-output PATH]   (parses locally, submits via $GWSDB_API/$GWSDB_INGEST_TOKEN)
 gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
 ```
 
 `GWSDB_API`/`GWSDB_INGEST_TOKEN` can come from the environment or a `KEY=VALUE` file (`~/.config/gwsdb/env` by default, or `$GWSDB_ENV_FILE`); chmod 600 it, it holds a bearer token.
 
-`scripts/run_scanner.sh` is the production entrypoint: starts `gwsdb scan` as a long-running process (under systemd or tmux — restart on exit). The scanner continuously probes random IPs from CIDR range files (`~/gscan_quic/iprange/`), flushes accumulated results to the API every 10 minutes, and serves on-demand probes from the query page via a VPC proxy Worker (`worker/`). `scripts/scan_and_ingest.sh` and `scripts/recheck_and_submit.sh` are gone (superseded by the single scanner process).
+`scripts/run_scanner.sh` is the production entrypoint: starts `gwsdb scan` as a long-running process (under systemd or tmux — restart on exit). The scanner continuously probes random IPs from CIDR range files (`~/gscan_quic/iprange/`), flushes accumulated results after 10 seconds or 100 checks (whichever comes first), and serves on-demand probes from the query page via a VPC proxy Worker (`worker/`). `scripts/scan_and_ingest.sh` and `scripts/recheck_and_submit.sh` are gone (superseded by the single scanner process).
 
 ## Architecture
 
-**Data flow** (always-on scanner): `gwsdb scan` runs independently sized IPv4/IPv6 scan and recheck goroutine pools. Scan workers loop `sleep(interval) → pick a random IP of their configured address family from the CIDR range files → recheck.CheckSNI probe → record`; recheck workers consume known IPs from address-family-specific queues. A flush ticker periodically drains the accumulated checks: `FetchKnownGood` → `FilterChecks` → `Submit` POSTs `[]store.IPCheck` to `/ingest` (`functions/ingest.ts`), which writes them directly to `ip_checks` via `src/store.ts` (no `scans` row — that table is gone). The probe config comes from gscan_quic's `config.user.json` (SNI block), so the scanner probes with the same ServerName/HTTPPath/timeout settings a manual scan would.
+**Data flow** (always-on scanner): `gwsdb scan` runs independently sized IPv4/IPv6 scan and recheck goroutine pools. Scan workers loop `sleep(interval) → pick a random IP of their configured address family from the CIDR range files → recheck.CheckSNI probe → record`; recheck workers consume known IPs from address-family-specific queues. A time-or-size micro-batch flusher drains accumulated checks: `FetchKnownGood` → `FilterChecks` → `Submit` POSTs `[]store.IPCheck` to `/ingest` (`functions/ingest.ts`), which writes them directly to `ip_checks` via `src/store.ts` (no `scans` row — that table is gone). Failed submissions are requeued with exponential backoff; successful response bodies are drained so Go's HTTP transport can reuse connections. PTR refresh and DNS publication remain on a 10-minute maintenance cadence. The probe config comes from gscan_quic's `config.user.json` (SNI block), so the scanner probes with the same ServerName/HTTPPath/timeout settings a manual scan would.
 
 **`internal/store`** (Go) now holds only data-shape types (`Scan`, `ScanResult`, `IPCheck`, etc. in `models.go`) shared between the ingest CLI and its JSON submission to Cloudflare — no SQL, no `*sql.DB`. The real database logic lives in `src/store.ts` against D1.
 

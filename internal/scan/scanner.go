@@ -35,7 +35,8 @@ type Config struct {
 	IPv6RecheckWorkers int           // known IPv6 recheck goroutines
 	Interval           time.Duration // per-worker sleep between probes
 	ProbeTimeout       time.Duration // per-probe deadline (bounds CheckSNI)
-	FlushInterval      time.Duration // how often to submit accumulated checks
+	FlushInterval      time.Duration // maximum age before submitting accumulated checks
+	FlushSize          int           // submit early when this many checks are buffered
 
 	// ProbeAddr is the address the on-demand probe HTTP server listens
 	// on (e.g. "0.0.0.0:8787"), reached by the gwsdb-probe Worker (worker/)
@@ -66,11 +67,12 @@ type ipState struct {
 type Scanner struct {
 	cfg Config
 
-	mu           sync.Mutex
-	checks       []store.IPCheck
-	pool         map[string]*ipState
-	scannedCount int
-	flushStart   time.Time
+	mu                sync.Mutex
+	checks            []store.IPCheck
+	pool              map[string]*ipState
+	scannedCount      int
+	lastMaintenanceAt time.Time
+	flushReady        chan struct{}
 
 	// known-good set for FilterChecks' failure gate, owned by runFlusher's
 	// goroutine (no locking needed). Refreshed hourly, extended locally
@@ -95,19 +97,21 @@ func New(cfg Config) *Scanner {
 		cfg.ProbeTimeout = 10 * time.Second
 	}
 	if cfg.FlushInterval <= 0 {
-		cfg.FlushInterval = 10 * time.Minute
+		cfg.FlushInterval = 10 * time.Second
+	}
+	if cfg.FlushSize <= 0 {
+		cfg.FlushSize = 100
 	}
 	return &Scanner{
 		cfg:        cfg,
 		pool:       make(map[string]*ipState),
-		flushStart: time.Now().UTC(),
+		flushReady: make(chan struct{}, 1),
 	}
 }
 
 // Run blocks until ctx is cancelled, running all subsystems in parallel
-// goroutines. On cancellation it does one final flush so accumulated-
-// but-unflushed checks aren't lost (the flusher's ctx.Done case runs a
-// detached-context flush before returning).
+// goroutines. On cancellation it waits for every producer to stop, then does
+// one final bounded-retry flush so no late check can miss the drain.
 func (s *Scanner) Run(ctx context.Context) error {
 	counts := []int{s.cfg.IPv4Workers, s.cfg.IPv6Workers, s.cfg.IPv4RecheckWorkers, s.cfg.IPv6RecheckWorkers}
 	for _, count := range counts {
@@ -130,9 +134,9 @@ func (s *Scanner) Run(ctx context.Context) error {
 		ipv6ScanN = 0
 	}
 	totalWorkers := ipv4ScanN + ipv6ScanN + s.cfg.IPv4RecheckWorkers + s.cfg.IPv6RecheckWorkers
-	log.Printf("scan: starting: %d workers (IPv4 scan=%d recheck=%d, IPv6 scan=%d recheck=%d), interval=%s, flush=%s, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
+	log.Printf("scan: starting: %d workers (IPv4 scan=%d recheck=%d, IPv6 scan=%d recheck=%d), interval=%s, flush=%s/%d checks, probe=%s, %d CIDR prefixes (v4=%d, v6=%d)",
 		totalWorkers, ipv4ScanN, s.cfg.IPv4RecheckWorkers, ipv6ScanN, s.cfg.IPv6RecheckWorkers,
-		s.cfg.Interval, s.cfg.FlushInterval, s.cfg.ProbeAddr, prefixCount, v4, v6)
+		s.cfg.Interval, s.cfg.FlushInterval, s.cfg.FlushSize, s.cfg.ProbeAddr, prefixCount, v4, v6)
 	log.Printf("scan: probe config: level=%d %s",
 		s.cfg.ProbeConfig.Level,
 		recheck.ProbeParams(s.cfg.ProbeConfig))
@@ -216,8 +220,10 @@ func (s *Scanner) Run(ctx context.Context) error {
 	}
 
 	<-ctx.Done()
-	log.Printf("scan: shutting down, waiting for workers + final flush...")
+	log.Printf("scan: shutting down, waiting for workers...")
 	wg.Wait()
+	log.Printf("scan: workers stopped, flushing remaining checks...")
+	s.flushFinal()
 	log.Printf("scan: stopped")
 	return ctx.Err()
 }
@@ -292,6 +298,12 @@ func (s *Scanner) record(ip string, result recheck.Result) {
 		CheckedAt: now,
 		ScanMode:  s.cfg.ScanMode,
 	})
+	if len(s.checks) >= s.cfg.FlushSize {
+		select {
+		case s.flushReady <- struct{}{}:
+		default:
+		}
+	}
 	if result.OK {
 		s.totalFound.Add(1)
 		// Log every hit so the operator can see the scanner is finding IPs

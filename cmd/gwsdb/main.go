@@ -60,7 +60,7 @@ Usage:
   gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe one IP, print result, submit it)
   gwsdb scan        -scanner-config PATH [-scanner-dir PATH] [-mode SNI] [-ip-range PATH...]
                     [-ipv4-worker 6] [-ipv6-worker 1] [-ipv4-recheck-worker 2] [-ipv6-recheck-worker 1]
-                    [-interval 1s] [-timeout 10s] [-flush 10m]
+                    [-interval 1s] [-timeout 10s] [-flush 10s] [-flush-size 100]
                     [-probe-addr 0.0.0.0:8787] [-probe-token SECRET]
                                 (always-on: probes random IPs from CIDR range files, flushes to $GWSDB_API
                                  every -flush, serves on-demand probes via VPC proxy Worker — replaces scan_and_ingest.sh + recheck_and_submit.sh)
@@ -118,7 +118,7 @@ func runIngest(args []string) {
 		filtered[i].ScanMode = strings.ToUpper(*mode)
 	}
 
-	if err := ingest.Submit(ctx, apiBase, token, filtered); err != nil {
+	if err := ingest.Submit(ctx, apiBase, token, filtered, true); err != nil {
 		log.Fatalf("ingest: submit: %v", err)
 	}
 	log.Printf("ingested %d checks", len(filtered))
@@ -220,7 +220,7 @@ func (f *stringSliceFlag) Set(v string) error {
 
 // runScan runs the always-on scanner: N probe workers continuously test
 // random IPs drawn from CIDR range files, a flusher submits accumulated
-// results to the Cloudflare-hosted API on a fixed cadence, and a
+// results when either its time or size threshold is reached, and a
 // separate goroutine drains the recheck queue — all in one long-lived
 // process. Replaces the old cron-driven scan_and_ingest.sh (external
 // gscan_quic one-shot) + recheck_and_submit.sh pair. See internal/scan.
@@ -244,7 +244,8 @@ func runScan(args []string) {
 	ipv6RecheckWorkers := fs.Int("ipv6-recheck-worker", 1, "goroutines re-checking known IPv6 addresses; 0 = disable")
 	interval := fs.Duration("interval", time.Second, "per-worker sleep between probes")
 	probeTimeout := fs.Duration("timeout", 10*time.Second, "per-probe timeout")
-	flushInterval := fs.Duration("flush", 10*time.Minute, "how often to flush accumulated checks to the API")
+	flushInterval := fs.Duration("flush", 10*time.Second, "maximum time to buffer checks before submitting them to the API")
+	flushSize := fs.Int("flush-size", 100, "submit early when this many checks are buffered")
 	probeAddr := fs.String("probe-addr", "0.0.0.0:8787", "address for the on-demand probe HTTP server (reached by the gwsdb-probe Worker via Cloudflare Mesh); empty disables it")
 	probeToken := fs.String("probe-token", "", "shared secret authenticating probe requests (X-Probe-Token header); must match the Cloudflare side's PROBE_TOKEN. Required if -probe-addr is set")
 	fs.Parse(args)
@@ -259,6 +260,9 @@ func runScan(args []string) {
 		fmt.Fprintln(os.Stderr, "scan: -scanner-config is required")
 		fs.Usage()
 		os.Exit(2)
+	}
+	if *flushSize <= 0 {
+		log.Fatal("scan: -flush-size must be positive")
 	}
 
 	raw, err := os.ReadFile(*scannerConfigPath)
@@ -336,6 +340,7 @@ func runScan(args []string) {
 		Interval:           *interval,
 		ProbeTimeout:       *probeTimeout,
 		FlushInterval:      *flushInterval,
+		FlushSize:          *flushSize,
 		ProbeAddr:          *probeAddr,
 		ProbeToken:         probeTokenVal,
 		APIBase:            apiBase,

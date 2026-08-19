@@ -42,6 +42,7 @@ interface WireCheck {
 
 interface IngestBody {
 	checks: WireCheck[];
+	maintenance?: boolean;
 }
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
@@ -86,16 +87,13 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	const touchedIPs = [...new Set(rows.map((r) => r.ip))];
 	waitUntil(pruneCheckHistory(env.DB, touchedIPs).catch((err) => console.error("ingest: prune:", err)));
 
-	// A bulk ingest can shift the top set a lot; reconcile published DNS
-	// records after responding so a slow Cloudflare API call doesn't add
-	// latency to the China box's ingest round trip. Publish failure doesn't
-	// fail the ingest -- the scan is already saved.
-	waitUntil(syncPublish(env, env.DB).catch((err) => console.error("ingest: publish:", err)));
-
-	// Newly-discovered IPs (ptr_checked_at NULL) would otherwise sit with no
-	// PTR/country until the next scan's ingest runs this. Same
-	// waitUntil/non-fatal treatment as publish above.
-	waitUntil(runPTRRefresh(env.DB).catch((err) => console.error("ingest: ptr-refresh:", err)));
+	// The scanner sends frequent micro-batches but requests these expensive
+	// follow-up jobs only every ten minutes. Missing means true so old scanner
+	// binaries retain their pre-micro-batch behavior during rollout.
+	if (body.maintenance !== false) {
+		waitUntil(syncPublish(env, env.DB).catch((err) => console.error("ingest: publish:", err)));
+		waitUntil(runPTRRefresh(env.DB).catch((err) => console.error("ingest: ptr-refresh:", err)));
+	}
 
 	return Response.json({ checks: rows.length });
 }
