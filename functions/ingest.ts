@@ -43,6 +43,7 @@ interface WireCheck {
 interface IngestBody {
 	checks: WireCheck[];
 	maintenance?: boolean;
+	pruneIPs?: string[];
 }
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
@@ -69,6 +70,9 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	if (!Array.isArray(body.checks)) {
 		return new Response("body must include 'checks'", { status: 400 });
 	}
+	if (body.pruneIPs !== undefined && (!Array.isArray(body.pruneIPs) || body.pruneIPs.some((ip) => typeof ip !== "string"))) {
+		return new Response("pruneIPs must be an array of strings", { status: 400 });
+	}
 
 	const rows: CheckRow[] = body.checks.map((c) => ({
 		ip: c.IP,
@@ -82,18 +86,32 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	await insertCheckRows(env.DB, rows);
 	await updatePoolBatch(env.DB, rows);
 
-	// Prune history asynchronously in the background so it doesn't add
-	// latency to the ingest response.
 	const touchedIPs = [...new Set(rows.map((r) => r.ip))];
-	waitUntil(pruneCheckHistory(env.DB, touchedIPs).catch((err) => console.error("ingest: prune:", err)));
+	const legacyPruneProtocol = body.pruneIPs === undefined;
+	let pruneOk = true;
+	if (legacyPruneProtocol) {
+		// Old scanner binaries do not accumulate between micro-batches, so they
+		// must retain the old per-request pruning behavior during rollout.
+		waitUntil(pruneCheckHistory(env.DB, touchedIPs).catch((err) => console.error("ingest: prune:", err)));
+	}
 
 	// The scanner sends frequent micro-batches but requests these expensive
 	// follow-up jobs only every ten minutes. Missing means true so old scanner
 	// binaries retain their pre-micro-batch behavior during rollout.
 	if (body.maintenance !== false) {
+		if (!legacyPruneProtocol) {
+			// Checks are already committed, so report prune failure separately;
+			// scanner retries only the candidate set, not the accepted checks.
+			try {
+				await pruneCheckHistory(env.DB, [...new Set(body.pruneIPs!)]);
+			} catch (err) {
+				pruneOk = false;
+				console.error("ingest: prune:", err);
+			}
+		}
 		waitUntil(syncPublish(env, env.DB).catch((err) => console.error("ingest: publish:", err)));
 		waitUntil(runPTRRefresh(env.DB).catch((err) => console.error("ingest: ptr-refresh:", err)));
 	}
 
-	return Response.json({ checks: rows.length });
+	return Response.json({ checks: rows.length, pruneOk });
 }

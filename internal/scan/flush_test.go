@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/recheck"
+	"github.com/cuthead/gwsdb/internal/store"
 )
 
 func TestFlusherSubmitsAtSizeThreshold(t *testing.T) {
@@ -137,6 +138,95 @@ func TestFlusherRetriesFailedBatch(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestPruneCandidatesAccumulateUntilMaintenanceSuccess(t *testing.T) {
+	s := New(Config{})
+	first := []store.IPCheck{{IP: "192.0.2.2"}, {IP: "192.0.2.1"}, {IP: "192.0.2.2"}}
+	s.recordPruneCandidates(first, false)
+
+	current := []store.IPCheck{{IP: "192.0.2.3"}, {IP: "192.0.2.1"}}
+	got := s.pruneCandidates(current, true)
+	want := []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}
+	if len(got) != len(want) {
+		t.Fatalf("prune candidates = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("prune candidates = %v, want %v", got, want)
+		}
+	}
+
+	// Building a maintenance request does not clear state; only a successful
+	// Submit followed by recordPruneCandidates does.
+	if retry := s.pruneCandidates(current, true); len(retry) != len(want) {
+		t.Fatalf("retry candidates = %v, want %v", retry, want)
+	}
+	s.recordPruneCandidates(current, true)
+	if got := s.pruneCandidates(nil, true); len(got) != 0 {
+		t.Fatalf("candidates after maintenance success = %v, want empty", got)
+	}
+}
+
+func TestFinalFlushSendsPendingPruneCandidatesWithoutChecks(t *testing.T) {
+	type requestBody struct {
+		Checks      []json.RawMessage `json:"checks"`
+		Maintenance bool              `json:"maintenance"`
+		PruneIPs    []string          `json:"pruneIPs"`
+	}
+	received := make(chan requestBody, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body requestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- body
+		_, _ = w.Write([]byte(`{"checks":0}`))
+	}))
+	defer server.Close()
+
+	s := New(Config{APIBase: server.URL, Token: "token", ScanMode: "SNI"})
+	s.knownGood = map[string]bool{}
+	s.knownGoodFetchedAt = time.Now()
+	s.lastMaintenanceAt = time.Now()
+	s.pruneIPs["192.0.2.1"] = struct{}{}
+	s.flushFinal()
+
+	select {
+	case body := <-received:
+		if !body.Maintenance || len(body.Checks) != 0 || len(body.PruneIPs) != 1 || body.PruneIPs[0] != "192.0.2.1" {
+			t.Fatalf("final flush body = %+v", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("final flush did not submit pending prune candidates")
+	}
+}
+
+func TestPruneFailureRetainsCandidatesWithoutRequeueingChecks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"ips":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"checks":1,"pruneOk":false}`))
+	}))
+	defer server.Close()
+
+	s := New(Config{APIBase: server.URL, Token: "token", ScanMode: "SNI"})
+	s.record("192.0.2.1", recheck.Result{OK: true, RTTMs: 10})
+	if ok := s.flush(context.Background()); !ok {
+		t.Fatal("flush reported failure after checks were accepted")
+	}
+	if len(s.checks) != 0 {
+		t.Fatalf("buffered checks = %d, want 0", len(s.checks))
+	}
+	if _, retained := s.pruneIPs["192.0.2.1"]; !retained {
+		t.Fatal("failed prune candidate was not retained")
+	}
+	if !s.lastMaintenanceAt.IsZero() {
+		t.Fatal("failed prune advanced maintenance deadline")
+	}
 }
 
 func ingestServer(t *testing.T, maintenance chan<- bool) *httptest.Server {

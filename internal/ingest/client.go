@@ -37,8 +37,10 @@ func FetchKnownGood(ctx context.Context, apiBase, token string) (map[string]bool
 	var out struct {
 		IPs []string `json:"ips"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode /ingest response: %w", err)
+	decodeErr := json.NewDecoder(resp.Body).Decode(&out)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if decodeErr != nil {
+		return nil, fmt.Errorf("decode /ingest response: %w", decodeErr)
 	}
 
 	knownGood := make(map[string]bool, len(out.IPs))
@@ -113,37 +115,48 @@ func FetchPool(ctx context.Context, apiBase string, family int) ([]string, error
 type submitPayload struct {
 	Checks      []store.IPCheck `json:"checks"`
 	Maintenance bool            `json:"maintenance"`
+	PruneIPs    []string        `json:"pruneIPs"`
 }
 
 // Submit posts already-parsed-and-filtered checks to the Cloudflare-hosted
 // API (functions/ingest.ts), which writes them to ip_checks via
 // insertCheckRows.
-func Submit(ctx context.Context, apiBase, token string, checks []store.IPCheck, maintenance bool) error {
-	body, err := json.Marshal(submitPayload{Checks: checks, Maintenance: maintenance})
+func Submit(ctx context.Context, apiBase, token string, checks []store.IPCheck, maintenance bool, pruneIPs []string) (bool, error) {
+	if pruneIPs == nil {
+		pruneIPs = []string{}
+	}
+	body, err := json.Marshal(submitPayload{Checks: checks, Maintenance: maintenance, PruneIPs: pruneIPs})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/ingest", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("POST /ingest: %s: %s", resp.Status, respBody)
+		return false, fmt.Errorf("POST /ingest: %s: %s", resp.Status, respBody)
 	}
-	// Reading to EOF lets http.Transport reuse HTTP/1.1 connections; HTTP/2
-	// already multiplexes streams. A 200 means D1 committed, so a drain error
-	// must not cause a retry that would duplicate accepted checks.
+	var out struct {
+		PruneOK *bool `json:"pruneOk"`
+	}
+	decodeErr := json.NewDecoder(resp.Body).Decode(&out)
 	_, _ = io.Copy(io.Discard, resp.Body)
-	return nil
+	if decodeErr != nil {
+		// A 200 means D1 committed. Never retry accepted checks because the
+		// response body was truncated, but retain prune candidates because its
+		// outcome is unknown. Old servers return valid JSON without pruneOk.
+		return false, nil
+	}
+	return out.PruneOK == nil || *out.PruneOK, nil
 }

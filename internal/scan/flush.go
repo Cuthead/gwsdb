@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/cuthead/gwsdb/internal/ingest"
@@ -79,8 +80,11 @@ func (s *Scanner) runFlusher(ctx context.Context) {
 func (s *Scanner) flushFinal() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// Flush accumulated prune candidates even when shutdown happens before the
+	// next ten-minute maintenance deadline or no checks remain in the buffer.
+	s.lastMaintenanceAt = time.Time{}
 	for attempt := 1; attempt <= 3; attempt++ {
-		if s.flush(ctx) {
+		if s.flush(ctx) && len(s.pruneIPs) == 0 {
 			return
 		}
 		if attempt == 3 {
@@ -123,7 +127,8 @@ func (s *Scanner) flush(ctx context.Context) bool {
 	s.scannedCount = 0
 	s.mu.Unlock()
 
-	if len(checks) == 0 {
+	maintenance := s.lastMaintenanceAt.IsZero() || time.Since(s.lastMaintenanceAt) >= maintenanceInterval
+	if len(checks) == 0 && !(maintenance && len(s.pruneIPs) > 0) {
 		log.Printf("scan: flush: nothing to flush")
 		return true
 	}
@@ -166,14 +171,20 @@ func (s *Scanner) flush(ctx context.Context) bool {
 		filtered[i].ScanMode = s.cfg.ScanMode
 	}
 
-	maintenance := s.lastMaintenanceAt.IsZero() || time.Since(s.lastMaintenanceAt) >= maintenanceInterval
-	if err := ingest.Submit(flushCtx, s.cfg.APIBase, s.cfg.Token, filtered, maintenance); err != nil {
+	pruneIPs := s.pruneCandidates(filtered, maintenance)
+	pruneOK, err := ingest.Submit(flushCtx, s.cfg.APIBase, s.cfg.Token, filtered, maintenance, pruneIPs)
+	if err != nil {
 		log.Printf("scan: flush: submit: %v — retaining %d checks for next flush", err, len(checks))
 		s.requeue(checks, scanned)
 		return false
 	}
-	if maintenance {
+	maintenanceComplete := maintenance && pruneOK
+	if maintenanceComplete {
 		s.lastMaintenanceAt = time.Now().UTC()
+	}
+	s.recordPruneCandidates(filtered, maintenanceComplete)
+	if maintenance && !pruneOK {
+		log.Printf("scan: flush: history prune failed — retaining %d IPs for next maintenance batch", len(s.pruneIPs))
 	}
 	// Extend the in-memory set with this window's discoveries so failures
 	// for them pass the filter in later windows without waiting for the
@@ -184,6 +195,40 @@ func (s *Scanner) flush(ctx context.Context) bool {
 	log.Printf("scan: flushed: %d probes, %d checks, %d found (known-good %d, refreshed %s ago)",
 		scanned, len(filtered), len(results), len(s.knownGood), time.Since(s.knownGoodFetchedAt).Round(time.Minute))
 	return true
+}
+
+// pruneCandidates returns every IP successfully submitted since the previous
+// maintenance batch plus the current batch. The server prunes this set once,
+// instead of running a history window query after every micro-batch.
+func (s *Scanner) pruneCandidates(checks []store.IPCheck, maintenance bool) []string {
+	if !maintenance {
+		return nil
+	}
+	all := make(map[string]struct{}, len(s.pruneIPs)+len(checks))
+	for ip := range s.pruneIPs {
+		all[ip] = struct{}{}
+	}
+	for _, check := range checks {
+		all[check.IP] = struct{}{}
+	}
+	ips := make([]string, 0, len(all))
+	for ip := range all {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	return ips
+}
+
+// recordPruneCandidates advances the accumulator only after Submit succeeds.
+// A failed maintenance request therefore keeps all candidates for its retry.
+func (s *Scanner) recordPruneCandidates(checks []store.IPCheck, maintenance bool) {
+	if maintenance {
+		clear(s.pruneIPs)
+		return
+	}
+	for _, check := range checks {
+		s.pruneIPs[check.IP] = struct{}{}
+	}
 }
 
 // requeue puts checks back at the front of the buffer if a flush failed,

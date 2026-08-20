@@ -74,6 +74,7 @@ type Scanner struct {
 	scannedCount      int
 	lastMaintenanceAt time.Time
 	flushReady        chan struct{}
+	pruneIPs          map[string]struct{}
 
 	// known-good set for FilterChecks' failure gate, owned by runFlusher's
 	// goroutine (no locking needed). Refreshed hourly, extended locally
@@ -110,6 +111,7 @@ func New(cfg Config) *Scanner {
 		cfg:        cfg,
 		pool:       make(map[string]*ipState),
 		flushReady: make(chan struct{}, 1),
+		pruneIPs:   make(map[string]struct{}),
 	}
 }
 

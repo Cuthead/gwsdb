@@ -118,8 +118,27 @@ func runIngest(args []string) {
 		filtered[i].ScanMode = strings.ToUpper(*mode)
 	}
 
-	if err := ingest.Submit(ctx, apiBase, token, filtered, true); err != nil {
+	pruneIPs := make([]string, 0, len(filtered))
+	seenIPs := make(map[string]struct{}, len(filtered))
+	for _, check := range filtered {
+		if _, seen := seenIPs[check.IP]; seen {
+			continue
+		}
+		seenIPs[check.IP] = struct{}{}
+		pruneIPs = append(pruneIPs, check.IP)
+	}
+	pruneOK, err := ingest.Submit(ctx, apiBase, token, filtered, true, pruneIPs)
+	if err != nil {
 		log.Fatalf("ingest: submit: %v", err)
+	}
+	if !pruneOK {
+		log.Printf("ingest: checks accepted, but history prune failed; retrying prune only")
+		pruneOK, err = ingest.Submit(ctx, apiBase, token, filtered[:0], true, pruneIPs)
+		if err != nil {
+			log.Printf("ingest: prune retry: %v", err)
+		} else if !pruneOK {
+			log.Printf("ingest: prune retry failed")
+		}
 	}
 	log.Printf("ingested %d checks", len(filtered))
 }
