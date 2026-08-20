@@ -3,6 +3,7 @@
 // for why). dohUrl is required throughout -- there's no system-resolver
 // fallback, same as the Go original (the whole point is TTL visibility).
 import { DNSType, queryDoH } from "./doh";
+import { expandIPv6, normalizeIPAddress } from "./ipAddr";
 
 // dedupeSorted trims trailing dots, dedupes, and sorts names/addresses for
 // deterministic output regardless of the order a resolver returned them in.
@@ -41,33 +42,6 @@ export function reverseName(ip: string): string {
 	const full = expandIPv6(ip);
 	if (!full) throw new Error(`invalid IP: ${ip}`);
 	return `${reverseNibblesDotted(full)}.ip6.arpa`;
-}
-
-// expandIPv6 renders ip as 32 lowercase hex nibbles (no colons), or null if
-// ip isn't a valid IPv6 address. Used by both reverseName and asn.ts's
-// reverseNibbles (same expansion, different suffix/order requirements).
-export function expandIPv6(ip: string): string | null {
-	const withoutZone = ip.split("%")[0]!;
-	let head = withoutZone;
-	let tail = "";
-	const dbl = withoutZone.indexOf("::");
-	if (dbl >= 0) {
-		head = withoutZone.slice(0, dbl);
-		tail = withoutZone.slice(dbl + 2);
-	}
-	const headParts = head ? head.split(":") : [];
-	const tailParts = tail ? tail.split(":") : [];
-	if (dbl < 0 && headParts.length !== 8) return null;
-	if (dbl >= 0 && headParts.length + tailParts.length >= 8) return null;
-	const missing = 8 - headParts.length - tailParts.length;
-	const groups = dbl >= 0 ? [...headParts, ...Array(missing).fill("0"), ...tailParts] : headParts;
-	if (groups.length !== 8) return null;
-	let hex = "";
-	for (const g of groups) {
-		if (!/^[0-9a-fA-F]{0,4}$/.test(g)) return null;
-		hex += g.padStart(4, "0").toLowerCase();
-	}
-	return hex;
 }
 
 // LookupPTR resolves every PTR record for ip, deduped and sorted for
@@ -126,7 +100,8 @@ export async function lookupHost(
 	}
 	for (const a of aaaaAnswers ?? []) {
 		if (a.type === DNSType.AAAA) {
-			ipv6.push(a.data);
+			const ip = normalizeIPAddress(a.data);
+			if (ip?.includes(":")) ipv6.push(ip);
 			observe(a.TTL);
 		}
 	}

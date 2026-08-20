@@ -1,7 +1,8 @@
 // Ports internal/asn/asn.go: resolves an IP address to its announcing AS
 // number, AS name, and BGP-announced prefix via Team Cymru's DNS whois
 // service (two DNS TXT lookups, no local GeoIP/ASN database file).
-import { expandIPv6, lookupTXT, reverseNibblesDotted } from "./resolver";
+import { expandIPv6 } from "./ipAddr";
+import { lookupTXT, reverseNibblesDotted } from "./resolver";
 
 export interface ASNInfo {
 	asn: number;

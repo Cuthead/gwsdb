@@ -6,6 +6,7 @@
 // failures with, POST accepts the already-parsed/filtered scan and inserts
 // it. No decompression, no regex, no streaming.
 import { checkBearerAuth } from "../src/auth";
+import { normalizeIPAddress } from "../src/ipAddr";
 import { runPTRRefresh } from "../src/ptrRefresh";
 import { syncPublish } from "../src/publish";
 import { allKnownGoodIPs, type CheckRow, insertCheckRows, pruneCheckHistory, updatePoolBatch } from "../src/store";
@@ -73,9 +74,16 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 	if (body.pruneIPs !== undefined && (!Array.isArray(body.pruneIPs) || body.pruneIPs.some((ip) => typeof ip !== "string"))) {
 		return new Response("pruneIPs must be an array of strings", { status: 400 });
 	}
+	if (body.checks.some((c) => !c || typeof c.IP !== "string" || normalizeIPAddress(c.IP) === null)) {
+		return new Response("checks contain an invalid IP", { status: 400 });
+	}
+	const pruneIPs = body.pruneIPs?.map((ip) => normalizeIPAddress(ip));
+	if (pruneIPs?.some((ip) => ip === null)) {
+		return new Response("pruneIPs contain an invalid IP", { status: 400 });
+	}
 
 	const rows: CheckRow[] = body.checks.map((c) => ({
-		ip: c.IP,
+		ip: normalizeIPAddress(c.IP)!,
 		ok: c.OK,
 		rttMs: c.OK ? c.RTTMs || null : null,
 		reason: c.OK ? null : c.Reason || null,
@@ -103,7 +111,7 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 			// Checks are already committed, so report prune failure separately;
 			// scanner retries only the candidate set, not the accepted checks.
 			try {
-				await pruneCheckHistory(env.DB, [...new Set(body.pruneIPs!)]);
+				await pruneCheckHistory(env.DB, [...new Set(pruneIPs as string[])]);
 			} catch (err) {
 				pruneOk = false;
 				console.error("ingest: prune:", err);

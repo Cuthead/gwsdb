@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "wrangler pages dev ./public",
     "deploy": "wrangler pages deploy ./public",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "types": "wrangler types",
     "db:migrations:apply:local": "wrangler d1 migrations apply gwsdb --local",
     "db:migrations:apply:remote": "wrangler d1 migrations apply gwsdb --remote"

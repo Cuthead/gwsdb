@@ -4,7 +4,7 @@
 import { lookupGoogleASN, resolveAndCacheHost, resolveAndCachePTR, isGoogleASN } from "../src/dnsCache";
 import { decode, decodeBest, isHostname, siblingHostname } from "../src/geo";
 import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html";
-import { isIPAddress } from "../src/ipAddr";
+import { isIPAddress, normalizeIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
 import { getHost, getPTR, ipHistory, ipStatusFor } from "../src/store";
 import type { ASNInfo } from "../src/asn";
@@ -127,7 +127,10 @@ async function resolveHostnameForm(db: D1Database, hostname: string, dohUrl: str
 		return form;
 	}
 	for (const addr of ipv4) form.ipv4.push({ addr, status: await statusForIP(db, addr) });
-	for (const addr of ipv6) form.ipv6.push({ addr, status: await statusForIP(db, addr) });
+	for (const rawAddr of ipv6) {
+		const addr = normalizeIPAddress(rawAddr) ?? rawAddr;
+		form.ipv6.push({ addr, status: await statusForIP(db, addr) });
+	}
 	return form;
 }
 
@@ -378,7 +381,15 @@ Location estimates are based on the <a href="https://github.com/lennylxx/ipv6-ho
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const url = new URL(context.request.url);
-	const q = (url.searchParams.get("ip") ?? "").trim();
+	let q = (url.searchParams.get("ip") ?? "").trim();
+	if (isIPAddress(q)) {
+		const normalized = normalizeIPAddress(q)!;
+		if (normalized !== q) {
+			url.searchParams.set("ip", normalized);
+			return Response.redirect(url.toString(), 308);
+		}
+		q = normalized;
+	}
 	const data = emptyData(q);
 	data.canProbe = clientCountry(context.request) === "CN";
 	const dohUrl = context.env.DOH_JSON_URL;

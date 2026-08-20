@@ -1,10 +1,5 @@
-// Minimal IP address validation shared by functions/query.ts and
-// functions/report.ts (both need to tell "well-formed IP" apart from a
-// 1e100.net hostname or garbage input) -- Workers has no net.ParseIP
-// equivalent. expandIPv6 (src/resolver.ts) already validates IPv6 shape as
-// a side effect of expanding it, so it's reused here rather than
-// duplicating that logic.
-import { expandIPv6 } from "./resolver";
+// Minimal IP address parsing shared by request handlers and DNS helpers --
+// Workers has no net.ParseIP equivalent.
 
 export function isIPv4(s: string): boolean {
 	if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s)) return false;
@@ -13,6 +8,66 @@ export function isIPv4(s: string): boolean {
 
 export function isIPAddress(s: string): boolean {
 	return isIPv4(s) || expandIPv6(s) !== null;
+}
+
+// expandIPv6 renders ip as 32 lowercase hex nibbles (no colons), or null if
+// ip isn't a valid IPv6 address.
+export function expandIPv6(ip: string): string | null {
+	if (ip.includes("%")) return null;
+	let head = ip;
+	let tail = "";
+	const dbl = ip.indexOf("::");
+	if (dbl >= 0) {
+		if (dbl !== ip.lastIndexOf("::")) return null;
+		head = ip.slice(0, dbl);
+		tail = ip.slice(dbl + 2);
+	}
+	const headParts = head ? head.split(":") : [];
+	const tailParts = tail ? tail.split(":") : [];
+	if (dbl < 0 && headParts.length !== 8) return null;
+	if (dbl >= 0 && headParts.length + tailParts.length >= 8) return null;
+	const missing = 8 - headParts.length - tailParts.length;
+	const groups = dbl >= 0 ? [...headParts, ...Array(missing).fill("0"), ...tailParts] : headParts;
+	if (groups.length !== 8) return null;
+	let hex = "";
+	for (const g of groups) {
+		if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null;
+		hex += g.padStart(4, "0").toLowerCase();
+	}
+	return hex;
+}
+
+// normalizeIPAddress returns the conventional text form used as database
+// identity: IPv6 is lowercase with leading zeroes removed and the longest
+// leftmost run of zero groups compressed (RFC 5952 section 4).
+export function normalizeIPAddress(s: string): string | null {
+	if (isIPv4(s)) return s;
+	const hex = expandIPv6(s);
+	if (!hex) return null;
+
+	const groups: string[] = [];
+	for (let i = 0; i < hex.length; i += 4) groups.push(BigInt(`0x${hex.slice(i, i + 4)}`).toString(16));
+
+	let bestStart = -1;
+	let bestLength = 0;
+	for (let i = 0; i < groups.length; ) {
+		if (groups[i] !== "0") {
+			i++;
+			continue;
+		}
+		let end = i + 1;
+		while (end < groups.length && groups[end] === "0") end++;
+		if (end - i > bestLength) {
+			bestStart = i;
+			bestLength = end - i;
+		}
+		i = end;
+	}
+
+	if (bestLength < 2) return groups.join(":");
+	const before = groups.slice(0, bestStart).join(":");
+	const after = groups.slice(bestStart + bestLength).join(":");
+	return `${before}::${after}`;
 }
 
 // ipToHex encodes ip as a 32-hex-char (128-bit) zero-padded point value --

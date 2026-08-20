@@ -5,6 +5,7 @@
 // server synchronously via functions/check.ts. Saves the ip_checks row,
 // prunes old history, and reconciles published DNS records.
 import { checkBearerAuth } from "../../src/auth";
+import { normalizeIPAddress } from "../../src/ipAddr";
 import { syncPublish } from "../../src/publish";
 import { saveRecheckResult, updatePoolForCheck } from "../../src/store";
 import type { Env } from "../../src/env";
@@ -34,6 +35,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	if (!body.ip || typeof body.ok !== "boolean" || !body.checkedAt) {
 		return new Response("missing required fields", { status: 400 });
 	}
+	const ip = normalizeIPAddress(body.ip);
+	if (!ip) return new Response("invalid ip", { status: 400 });
 
 	const checkedAt = new Date(body.checkedAt);
 	if (Number.isNaN(checkedAt.getTime())) {
@@ -41,7 +44,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	}
 
 	await saveRecheckResult(env.DB, {
-		ip: body.ip,
+		ip,
 		ok: body.ok,
 		rttMs: body.rttMs ?? null,
 		reason: body.reason ?? null,
@@ -49,7 +52,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		checkedAt,
 		scanMode: body.scanMode,
 	});
-	await updatePoolForCheck(env.DB, body.ip, body.ok, body.rttMs ?? null, checkedAt, body.scanMode);
+	await updatePoolForCheck(env.DB, ip, body.ok, body.rttMs ?? null, checkedAt, body.scanMode);
 
 	// A recheck just changed this IP's status, so the top set may have
 	// shifted. Reconcile after responding so a slow Cloudflare API call

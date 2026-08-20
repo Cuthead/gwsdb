@@ -6,7 +6,7 @@
 // recheck_queue -> pull-worker chain with one synchronous round trip — no
 // queue, no random delay.
 import { isGoogleASN, lookupGoogleASN } from "../src/dnsCache";
-import { isIPAddress } from "../src/ipAddr";
+import { normalizeIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
 import { checkRateLimit, saveRecheckResult, updatePoolForCheck } from "../src/store";
 import { syncPublish } from "../src/publish";
@@ -34,8 +34,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		return Response.json({ error: "forbidden" }, { status: 403 });
 	}
 
-	const ip = new URL(request.url).searchParams.get("ip") ?? "";
-	if (!isIPAddress(ip)) {
+	const ip = normalizeIPAddress(new URL(request.url).searchParams.get("ip") ?? "");
+	if (!ip) {
 		return Response.json({ error: "invalid ip" }, { status: 400 });
 	}
 

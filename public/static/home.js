@@ -21,7 +21,7 @@ import { decodeBest, countryCode } from './geo.js';
 
 (function () {
 	var DB_NAME = 'gwsdb';
-	var DB_VERSION = 1;
+	var DB_VERSION = 2;
 	var ROW_STORE = 'pool';
 	var META_STORE = 'meta';
 	var META_KEY = 'snapshot';
@@ -355,8 +355,16 @@ import { decodeBest, countryCode } from './geo.js';
 			var request = indexedDB.open(DB_NAME, DB_VERSION);
 			request.onupgradeneeded = function () {
 				var db = request.result;
-				if (!db.objectStoreNames.contains(ROW_STORE)) db.createObjectStore(ROW_STORE, {keyPath: 'ip'});
-				if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE);
+				if (!db.objectStoreNames.contains(ROW_STORE)) {
+					db.createObjectStore(ROW_STORE, {keyPath: 'ip'});
+				} else {
+					request.transaction.objectStore(ROW_STORE).clear();
+				}
+				if (!db.objectStoreNames.contains(META_STORE)) {
+					db.createObjectStore(META_STORE);
+				} else {
+					request.transaction.objectStore(META_STORE).clear();
+				}
 			};
 			request.onsuccess = function () {
 				if (settled) {
