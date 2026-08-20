@@ -6,42 +6,17 @@ import { decode, decodeBest, isHostname, siblingHostname } from "../src/geo";
 import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html";
 import { isIPAddress, normalizeIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
-import { CHECK_HISTORY_RETENTION, getHost, getPTR, ipHistory, ipStatusFor } from "../src/store";
+import { getHost, getPTR, ipStatusFor } from "../src/store";
 import type { ASNInfo } from "../src/asn";
 import type { Env } from "../src/env";
-import type { IPCheckHistoryRow, IPStatus } from "../src/types";
+import type { IPStatus } from "../src/types";
 
 const PTR_TIMEOUT_MS = 3000;
 const ASN_TIMEOUT_MS = 3000;
-const HISTORY_PAGE_SIZE = 30;
-const MAX_HISTORY_PAGE = Math.ceil(CHECK_HISTORY_RETENTION / HISTORY_PAGE_SIZE);
 
 function reachabilityStatus(st: IPStatus | null): string {
 	if (!st || !st.hasCheck) return "-";
 	return st.lastCheckOk ? "Reachable" : "Unreachable";
-}
-
-// reasonLabels translates gscan_quic's REASON tags into short human-readable labels.
-const REASON_LABELS: Record<string, string> = {
-	dial: "tcp: TCP dial timeout",
-	handshake: "tls: TLS handshake failed",
-	cn: "tls: Certificate CN mismatch",
-	http: "http: HTTP timeout",
-	status: "http: HTTP status code mismatch",
-	ping: "icmp: ICMP ping timeout",
-};
-
-function reasonLabel(reason: string, detail: string): string {
-	if (reason === "ping") return detail.includes("rtt_too_low") ? "icmp: RTT too low" : "icmp: ICMP ping timeout";
-	return REASON_LABELS[reason] ?? reason;
-}
-
-interface CheckRow {
-	time: string;
-	ok: boolean;
-	rtt: number;
-	reasonLabel: string;
-	detail: string;
 }
 
 interface AddrStatus {
@@ -77,9 +52,6 @@ interface QueryData {
 	lastSeen: string;
 	timesSeen: number;
 	lastRttMs: number;
-	checks: CheckRow[];
-	historyPage: number;
-	historyHasNext: boolean;
 	queryIsHostname: boolean;
 	hostnameForms: HostnameForm[];
 	canProbe: boolean;
@@ -102,9 +74,6 @@ function emptyData(query: string): QueryData {
 		lastSeen: "",
 		timesSeen: 0,
 		lastRttMs: 0,
-		checks: [],
-		historyPage: 1,
-		historyHasNext: false,
 		queryIsHostname: false,
 		hostnameForms: [],
 		canProbe: false,
@@ -151,7 +120,7 @@ async function lookupHostnameQuery(db: D1Database, hostname: string, dohUrl: str
 	if (sibling) data.hostnameForms.push(await resolveHostnameForm(db, sibling, dohUrl));
 }
 
-async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, historyPage: number, data: QueryData): Promise<void> {
+async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, data: QueryData): Promise<void> {
 	// A PTR lookup failure is non-fatal: it costs one row of the result,
 	// while the reachability overview/check history/reports below it are all
 	// independent of it. Large parts of Google's reverse space (notably the
@@ -188,18 +157,6 @@ async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, history
 		data.lastRttMs = st.lastRttMs;
 	}
 	data.status = reachabilityStatus(st);
-
-	data.historyPage = historyPage;
-	const checks = await ipHistory(db, ip, HISTORY_PAGE_SIZE + 1, (historyPage - 1) * HISTORY_PAGE_SIZE);
-	data.historyHasNext = checks.length > HISTORY_PAGE_SIZE;
-	data.checks = checks.slice(0, HISTORY_PAGE_SIZE).map((c) => ({
-		time: formatTime(c.checkedAt),
-		ok: c.ok,
-		rtt: c.rttMs,
-		reasonLabel: c.ok ? "" : reasonLabel(c.reason, c.detail),
-		detail: c.detail,
-	}));
-
 }
 
 // queryDescription summarizes the lookup result for the page's og:description,
@@ -302,43 +259,29 @@ function renderIPBranch(data: QueryData): string {
 <tr><td>Last RTT</td><td>${data.lastRttMs ? `${data.lastRttMs} ms` : "-"}</td></tr>`
 		: `<tr><td colspan="2"><i>This IP is not in the known scan results (it may not have been scanned, or was never found reachable)</i></td></tr>`;
 
-	const firstCheck = (data.historyPage - 1) * HISTORY_PAGE_SIZE + 1;
-	const lastCheck = firstCheck + data.checks.length - 1;
-	const historyRange = data.checks.length ? `checks ${firstCheck}-${lastCheck}, newest first` : `page ${data.historyPage}`;
-	const historyLinks = [
-		data.historyPage > 1
-			? `<a href="/query?ip=${encodeURIComponent(data.query)}&amp;page=${data.historyPage - 1}">&laquo; Previous</a>`
-			: "",
-		data.historyHasNext
-			? `<a href="/query?ip=${encodeURIComponent(data.query)}&amp;page=${data.historyPage + 1}">Next &raquo;</a>`
-			: "",
-	].filter(Boolean);
-	const historyPagination = historyLinks.length
-		? `<p>Page ${data.historyPage} &nbsp; ${historyLinks.join(" &nbsp; ")}</p>`
-		: "";
-	const checkRows = data.checks.length
-		? data.checks
-				.map(
-					(c) => `<tr>
-<td>${escapeHTML(c.time)}</td>
-<td>${c.ok ? `<font color="#008000">&#x2713; Reachable</font>` : `<font color="#CC0000">&#x2717; Unreachable</font>`}</td>
-<td>${c.reasonLabel ? escapeHTML(c.reasonLabel) : ""}${c.reasonLabel && c.detail ? "<br>" : ""}${c.detail ? `<tt>${escapeHTML(c.detail)}</tt>` : (c.reasonLabel ? "" : "-")}</td>
-<td>${c.rtt ? `${c.rtt} ms` : "-"}</td>
-</tr>`,
-				)
-				.join("\n")
-		: `<tr><td colspan="4"><i>No checks on this page</i></td></tr>`;
-	const checksTable = data.checks.length || data.historyPage > 1
-		? `<p></p>
-<div class="gwsdb-scroll">
+	const checksTable = `<p></p>
+<div id="historySection" data-ip="${escapeHTML(data.query)}">
+<noscript><p><i>JavaScript is required to load check history.</i></p></noscript>
+<p id="historyStatus">Loading check history&hellip;</p>
+<div class="gwsdb-scroll gwsdb-hidden" id="historyTableWrap">
 <table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="4"><b>Check History</b> (${historyRange})</td></tr>
+<tr bgcolor="#EEEEEE"><td colspan="4"><b>Check History</b> (<span id="historyCount">0</span> checks, newest first)</td></tr>
 <tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>RTT</b></td></tr>
-${checkRows}
+<tbody id="historyTableBody"></tbody>
 </table>
 </div>
-${historyPagination}`
-		: "";
+<p align="center" id="historyPager" class="gwsdb-hidden">
+<input type="button" id="historyPrev" value="&lt; Prev">
+<span id="historyPageInfo"></span>
+<input type="button" id="historyNext" value="Next &gt;">
+&nbsp;&nbsp;
+<select id="historyPageSize">
+<option value="30">30 / page</option>
+<option value="100">100 / page</option>
+<option value="all">All</option>
+</select>
+</p>
+</div>`;
 
 	const probeCell = data.canProbe
 		? `<button type="button" id="probeBtn" data-ip="${escapeHTML(data.query)}">立即检测</button> <span id="probeStatus"></span>`
@@ -406,8 +349,6 @@ Location estimates are based on the <a href="https://github.com/lennylxx/ipv6-ho
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const url = new URL(context.request.url);
-	const pageParam = url.searchParams.get("page") ?? "1";
-	const historyPage = /^\d+$/.test(pageParam) ? Math.min(Math.max(Number(pageParam), 1), MAX_HISTORY_PAGE) : 1;
 	let q = (url.searchParams.get("ip") ?? "").trim();
 	if (isIPAddress(q)) {
 		const normalized = normalizeIPAddress(q)!;
@@ -441,7 +382,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 			if (!asn.ok || !isGoogleASN(asn.info)) {
 				data.error = "This IP does not belong to a Google ASN";
 			} else {
-				await lookupIPQuery(context.env.DB, q, dohUrl, historyPage, data);
+				await lookupIPQuery(context.env.DB, q, dohUrl, data);
 			}
 		}
 	} else if (isHostname(q)) {

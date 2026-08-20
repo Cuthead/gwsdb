@@ -634,6 +634,18 @@ interface IPHistoryRow {
 	scan_mode: string | null;
 }
 
+// ipHistoryVersion is a cheap change signal for one IP's append-only check
+// history. History pruning only removes rows older than the returned id, so a
+// stable version also means the newest retained CHECK_HISTORY_RETENTION rows
+// are unchanged.
+export async function ipHistoryVersion(db: D1Database, ip: string): Promise<number> {
+	const row = await db
+		.prepare(`SELECT COALESCE(MAX(id), 0) AS version FROM ip_checks WHERE ip = ?`)
+		.bind(ip)
+		.first<{ version: number }>();
+	return Number(row?.version ?? 0);
+}
+
 // ipHistory returns one page of ip's pass/fail checks, newest first.
 export async function ipHistory(db: D1Database, ip: string, limit: number, offset: number): Promise<IPCheckHistoryRow[]> {
 	const { results } = await db
