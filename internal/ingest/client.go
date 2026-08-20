@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/cuthead/gwsdb/internal/store"
 )
@@ -65,12 +66,19 @@ type poolResponse struct {
 	} `json:"ips"`
 }
 
+type PoolTarget struct {
+	IP       string
+	LastSeen time.Time
+}
+
+const poolTimeLayout = "2006-01-02 15:04:05"
+
 // FetchPool returns every currently-reachable IP of family 4 or 6 in the
 // tracked pool, sorted by lastSeen ascending (oldest first). No auth —
 // /api/pool is the same public endpoint the home page fetches. The response
 // is edge-cached keyed by poolVersion, so a fetch right after a flush sees
 // fresh data.
-func FetchPool(ctx context.Context, apiBase string, family int) ([]string, error) {
+func FetchPool(ctx context.Context, apiBase string, family int) ([]PoolTarget, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/pool?family=%d", apiBase, family), nil)
 	if err != nil {
 		return nil, err
@@ -88,26 +96,24 @@ func FetchPool(ctx context.Context, apiBase string, family int) ([]string, error
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode /api/pool: %w", err)
 	}
-	reachable := make([]struct {
-		IP       string
-		LastSeen string
-	}, 0, len(out.IPs))
+	reachable := make([]PoolTarget, 0, len(out.IPs))
 	for _, r := range out.IPs {
-		if r.Status == "Reachable" {
-			reachable = append(reachable, struct {
-				IP       string
-				LastSeen string
-			}{r.IP, r.LastSeen})
+		if r.Status != "Reachable" {
+			continue
 		}
+		var lastSeen time.Time
+		if r.LastSeen != "-" {
+			lastSeen, err = time.ParseInLocation(poolTimeLayout, r.LastSeen, time.UTC)
+			if err != nil {
+				return nil, fmt.Errorf("parse lastSeen for %s: %w", r.IP, err)
+			}
+		}
+		reachable = append(reachable, PoolTarget{IP: r.IP, LastSeen: lastSeen})
 	}
 	sort.SliceStable(reachable, func(i, j int) bool {
-		return reachable[i].LastSeen < reachable[j].LastSeen
+		return reachable[i].LastSeen.Before(reachable[j].LastSeen)
 	})
-	ips := make([]string, len(reachable))
-	for i, r := range reachable {
-		ips[i] = r.IP
-	}
-	return ips, nil
+	return reachable, nil
 }
 
 // submitPayload is the POST /ingest body -- just checks (no Scan row; the

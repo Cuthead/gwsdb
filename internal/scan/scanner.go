@@ -61,6 +61,12 @@ type ipState struct {
 	failTimes int
 }
 
+type recheckState struct {
+	lastOK       bool
+	lastSuccess  time.Time
+	lastResultAt time.Time
+}
+
 // Scanner is the long-running process: N probe workers + a flush ticker
 // + a recheck-queue puller + a network monitor, all sharing one
 // in-memory check buffer that the flusher periodically drains to the
@@ -70,11 +76,13 @@ type Scanner struct {
 
 	mu                sync.Mutex
 	checks            []store.IPCheck
+	inFlightChecks    []store.IPCheck
 	pool              map[string]*ipState
 	scannedCount      int
 	lastMaintenanceAt time.Time
 	flushReady        chan struct{}
 	pruneIPs          map[string]struct{}
+	recheckStates     map[string]recheckState
 
 	// known-good set for FilterChecks' failure gate, owned by runFlusher's
 	// goroutine (no locking needed). Refreshed hourly, extended locally
@@ -82,10 +90,13 @@ type Scanner struct {
 	knownGood          map[string]bool
 	knownGoodFetchedAt time.Time
 
-	// Cumulative counters across flush windows, for the periodic status
-	// log — scannedCount in flush.go resets each window.
-	totalScanned atomic.Int64
-	totalFound   atomic.Int64
+	// Cumulative source counters for the periodic status log. Suppressed
+	// rechecks succeeded but were inside the 24-hour heartbeat window.
+	scanProbes        atomic.Int64
+	scanFound         atomic.Int64
+	recheckProbes     atomic.Int64
+	recheckFound      atomic.Int64
+	recheckSuppressed atomic.Int64
 
 	netMon networkMonitor
 }
@@ -108,10 +119,11 @@ func New(cfg Config) *Scanner {
 		cfg.RecheckInterval = 10 * time.Minute
 	}
 	return &Scanner{
-		cfg:        cfg,
-		pool:       make(map[string]*ipState),
-		flushReady: make(chan struct{}, 1),
-		pruneIPs:   make(map[string]struct{}),
+		cfg:           cfg,
+		pool:          make(map[string]*ipState),
+		flushReady:    make(chan struct{}, 1),
+		pruneIPs:      make(map[string]struct{}),
+		recheckStates: make(map[string]recheckState),
 	}
 }
 
@@ -183,7 +195,7 @@ func (s *Scanner) Run(ctx context.Context) error {
 		if workerN == 0 {
 			return
 		}
-		jobs := make(chan string)
+		jobs := make(chan ingest.PoolTarget)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -277,35 +289,145 @@ func (s *Scanner) runWorker(ctx context.Context, ipv6 bool) {
 	}
 }
 
-// record appends one check to the buffer and updates the in-memory pool.
-// Called from multiple worker goroutines — guarded by s.mu.
+// /api/pool formats lastSeen to whole seconds, so the extra second prevents
+// persisting a heartbeat up to 999ms before the true 24-hour boundary.
+const recheckSuccessInterval = 24*time.Hour + time.Second
+
+// record handles random scan results. Every scan result remains eligible for
+// FilterChecks; only repeat successful rechecks are heartbeat-suppressed.
 func (s *Scanner) record(ip string, result recheck.Result) {
+	s.scanProbes.Add(1)
+	if result.OK {
+		s.scanFound.Add(1)
+	}
 	now := time.Now().UTC()
 	s.mu.Lock()
+	s.recordResultLocked(ip, result, true, now, "scan")
+	state, tracked := s.recheckStates[ip]
+	if result.OK {
+		s.recheckStates[ip] = recheckState{lastOK: true, lastSuccess: now, lastResultAt: now}
+	} else if tracked {
+		state.lastOK = false
+		state.lastResultAt = now
+		s.recheckStates[ip] = state
+	}
+	s.mu.Unlock()
+}
+
+// seedRecheckStates captures the server state when a feeder loads its queue.
+// Existing entries win because they reflect probes completed after that
+// potentially stale snapshot was fetched.
+func (s *Scanner) seedRecheckStates(targets []ingest.PoolTarget) {
+	s.mu.Lock()
 	defer s.mu.Unlock()
+	pending := make(map[string]store.IPCheck, len(s.checks)+len(s.inFlightChecks))
+	for _, check := range append(s.checks, s.inFlightChecks...) {
+		if previous, exists := pending[check.IP]; !exists || check.CheckedAt.After(previous.CheckedAt) {
+			pending[check.IP] = check
+		}
+	}
+	for _, target := range targets {
+		state, exists := s.recheckStates[target.IP]
+		if !exists {
+			state = recheckState{lastOK: true, lastSuccess: target.LastSeen, lastResultAt: target.LastSeen}
+		} else {
+			if target.LastSeen.After(state.lastSuccess) {
+				state.lastSuccess = target.LastSeen
+			}
+			if target.LastSeen.After(state.lastResultAt) {
+				state.lastOK = true
+				state.lastResultAt = target.LastSeen
+			}
+		}
+		if check, exists := pending[target.IP]; exists && check.CheckedAt.After(state.lastResultAt) {
+			state.lastOK = check.OK
+			state.lastResultAt = check.CheckedAt
+			if check.OK {
+				state.lastSuccess = check.CheckedAt
+			}
+		}
+		s.recheckStates[target.IP] = state
+	}
+}
+
+// mergeSubmittedStates records only checks the server accepted (after
+// FilterChecks removed unknown failures), then clears the in-flight snapshot.
+// This closes the gap where a feeder fetched stale state before submission
+// but did not seed its queue until after the request completed.
+func (s *Scanner) mergeSubmittedStates(checks []store.IPCheck) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, check := range checks {
+		state, exists := s.recheckStates[check.IP]
+		if !exists {
+			state = recheckState{}
+		}
+		if check.CheckedAt.After(state.lastResultAt) {
+			state.lastOK = check.OK
+			state.lastResultAt = check.CheckedAt
+		}
+		if check.OK && check.CheckedAt.After(state.lastSuccess) {
+			state.lastSuccess = check.CheckedAt
+		}
+		s.recheckStates[check.IP] = state
+	}
+	s.inFlightChecks = nil
+}
+
+// recordRecheck persists failures immediately and successful heartbeats only
+// when the server's last successful check is at least 24 hours old.
+func (s *Scanner) recordRecheck(target ingest.PoolTarget, result recheck.Result) {
+	s.recheckProbes.Add(1)
+	if result.OK {
+		s.recheckFound.Add(1)
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	state, tracked := s.recheckStates[target.IP]
+	if !tracked {
+		state = recheckState{lastOK: true, lastSuccess: target.LastSeen, lastResultAt: target.LastSeen}
+	}
+	// Failures always persist. A success persists on recovery or once the
+	// latest locally/server-observed successful heartbeat reaches 24 hours.
+	persist := !result.OK || !state.lastOK || state.lastSuccess.IsZero() || now.Sub(state.lastSuccess) >= recheckSuccessInterval
+	if !persist {
+		s.recheckSuppressed.Add(1)
+	}
+	s.recordResultLocked(target.IP, result, persist, now, "recheck")
+	state.lastOK = result.OK
+	state.lastResultAt = now
+	if result.OK && persist {
+		state.lastSuccess = now
+	}
+	s.recheckStates[target.IP] = state
+	s.mu.Unlock()
+}
+
+// recordResultLocked updates diagnostics and conditionally appends a check.
+// Caller holds s.mu so heartbeat decisions and state updates stay atomic.
+func (s *Scanner) recordResultLocked(ip string, result recheck.Result, persist bool, now time.Time, source string) {
 	s.scannedCount++
-	s.totalScanned.Add(1)
-	s.checks = append(s.checks, store.IPCheck{
-		IP:        ip,
-		OK:        result.OK,
-		RTTMs:     result.RTTMs,
-		Reason:    result.Reason,
-		Detail:    result.Detail,
-		CheckedAt: now,
-		ScanMode:  s.cfg.ScanMode,
-	})
-	if len(s.checks) >= s.cfg.FlushSize {
-		select {
-		case s.flushReady <- struct{}{}:
-		default:
+	if persist {
+		s.checks = append(s.checks, store.IPCheck{
+			IP:        ip,
+			OK:        result.OK,
+			RTTMs:     result.RTTMs,
+			Reason:    result.Reason,
+			Detail:    result.Detail,
+			CheckedAt: now,
+			ScanMode:  s.cfg.ScanMode,
+		})
+		if len(s.checks) >= s.cfg.FlushSize {
+			select {
+			case s.flushReady <- struct{}{}:
+			default:
+			}
 		}
 	}
 	if result.OK {
-		s.totalFound.Add(1)
-		// Log every hit so the operator can see the scanner is finding IPs
-		// without waiting for a flush. Failures aren't logged here — they'd
-		// flood (the vast majority of probes fail).
-		log.Printf("scan: OK %s rtt=%dms", ip, result.RTTMs)
+		if persist {
+			log.Printf("scan: %s OK %s rtt=%dms", source, ip, result.RTTMs)
+		}
 		st := s.pool[ip]
 		if st == nil {
 			st = &ipState{}
@@ -339,7 +461,9 @@ func (s *Scanner) runStatusLogger(ctx context.Context, interval time.Duration) {
 		if s.netMon.OK() {
 			net = "up"
 		}
-		log.Printf("scan: status: %d probes, %d found, pool=%d, pending=%d, net=%s",
-			s.totalScanned.Load(), s.totalFound.Load(), poolSize, pending, net)
+		log.Printf("scan: status: scan=%d probes/%d found, recheck=%d probes/%d found/%d suppressed, pool=%d, pending=%d, net=%s",
+			s.scanProbes.Load(), s.scanFound.Load(),
+			s.recheckProbes.Load(), s.recheckFound.Load(), s.recheckSuppressed.Load(),
+			poolSize, pending, net)
 	}
 }

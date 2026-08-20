@@ -24,7 +24,7 @@ import (
 // pulls from get_ip_sni_host (the sorted ip_list) to re-verify existing
 // IPs. IPv4 and IPv6 use independent feeders so a large pool in one family
 // cannot delay the next cycle of the other family.
-func (s *Scanner) runRecheckFeeder(ctx context.Context, jobs chan<- string, ipv6Only bool) {
+func (s *Scanner) runRecheckFeeder(ctx context.Context, jobs chan<- ingest.PoolTarget, ipv6Only bool) {
 	family := "IPv4"
 	if ipv6Only {
 		family = "IPv6"
@@ -49,6 +49,7 @@ func (s *Scanner) runRecheckFeeder(ctx context.Context, jobs chan<- string, ipv6
 			}
 			continue
 		}
+		s.seedRecheckStates(pool)
 		ipv4, ipv6 := splitPoolByFamily(pool)
 		matching := ipv4
 		if ipv6Only {
@@ -74,28 +75,28 @@ func (s *Scanner) runRecheckFeeder(ctx context.Context, jobs chan<- string, ipv6
 	}
 }
 
-func splitPoolByFamily(pool []string) (ipv4, ipv6 []string) {
-	for _, ip := range pool {
-		addr, err := netip.ParseAddr(ip)
+func splitPoolByFamily(pool []ingest.PoolTarget) (ipv4, ipv6 []ingest.PoolTarget) {
+	for _, target := range pool {
+		addr, err := netip.ParseAddr(target.IP)
 		if err != nil {
-			log.Printf("scan: recheck feeder: invalid IP %q: %v", ip, err)
+			log.Printf("scan: recheck feeder: invalid IP %q: %v", target.IP, err)
 			continue
 		}
 		if addr.Is4() {
-			ipv4 = append(ipv4, ip)
+			ipv4 = append(ipv4, target)
 		} else {
-			ipv6 = append(ipv6, ip)
+			ipv6 = append(ipv6, target)
 		}
 	}
 	return ipv4, ipv6
 }
 
-func feedRecheckJobs(ctx context.Context, jobs chan<- string, ips []string) {
-	for _, ip := range ips {
+func feedRecheckJobs(ctx context.Context, jobs chan<- ingest.PoolTarget, targets []ingest.PoolTarget) {
+	for _, target := range targets {
 		select {
 		case <-ctx.Done():
 			return
-		case jobs <- ip:
+		case jobs <- target:
 		}
 	}
 }
@@ -110,7 +111,7 @@ func feedRecheckJobs(ctx context.Context, jobs chan<- string, ips []string) {
 //
 // Stops on ctx cancellation. Same Interval sleep between probes as scan
 // workers, so the two populations share the probe-rate budget cleanly.
-func (s *Scanner) runRecheckWorker(ctx context.Context, jobs <-chan string) {
+func (s *Scanner) runRecheckWorker(ctx context.Context, jobs <-chan ingest.PoolTarget) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -128,24 +129,24 @@ func (s *Scanner) runRecheckWorker(ctx context.Context, jobs <-chan string) {
 		select {
 		case <-ctx.Done():
 			return
-		case ip := <-jobs:
+		case target := <-jobs:
 			// Ping gate — same as runWorker: skip the TCP/SNI probe if
 			// ICMP echo gets no reply, recording reason=ping so the
 			// failure reason is distinguishable from a dial failure.
 			pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
-			ping := recheck.Ping(pingCtx, ip)
+			ping := recheck.Ping(pingCtx, target.IP)
 			pingCancel()
 			if !ping.OK {
-				s.record(ip, recheck.Result{
+				s.recordRecheck(target, recheck.Result{
 					Reason: "ping",
 					Detail: fmt.Sprintf("%s error=%s", recheck.ProbeParams(s.cfg.ProbeConfig), ping.Err),
 				})
 				continue
 			}
 			probeCtx, cancel := context.WithTimeout(ctx, s.cfg.ProbeTimeout)
-			result := recheck.CheckSNI(probeCtx, ip, s.cfg.ProbeConfig)
+			result := recheck.CheckSNI(probeCtx, target.IP, s.cfg.ProbeConfig)
 			cancel()
-			s.record(ip, result)
+			s.recordRecheck(target, result)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cuthead/gwsdb/internal/store"
 )
@@ -90,5 +91,27 @@ func TestSubmitRetainsPruneCandidatesOnTruncatedSuccess(t *testing.T) {
 	}
 	if pruneOK {
 		t.Fatal("pruneOK = true after truncated response, want false")
+	}
+}
+
+func TestFetchPoolReturnsSortedLastSeen(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("family"); got != "6" {
+			t.Errorf("family = %q, want 6", got)
+		}
+		_, _ = w.Write([]byte(`{"ips":[{"ip":"2001:db8::2","lastSeen":"2026-08-20 12:00:00","status":"Reachable"},{"ip":"2001:db8::1","lastSeen":"2026-08-19 12:00:00","status":"Reachable"},{"ip":"2001:db8::3","lastSeen":"2026-08-18 12:00:00","status":"Unreachable"}]}`))
+	}))
+	defer server.Close()
+
+	targets, err := FetchPool(context.Background(), server.URL, 6)
+	if err != nil {
+		t.Fatalf("FetchPool: %v", err)
+	}
+	if len(targets) != 2 || targets[0].IP != "2001:db8::1" || targets[1].IP != "2001:db8::2" {
+		t.Fatalf("targets = %+v", targets)
+	}
+	want := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	if !targets[0].LastSeen.Equal(want) {
+		t.Fatalf("lastSeen = %s, want %s", targets[0].LastSeen, want)
 	}
 }

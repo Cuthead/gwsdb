@@ -123,6 +123,7 @@ func (s *Scanner) flush(ctx context.Context) bool {
 	s.mu.Lock()
 	checks := s.checks
 	s.checks = nil
+	s.inFlightChecks = checks
 	scanned := s.scannedCount
 	s.scannedCount = 0
 	s.mu.Unlock()
@@ -186,6 +187,7 @@ func (s *Scanner) flush(ctx context.Context) bool {
 	if maintenance && !pruneOK {
 		log.Printf("scan: flush: history prune failed — retaining %d IPs for next maintenance batch", len(s.pruneIPs))
 	}
+	s.mergeSubmittedStates(filtered)
 	// Extend the in-memory set with this window's discoveries so failures
 	// for them pass the filter in later windows without waiting for the
 	// hourly refresh.
@@ -237,6 +239,7 @@ func (s *Scanner) recordPruneCandidates(checks []store.IPCheck, maintenance bool
 func (s *Scanner) requeue(checks []store.IPCheck, scanned int) {
 	s.mu.Lock()
 	s.checks = append(checks, s.checks...)
+	s.inFlightChecks = nil
 	s.scannedCount += scanned
 	s.mu.Unlock()
 }
