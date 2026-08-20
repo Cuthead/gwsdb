@@ -134,13 +134,16 @@ export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise
 // (MAX_HISTORY_ROWS), and ip_pool's first_seen/times_seen are allowed to
 // drift to "within the retained window" rather than true lifetime values.
 const CHECK_HISTORY_RETENTION = 300;
+// D1 allows at most 100 bound parameters per statement. Reserve one for the
+// retention threshold, leaving 99 IP placeholders per DELETE.
+const PRUNE_IP_CHUNK = 99;
 
 // pruneCheckHistory deletes ip_checks rows beyond CHECK_HISTORY_RETENTION
 // per IP (oldest first) for the given ips. Run asynchronously via waitUntil.
 export async function pruneCheckHistory(db: D1Database, ips: string[]): Promise<void> {
 	const unique = [...new Set(ips)];
-	for (let i = 0; i < unique.length; i += 100) {
-		const chunk = unique.slice(i, i + 100);
+	for (let i = 0; i < unique.length; i += PRUNE_IP_CHUNK) {
+		const chunk = unique.slice(i, i + PRUNE_IP_CHUNK);
 		const placeholders = chunk.map(() => "?").join(",");
 		await db
 			.prepare(

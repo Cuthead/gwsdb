@@ -80,6 +80,7 @@ type Scanner struct {
 	pool              map[string]*ipState
 	scannedCount      int
 	lastMaintenanceAt time.Time
+	nextPruneRetryAt  time.Time
 	flushReady        chan struct{}
 	pruneIPs          map[string]struct{}
 	recheckStates     map[string]recheckState

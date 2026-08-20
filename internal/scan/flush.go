@@ -84,6 +84,7 @@ func (s *Scanner) flushFinal() {
 	// next ten-minute maintenance deadline or no checks remain in the buffer.
 	s.lastMaintenanceAt = time.Time{}
 	for attempt := 1; attempt <= 3; attempt++ {
+		s.nextPruneRetryAt = time.Time{}
 		if s.flush(ctx) && len(s.pruneIPs) == 0 {
 			return
 		}
@@ -113,6 +114,7 @@ const knownGoodRefreshInterval = time.Hour
 // maintenanceInterval keeps expensive PTR refresh and DNS publication work
 // on the old cadence while check ingestion runs as frequent micro-batches.
 const maintenanceInterval = 10 * time.Minute
+const pruneRetryInterval = time.Minute
 
 // flush drains the check buffer and submits it. If the submit fails, the
 // checks are requeued for the next window rather than dropped. Safe to
@@ -128,7 +130,9 @@ func (s *Scanner) flush(ctx context.Context) bool {
 	s.scannedCount = 0
 	s.mu.Unlock()
 
-	maintenance := s.lastMaintenanceAt.IsZero() || time.Since(s.lastMaintenanceAt) >= maintenanceInterval
+	now := time.Now().UTC()
+	maintenanceDue := s.lastMaintenanceAt.IsZero() || now.Sub(s.lastMaintenanceAt) >= maintenanceInterval
+	maintenance := maintenanceDue && (s.nextPruneRetryAt.IsZero() || !now.Before(s.nextPruneRetryAt))
 	if len(checks) == 0 && !(maintenance && len(s.pruneIPs) > 0) {
 		log.Printf("scan: flush: nothing to flush")
 		return true
@@ -182,9 +186,11 @@ func (s *Scanner) flush(ctx context.Context) bool {
 	maintenanceComplete := maintenance && pruneOK
 	if maintenanceComplete {
 		s.lastMaintenanceAt = time.Now().UTC()
+		s.nextPruneRetryAt = time.Time{}
 	}
 	s.recordPruneCandidates(filtered, maintenanceComplete)
 	if maintenance && !pruneOK {
+		s.nextPruneRetryAt = time.Now().UTC().Add(pruneRetryInterval)
 		log.Printf("scan: flush: history prune failed — retaining %d IPs for next maintenance batch", len(s.pruneIPs))
 	}
 	s.mergeSubmittedStates(filtered)

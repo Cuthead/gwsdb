@@ -204,11 +204,20 @@ func TestFinalFlushSendsPendingPruneCandidatesWithoutChecks(t *testing.T) {
 }
 
 func TestPruneFailureRetainsCandidatesWithoutRequeueingChecks(t *testing.T) {
+	maintenance := make(chan bool, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			_, _ = w.Write([]byte(`{"ips":[]}`))
 			return
 		}
+		var body struct {
+			Maintenance bool `json:"maintenance"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		maintenance <- body.Maintenance
 		_, _ = w.Write([]byte(`{"checks":1,"pruneOk":false}`))
 	}))
 	defer server.Close()
@@ -226,6 +235,20 @@ func TestPruneFailureRetainsCandidatesWithoutRequeueingChecks(t *testing.T) {
 	}
 	if !s.lastMaintenanceAt.IsZero() {
 		t.Fatal("failed prune advanced maintenance deadline")
+	}
+	if !s.nextPruneRetryAt.After(time.Now()) {
+		t.Fatal("failed prune did not schedule retry cooldown")
+	}
+	if first := <-maintenance; !first {
+		t.Fatal("first flush maintenance = false, want true")
+	}
+
+	s.record("192.0.2.2", recheck.Result{OK: true, RTTMs: 20})
+	if ok := s.flush(context.Background()); !ok {
+		t.Fatal("flush during prune cooldown failed")
+	}
+	if second := <-maintenance; second {
+		t.Fatal("flush retried maintenance before prune cooldown elapsed")
 	}
 }
 
