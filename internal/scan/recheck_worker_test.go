@@ -41,16 +41,19 @@ func TestFeedRecheckJobsStopsOnCancellation(t *testing.T) {
 	}
 }
 
-func TestRecheckFeederWaitsForFlushInterval(t *testing.T) {
+func TestRecheckFeederWaitsForRecheckInterval(t *testing.T) {
 	requests := make(chan time.Time, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("family"); got != "4" {
+			t.Errorf("family = %q, want 4", got)
+		}
 		requests <- time.Now()
 		_, _ = w.Write([]byte(`{"ips":[{"ip":"192.0.2.1","lastSeen":"2026-08-19 11:00:00","status":"Reachable"}]}`))
 	}))
 	defer server.Close()
 
-	const flushInterval = 200 * time.Millisecond
-	s := New(Config{APIBase: server.URL, FlushInterval: flushInterval})
+	const recheckInterval = 200 * time.Millisecond
+	s := New(Config{APIBase: server.URL, RecheckInterval: recheckInterval})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	jobs := make(chan string)
@@ -63,15 +66,56 @@ func TestRecheckFeederWaitsForFlushInterval(t *testing.T) {
 			}
 		}
 	}()
-	go s.runRecheckFeeder(ctx, jobs, nil)
+	go s.runRecheckFeeder(ctx, jobs, false)
 
 	first := <-requests
 	select {
 	case second := <-requests:
-		if elapsed := second.Sub(first); elapsed < flushInterval {
-			t.Fatalf("pool refetched after %s, before flush interval %s", elapsed, flushInterval)
+		if elapsed := second.Sub(first); elapsed < recheckInterval {
+			t.Fatalf("pool refetched after %s, before recheck interval %s", elapsed, recheckInterval)
 		}
-	case <-time.After(flushInterval + time.Second):
-		t.Fatal("pool was not refetched after flush interval")
+	case <-time.After(recheckInterval + time.Second):
+		t.Fatal("pool was not refetched after recheck interval")
+	}
+}
+
+func TestRecheckFamiliesRunIndependentCycles(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ips":[{"ip":"192.0.2.1","lastSeen":"2026-08-20 03:00:00","status":"Reachable"},{"ip":"2001:db8::1","lastSeen":"2026-08-20 03:00:00","status":"Reachable"}]}`))
+	}))
+	defer server.Close()
+
+	s := New(Config{APIBase: server.URL, RecheckInterval: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ipv4Jobs := make(chan string)
+	ipv6Jobs := make(chan string) // Deliberately never consumed.
+	ipv4Checks := make(chan string, 2)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ip := <-ipv4Jobs:
+				select {
+				case ipv4Checks <- ip:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	go s.runRecheckFeeder(ctx, ipv4Jobs, false)
+	go s.runRecheckFeeder(ctx, ipv6Jobs, true)
+
+	for range 2 {
+		select {
+		case ip := <-ipv4Checks:
+			if ip != "192.0.2.1" {
+				t.Fatalf("IPv4 feeder returned %q", ip)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("IPv4 feeder was blocked by unfinished IPv6 cycle")
+		}
 	}
 }

@@ -63,13 +63,13 @@ type poolResponse struct {
 	} `json:"ips"`
 }
 
-// FetchPool returns every currently-reachable IP in the tracked pool,
-// sorted by lastSeen ascending (oldest first). No auth — /api/pool is
-// the same public endpoint the home page fetches. The response is
-// edge-cached keyed by poolVersion, so a fetch right after a flush sees
+// FetchPool returns every currently-reachable IP of family 4 or 6 in the
+// tracked pool, sorted by lastSeen ascending (oldest first). No auth —
+// /api/pool is the same public endpoint the home page fetches. The response
+// is edge-cached keyed by poolVersion, so a fetch right after a flush sees
 // fresh data.
-func FetchPool(ctx context.Context, apiBase string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/api/pool", nil)
+func FetchPool(ctx context.Context, apiBase string, family int) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/pool?family=%d", apiBase, family), nil)
 	if err != nil {
 		return nil, err
 	}

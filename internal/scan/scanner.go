@@ -37,6 +37,7 @@ type Config struct {
 	ProbeTimeout       time.Duration // per-probe deadline (bounds CheckSNI)
 	FlushInterval      time.Duration // maximum age before submitting accumulated checks
 	FlushSize          int           // submit early when this many checks are buffered
+	RecheckInterval    time.Duration // delay between completed recheck cycles per address family
 
 	// ProbeAddr is the address the on-demand probe HTTP server listens
 	// on (e.g. "0.0.0.0:8787"), reached by the gwsdb-probe Worker (worker/)
@@ -101,6 +102,9 @@ func New(cfg Config) *Scanner {
 	}
 	if cfg.FlushSize <= 0 {
 		cfg.FlushSize = 100
+	}
+	if cfg.RecheckInterval <= 0 {
+		cfg.RecheckInterval = 10 * time.Minute
 	}
 	return &Scanner{
 		cfg:        cfg,
@@ -171,38 +175,28 @@ func (s *Scanner) Run(ctx context.Context) error {
 		s.runFlusher(ctx)
 	}()
 
-	// Recheck workers: a feeder fetches the tracked pool from /api/pool,
-	// splits it by address family, and concurrently feeds each family to
-	// its worker pool. It doesn't re-fetch until both queues consume the
-	// previous cycle. See recheck_worker.go.
-	if s.cfg.IPv4RecheckWorkers+s.cfg.IPv6RecheckWorkers > 0 {
-		var ipv4Jobs, ipv6Jobs chan string
-		if s.cfg.IPv4RecheckWorkers > 0 {
-			ipv4Jobs = make(chan string)
+	// Recheck workers: each address family independently fetches and consumes
+	// its tracked pool, so a large IPv6 cycle cannot block a small IPv4 cycle.
+	startRecheck := func(workerN int, ipv6 bool) {
+		if workerN == 0 {
+			return
 		}
-		if s.cfg.IPv6RecheckWorkers > 0 {
-			ipv6Jobs = make(chan string)
-		}
+		jobs := make(chan string)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.runRecheckFeeder(ctx, ipv4Jobs, ipv6Jobs)
+			s.runRecheckFeeder(ctx, jobs, ipv6)
 		}()
-		for range s.cfg.IPv4RecheckWorkers {
+		for range workerN {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s.runRecheckWorker(ctx, ipv4Jobs)
-			}()
-		}
-		for range s.cfg.IPv6RecheckWorkers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				s.runRecheckWorker(ctx, ipv6Jobs)
+				s.runRecheckWorker(ctx, jobs)
 			}()
 		}
 	}
+	startRecheck(s.cfg.IPv4RecheckWorkers, false)
+	startRecheck(s.cfg.IPv6RecheckWorkers, true)
 
 	for range ipv4ScanN {
 		wg.Add(1)

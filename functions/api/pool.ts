@@ -1,7 +1,8 @@
 // Pages Function for GET /api/pool -- ports internal/web/server.go's
-// handleAPIPool. Search, sort, filter, and pagination are all handled
-// client-side by static/home.js over this payload. It supplies the initial
-// IndexedDB snapshot; later visits merge /api/pool/changes responses.
+// handleAPIPool. Search, sort, filter, and pagination are normally handled
+// client-side by static/home.js over this payload; ?family=4|6 restricts the
+// payload for scanner rechecks. It supplies the initial IndexedDB snapshot;
+// later visits merge /api/pool/changes responses.
 import { formatTime } from "../../src/html";
 import { loadPool } from "../../src/pool";
 import { poolVersion } from "../../src/store";
@@ -13,6 +14,8 @@ import type { Env } from "../../src/env";
 // the first request after a version bump in each colo still pays the D1
 // read, every later request/colo hits the edge cache instead.
 export const onRequestGet: PagesFunction<Env> = async (context) => {
+	const familyParam = new URL(context.request.url).searchParams.get("family");
+	const family = familyParam === "4" || familyParam === "6" ? Number(familyParam) : undefined;
 	const version = await poolVersion(context.env.DB);
 
 	const cache = caches.default;
@@ -35,7 +38,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 		return resp;
 	}
 
-	const { ips, scanMode, stats } = await loadPool(context.env.DB);
+	const { ips, scanMode, stats } = await loadPool(context.env.DB, { family });
 	if ((await poolVersion(context.env.DB)) !== version) {
 		return Response.json({ error: "pool changed while loading" }, { status: 503, headers: { "Cache-Control": "no-store" } });
 	}
