@@ -20,12 +20,19 @@ const CONTENT_SECURITY_POLICY =
 export const onRequest: PagesFunction<Env> = async (context) => {
 	const response = await context.next();
 	const headers = new Headers(response.headers);
-	// Static JS/CSS changes with each deploy, but the page HTML referencing it
-	// may already be fresh in the browser -- a cached old bundle then renders
-	// against new DOM IDs (e.g. query.js's history section) or ships stale
-	// logic indefinitely. Force revalidation (ETag 304s keep it cheap);
-	// deploy-versioned script URLs are the belt to this suspenders.
-	if (new URL(context.request.url).pathname.startsWith("/static/")) {
+	// Static assets need different freshness guarantees by kind:
+	//   - JS/CSS changes with each deploy, but the page HTML referencing it
+	//     may already be fresh in the browser -- a cached old bundle then
+	//     renders against new DOM IDs (e.g. query.js's history section) or
+	//     ships stale logic indefinitely. Force revalidation (ETag 304s keep
+	//     it cheap); deploy-versioned script URLs are the belt to this
+	//     suspenders.
+	//   - Country flag gifs are immutable content-addressed by country code
+	//     -- they never change, so they cache for a year, no round trip.
+	const pathname = new URL(context.request.url).pathname;
+	if (pathname.startsWith("/static/flags/")) {
+		headers.set("Cache-Control", "public, max-age=31536000, immutable");
+	} else if (pathname.startsWith("/static/")) {
 		headers.set("Cache-Control", "public, max-age=0, must-revalidate");
 	}
 	headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
