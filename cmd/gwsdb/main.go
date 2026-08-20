@@ -116,6 +116,13 @@ func runIngest(args []string) {
 	filtered := ingest.FilterChecks(parsed.Results, parsed.Checks, knownGood, time.Now().UTC())
 	for i := range filtered {
 		filtered[i].ScanMode = strings.ToUpper(*mode)
+		if filtered[i].Reason == "" {
+			if filtered[i].OK {
+				filtered[i].Reason = "scan:ok"
+			}
+		} else if !strings.HasPrefix(filtered[i].Reason, "scan:") && !strings.HasPrefix(filtered[i].Reason, "recheck:") {
+			filtered[i].Reason = "scan:" + filtered[i].Reason
+		}
 	}
 
 	pruneIPs := make([]string, 0, len(filtered))

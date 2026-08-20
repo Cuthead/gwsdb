@@ -718,7 +718,7 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 		await db
 			.prepare(
 				`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
-				VALUES (?, 1, ?, NULL, ?, ?, ?)`,
+				VALUES (?, 1, ?, 'recheck:ok', ?, ?, ?)`,
 			)
 			.bind(r.ip, r.rttMs, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 			.run();
@@ -727,12 +727,17 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 
 	if (!(await isKnownGood(db, r.ip))) return;
 
+	const reason = r.reason
+		? r.reason.startsWith("recheck:") || r.reason.startsWith("scan:")
+			? r.reason
+			: `recheck:${r.reason}`
+		: "recheck:unknown";
 	await db
 		.prepare(
 			`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
 			VALUES (?, 0, NULL, ?, ?, ?, ?)`,
 		)
-		.bind(r.ip, r.reason, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
+		.bind(r.ip, reason, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 		.run();
 }
 
