@@ -165,6 +165,32 @@ func TestRecheckSuccessHeartbeatAndFailurePersistence(t *testing.T) {
 	}
 }
 
+func TestFailureReasonCarriesSourcePrefix(t *testing.T) {
+	s := New(Config{ScanMode: "SNI"})
+	target := ingest.PoolTarget{IP: "192.0.2.9", LastSeen: time.Now().UTC().Add(-time.Hour)}
+
+	s.record(target.IP, recheck.Result{Reason: "ping", Detail: "scan probe"})
+	if got := s.checks[0].Reason; got != "scan:ping" {
+		t.Fatalf("scan failure reason = %q, want %q", got, "scan:ping")
+	}
+
+	s.recordRecheck(target, recheck.Result{Reason: "ping", Detail: "recheck probe"})
+	if got := s.checks[1].Reason; got != "recheck:ping" {
+		t.Fatalf("recheck failure reason = %q, want %q", got, "recheck:ping")
+	}
+
+	s.record(target.IP, recheck.Result{OK: true, RTTMs: 5})
+	if got := s.checks[2].Reason; got != "scan:ok" {
+		t.Fatalf("scan success reason = %q, want %q", got, "scan:ok")
+	}
+
+	oldTarget := ingest.PoolTarget{IP: "192.0.2.10", LastSeen: time.Now().UTC().Add(-25 * time.Hour)}
+	s.recordRecheck(oldTarget, recheck.Result{OK: true, RTTMs: 5})
+	if got := s.checks[3].Reason; got != "recheck:ok" {
+		t.Fatalf("recheck heartbeat success reason = %q, want %q", got, "recheck:ok")
+	}
+}
+
 func TestScanFailureBeforeRecheckForcesRecoveryPersistence(t *testing.T) {
 	s := New(Config{ScanMode: "SNI"})
 	target := ingest.PoolTarget{IP: "192.0.2.1", LastSeen: time.Now().UTC().Add(-time.Hour)}

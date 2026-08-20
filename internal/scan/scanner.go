@@ -406,16 +406,30 @@ func (s *Scanner) recordRecheck(target ingest.PoolTarget, result recheck.Result)
 	s.mu.Unlock()
 }
 
+// sourcePrefix tags a check's reason with its probe origin. Failures keep
+// their cause ("recheck:ping"); successes carry a bare origin ("scan:ok") so
+// the query page can attribute reachable rows too.
+func sourcePrefix(ok bool, source, reason string) string {
+	if ok {
+		return source + ":ok"
+	}
+	return source + ":" + reason
+}
+
 // recordResultLocked updates diagnostics and conditionally appends a check.
 // Caller holds s.mu so heartbeat decisions and state updates stay atomic.
 func (s *Scanner) recordResultLocked(ip string, result recheck.Result, persist bool, now time.Time, source string) {
 	s.scannedCount++
 	if persist {
 		s.checks = append(s.checks, store.IPCheck{
-			IP:        ip,
-			OK:        result.OK,
-			RTTMs:     result.RTTMs,
-			Reason:    result.Reason,
+			IP:    ip,
+			OK:    result.OK,
+			RTTMs: result.RTTMs,
+			// Prefix the failure reason with the probe origin ("scan:" /
+			// "recheck:") so the query page's history can attribute each
+			// failed check without a dedicated source column. Successes keep
+			// an empty reason.
+			Reason:    sourcePrefix(result.OK, source, result.Reason),
 			Detail:    result.Detail,
 			CheckedAt: now,
 			ScanMode:  s.cfg.ScanMode,

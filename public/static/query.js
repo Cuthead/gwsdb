@@ -59,11 +59,21 @@
 		ping: "icmp: ICMP ping timeout"
 	};
 
+	// Checks recorded by the scanner carry a "scan:"/"recheck:" origin prefix
+	// on their reason (successes use the bare "scan:ok"/"recheck:ok"); strip
+	// it for the label and show it as a tag. Rows without a prefix (older
+	// data, on-demand probes) render as before.
+	function originTag(check) {
+		var split = (check.reason || "").match(/^(scan|recheck):(.*)$/);
+		return split ? { tag: "[" + split[1] + "] ", reason: split[2] } : { tag: "", reason: check.reason || "" };
+	}
+
 	function reasonLabel(check) {
-		if (check.reason === "ping") {
-			return (check.detail || "").indexOf("rtt_too_low") !== -1 ? "icmp: RTT too low" : "icmp: ICMP ping timeout";
+		var origin = originTag(check);
+		if (origin.reason === "ping") {
+			return origin.tag + ((check.detail || "").indexOf("rtt_too_low") !== -1 ? "icmp: RTT too low" : "icmp: ICMP ping timeout");
 		}
-		return reasonLabels[check.reason] || check.reason || "";
+		return origin.tag + (reasonLabels[origin.reason] || origin.reason || "");
 	}
 
 	function formatTime(value) {
@@ -95,7 +105,7 @@
 		tr.appendChild(result);
 
 		var reason = document.createElement("td");
-		var label = check.ok ? "" : reasonLabel(check);
+		var label = check.ok ? originTag(check).tag.trim() : reasonLabel(check);
 		if (label) reason.appendChild(document.createTextNode(label));
 		if (label && check.detail) reason.appendChild(document.createElement("br"));
 		if (check.detail) {

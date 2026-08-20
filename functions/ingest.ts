@@ -86,7 +86,7 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 		ip: normalizeIPAddress(c.IP)!,
 		ok: c.OK,
 		rttMs: c.OK ? c.RTTMs || null : null,
-		reason: c.OK ? null : c.Reason || null,
+		reason: c.Reason || null,
 		detail: c.Detail || null,
 		checkedAt: new Date(c.CheckedAt),
 		scanMode: c.ScanMode,
