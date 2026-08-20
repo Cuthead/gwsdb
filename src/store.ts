@@ -130,10 +130,10 @@ export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise
 }
 
 // CHECK_HISTORY_RETENTION caps how many ip_checks rows survive per IP.
-// functions/query.ts's history view only ever shows the most recent 30
-// (MAX_HISTORY_ROWS), and ip_pool's first_seen/times_seen are allowed to
-// drift to "within the retained window" rather than true lifetime values.
-const CHECK_HISTORY_RETENTION = 300;
+// functions/query.ts paginates through this retained window, and ip_pool's
+// first_seen/times_seen are allowed to drift to "within the retained window"
+// rather than true lifetime values.
+export const CHECK_HISTORY_RETENTION = 300;
 // D1 allows at most 100 bound parameters per statement. Reserve one for the
 // retention threshold, leaving 99 IP placeholders per DELETE.
 const PRUNE_IP_CHUNK = 99;
@@ -634,16 +634,16 @@ interface IPHistoryRow {
 	scan_mode: string | null;
 }
 
-// ipHistory returns ip's most recent pass/fail checks, newest first.
-export async function ipHistory(db: D1Database, ip: string, limit: number): Promise<IPCheckHistoryRow[]> {
+// ipHistory returns one page of ip's pass/fail checks, newest first.
+export async function ipHistory(db: D1Database, ip: string, limit: number, offset: number): Promise<IPCheckHistoryRow[]> {
 	const { results } = await db
 		.prepare(
 			`SELECT ip, ok, rtt_ms, reason, detail, checked_at, scan_mode
 			FROM ip_checks
 			WHERE ip = ?
-			ORDER BY checked_at DESC LIMIT ?`,
+			ORDER BY checked_at DESC, id DESC LIMIT ? OFFSET ?`,
 		)
-		.bind(ip, limit)
+		.bind(ip, limit, offset)
 		.all<IPHistoryRow>();
 	return results.map((row) => ({
 		ip: row.ip,

@@ -6,14 +6,15 @@ import { decode, decodeBest, isHostname, siblingHostname } from "../src/geo";
 import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html";
 import { isIPAddress, normalizeIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
-import { getHost, getPTR, ipHistory, ipStatusFor } from "../src/store";
+import { CHECK_HISTORY_RETENTION, getHost, getPTR, ipHistory, ipStatusFor } from "../src/store";
 import type { ASNInfo } from "../src/asn";
 import type { Env } from "../src/env";
 import type { IPCheckHistoryRow, IPStatus } from "../src/types";
 
 const PTR_TIMEOUT_MS = 3000;
 const ASN_TIMEOUT_MS = 3000;
-const MAX_HISTORY_ROWS = 30;
+const HISTORY_PAGE_SIZE = 30;
+const MAX_HISTORY_PAGE = Math.ceil(CHECK_HISTORY_RETENTION / HISTORY_PAGE_SIZE);
 
 function reachabilityStatus(st: IPStatus | null): string {
 	if (!st || !st.hasCheck) return "-";
@@ -77,6 +78,8 @@ interface QueryData {
 	timesSeen: number;
 	lastRttMs: number;
 	checks: CheckRow[];
+	historyPage: number;
+	historyHasNext: boolean;
 	queryIsHostname: boolean;
 	hostnameForms: HostnameForm[];
 	canProbe: boolean;
@@ -100,6 +103,8 @@ function emptyData(query: string): QueryData {
 		timesSeen: 0,
 		lastRttMs: 0,
 		checks: [],
+		historyPage: 1,
+		historyHasNext: false,
 		queryIsHostname: false,
 		hostnameForms: [],
 		canProbe: false,
@@ -146,7 +151,7 @@ async function lookupHostnameQuery(db: D1Database, hostname: string, dohUrl: str
 	if (sibling) data.hostnameForms.push(await resolveHostnameForm(db, sibling, dohUrl));
 }
 
-async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, data: QueryData): Promise<void> {
+async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, historyPage: number, data: QueryData): Promise<void> {
 	// A PTR lookup failure is non-fatal: it costs one row of the result,
 	// while the reachability overview/check history/reports below it are all
 	// independent of it. Large parts of Google's reverse space (notably the
@@ -184,8 +189,10 @@ async function lookupIPQuery(db: D1Database, ip: string, dohUrl: string, data: Q
 	}
 	data.status = reachabilityStatus(st);
 
-	const checks = await ipHistory(db, ip, MAX_HISTORY_ROWS);
-	data.checks = checks.map((c) => ({
+	data.historyPage = historyPage;
+	const checks = await ipHistory(db, ip, HISTORY_PAGE_SIZE + 1, (historyPage - 1) * HISTORY_PAGE_SIZE);
+	data.historyHasNext = checks.length > HISTORY_PAGE_SIZE;
+	data.checks = checks.slice(0, HISTORY_PAGE_SIZE).map((c) => ({
 		time: formatTime(c.checkedAt),
 		ok: c.ok,
 		rtt: c.rttMs,
@@ -295,24 +302,42 @@ function renderIPBranch(data: QueryData): string {
 <tr><td>Last RTT</td><td>${data.lastRttMs ? `${data.lastRttMs} ms` : "-"}</td></tr>`
 		: `<tr><td colspan="2"><i>This IP is not in the known scan results (it may not have been scanned, or was never found reachable)</i></td></tr>`;
 
-	const checksTable = data.checks.length
-		? `<p></p>
-<div class="gwsdb-scroll">
-<table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="4"><b>Check History</b> (last ${data.checks.length} checks)</td></tr>
-<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>RTT</b></td></tr>
-${data.checks
-	.map(
-		(c) => `<tr>
+	const firstCheck = (data.historyPage - 1) * HISTORY_PAGE_SIZE + 1;
+	const lastCheck = firstCheck + data.checks.length - 1;
+	const historyRange = data.checks.length ? `checks ${firstCheck}-${lastCheck}, newest first` : `page ${data.historyPage}`;
+	const historyLinks = [
+		data.historyPage > 1
+			? `<a href="/query?ip=${encodeURIComponent(data.query)}&amp;page=${data.historyPage - 1}">&laquo; Previous</a>`
+			: "",
+		data.historyHasNext
+			? `<a href="/query?ip=${encodeURIComponent(data.query)}&amp;page=${data.historyPage + 1}">Next &raquo;</a>`
+			: "",
+	].filter(Boolean);
+	const historyPagination = historyLinks.length
+		? `<p>Page ${data.historyPage} &nbsp; ${historyLinks.join(" &nbsp; ")}</p>`
+		: "";
+	const checkRows = data.checks.length
+		? data.checks
+				.map(
+					(c) => `<tr>
 <td>${escapeHTML(c.time)}</td>
 <td>${c.ok ? `<font color="#008000">&#x2713; Reachable</font>` : `<font color="#CC0000">&#x2717; Unreachable</font>`}</td>
 <td>${c.reasonLabel ? escapeHTML(c.reasonLabel) : ""}${c.reasonLabel && c.detail ? "<br>" : ""}${c.detail ? `<tt>${escapeHTML(c.detail)}</tt>` : (c.reasonLabel ? "" : "-")}</td>
 <td>${c.rtt ? `${c.rtt} ms` : "-"}</td>
 </tr>`,
-	)
-	.join("\n")}
+				)
+				.join("\n")
+		: `<tr><td colspan="4"><i>No checks on this page</i></td></tr>`;
+	const checksTable = data.checks.length || data.historyPage > 1
+		? `<p></p>
+<div class="gwsdb-scroll">
+<table border="1" cellpadding="4" cellspacing="0" width="100%">
+<tr bgcolor="#EEEEEE"><td colspan="4"><b>Check History</b> (${historyRange})</td></tr>
+<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>RTT</b></td></tr>
+${checkRows}
 </table>
-</div>`
+</div>
+${historyPagination}`
 		: "";
 
 	const probeCell = data.canProbe
@@ -381,6 +406,8 @@ Location estimates are based on the <a href="https://github.com/lennylxx/ipv6-ho
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const url = new URL(context.request.url);
+	const pageParam = url.searchParams.get("page") ?? "1";
+	const historyPage = /^\d+$/.test(pageParam) ? Math.min(Math.max(Number(pageParam), 1), MAX_HISTORY_PAGE) : 1;
 	let q = (url.searchParams.get("ip") ?? "").trim();
 	if (isIPAddress(q)) {
 		const normalized = normalizeIPAddress(q)!;
@@ -414,7 +441,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 			if (!asn.ok || !isGoogleASN(asn.info)) {
 				data.error = "This IP does not belong to a Google ASN";
 			} else {
-				await lookupIPQuery(context.env.DB, q, dohUrl, data);
+				await lookupIPQuery(context.env.DB, q, dohUrl, historyPage, data);
 			}
 		}
 	} else if (isHostname(q)) {
