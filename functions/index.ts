@@ -140,10 +140,13 @@ ${table}
 </table>`;
 }
 
-// jsShellBody is identical on every request (matches home.tmpl's non-.Bot
-// branch, which never touches IPs/Stats) -- the IP list is fetched
-// client-side by static/home.js against /api/pool.
-const jsShellBody = `<p>The table below lists tracked Google Web Server (GWS) IP addresses and their reachability status.</p>
+// jsShellBody is static except for the script URL's build revision (busts
+// browser-cached bundles across deploys) -- otherwise identical on every
+// request (matches home.tmpl's non-.Bot branch, which never touches
+// IPs/Stats) -- the IP list is fetched client-side by static/home.js
+// against /api/pool.
+function jsShellBody(buildRevision: string): string {
+	return `<p>The table below lists tracked Google Web Server (GWS) IP addresses and their reachability status.</p>
 
 <noscript><p><i>This page needs JavaScript to fetch and render the IP list client-side. You should have been redirected automatically -- if not, <a href="/?nojs=1">click here for the full list</a>.</i></p></noscript>
 
@@ -195,7 +198,7 @@ const jsShellBody = `<p>The table below lists tracked Google Web Server (GWS) IP
 <option value="all">All</option>
 </select>
 </p>
-<script type="module" src="/static/home.js"></script>
+<script type="module" src="/static/home.js${buildRevision ? `?v=${buildRevision}` : ""}"></script>
 
 <hr>
 <table border="0" cellpadding="2" cellspacing="0">
@@ -204,6 +207,7 @@ const jsShellBody = `<p>The table below lists tracked Google Web Server (GWS) IP
 <tr><td>Total Checks</td><td id="totalChecks">-</td></tr>
 <tr><td>Last Check</td><td id="lastCheck">-</td></tr>
 </table>`;
+}
 
 const nojsRefresh = `<noscript><meta http-equiv="refresh" content="0;url=/?nojs=1"></noscript>`;
 
@@ -213,7 +217,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const build = buildInfoFromEnv(context.env.CF_PAGES_COMMIT_SHA);
 
 	if (!bot) {
-		const html = pageShell({ title: "Home", body: jsShellBody, build, extraHead: nojsRefresh, description: DEFAULT_HOME_DESCRIPTION });
+		const html = pageShell({ title: "Home", body: jsShellBody(build.revision), build, extraHead: nojsRefresh, description: DEFAULT_HOME_DESCRIPTION });
 		return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 	}
 

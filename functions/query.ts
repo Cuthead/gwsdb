@@ -227,7 +227,7 @@ ${locationRows}
 </div>`;
 }
 
-function renderIPBranch(data: QueryData): string {
+function renderIPBranch(data: QueryData, buildRevision: string): string {
 	const ptrCell = data.ptrHostnames.length
 		? `<tt>${data.ptrHostnames.map((h) => `<a href="/query?ip=${encodeURIComponent(h)}">${escapeHTML(h)}</a>`).join("<br>")}</tt>`
 		: data.ptrFailed
@@ -259,7 +259,11 @@ function renderIPBranch(data: QueryData): string {
 <tr><td>Last RTT</td><td>${data.lastRttMs ? `${data.lastRttMs} ms` : "-"}</td></tr>`
 		: `<tr><td colspan="2"><i>This IP is not in the known scan results (it may not have been scanned, or was never found reachable)</i></td></tr>`;
 
-	const checksTable = `<p></p>
+	// History lives only for IPs the scanner has actually recorded -- an IP
+	// outside ip_pool has no ip_checks rows (failures are only kept for
+	// known-good IPs), so the section and its fetch would be pure noise.
+	const checksTable = data.hasHistory
+		? `<p></p>
 <div id="historySection" data-ip="${escapeHTML(data.query)}">
 <noscript><p><i>JavaScript is required to load check history.</i></p></noscript>
 <p id="historyStatus">Loading check history&hellip;</p>
@@ -281,7 +285,8 @@ function renderIPBranch(data: QueryData): string {
 <option value="all">All</option>
 </select>
 </p>
-</div>`;
+</div>`
+		: "";
 
 	const probeCell = data.canProbe
 		? `<button type="button" id="probeBtn" data-ip="${escapeHTML(data.query)}">立即检测</button> <span id="probeStatus"></span>`
@@ -311,10 +316,10 @@ ${probeCell}
 </tr>
 </table>
 </div>
-<script src="/static/query.js"></script>`;
+<script src="/static/query.js${buildRevision ? `?v=${buildRevision}` : ""}"></script>`;
 }
 
-function renderQueryBody(data: QueryData): string {
+function renderQueryBody(data: QueryData, buildRevision: string): string {
 	const form = `<p>Enter an IP address within a Google ASN to look up its PTR record, or a 1e100.net hostname to look up its A/AAAA records, and estimate its geographic location.</p>
 
 <form method="GET" action="/query">
@@ -334,7 +339,7 @@ function renderQueryBody(data: QueryData): string {
 		} else if (data.queryIsHostname) {
 			result = `<hr>\n${renderHostnameBranch(data)}`;
 		} else {
-			result = `<hr>\n${renderIPBranch(data)}`;
+			result = `<hr>\n${renderIPBranch(data, buildRevision)}`;
 		}
 	}
 
@@ -399,7 +404,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	const build = buildInfoFromEnv(context.env.CF_PAGES_COMMIT_SHA);
 	const html = pageShell({
 		title: "Query",
-		body: renderQueryBody(data),
+		body: renderQueryBody(data, build.revision),
 		build,
 		description: queryDescription(data),
 	});

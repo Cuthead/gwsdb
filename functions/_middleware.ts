@@ -20,6 +20,14 @@ const CONTENT_SECURITY_POLICY =
 export const onRequest: PagesFunction<Env> = async (context) => {
 	const response = await context.next();
 	const headers = new Headers(response.headers);
+	// Static JS/CSS changes with each deploy, but the page HTML referencing it
+	// may already be fresh in the browser -- a cached old bundle then renders
+	// against new DOM IDs (e.g. query.js's history section) or ships stale
+	// logic indefinitely. Force revalidation (ETag 304s keep it cheap);
+	// deploy-versioned script URLs are the belt to this suspenders.
+	if (new URL(context.request.url).pathname.startsWith("/static/")) {
+		headers.set("Cache-Control", "public, max-age=0, must-revalidate");
+	}
 	headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
 	headers.set("X-Content-Type-Options", "nosniff");
 	headers.set("X-Frame-Options", "DENY");
