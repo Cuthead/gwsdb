@@ -381,6 +381,8 @@ func (s *Scanner) recordRecheck(target ingest.PoolTarget, result recheck.Result)
 	s.recheckProbes.Add(1)
 	if result.OK {
 		s.recheckFound.Add(1)
+	} else {
+		log.Printf("scan: recheck FAIL %s reason=%s detail=%s", target.IP, result.Reason, result.Detail)
 	}
 	now := time.Now().UTC()
 	s.mu.Lock()
