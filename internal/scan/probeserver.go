@@ -58,19 +58,26 @@ func (s *Scanner) runProbeServer(ctx context.Context, addr, token string) error 
 			return
 		}
 		log.Printf("scan: probe request: ip=%s from=%s", req.IP, r.RemoteAddr)
-		// Ping gate, non-fatal: same as the recheck worker — a ping
-		// timeout under ICMP throttling must not report a reachable IP
-		// as down, so the SNI probe always runs and decides. The ping
-		// error is kept in a failing result's detail for diagnosis.
+		// Ping gate: with PingCount=3 any-reply semantics a gate failure
+		// means genuinely ICMP-dead, so record reason=ping without
+		// burning the TCP dial timeout.
 		pingCtx, pingCancel := context.WithTimeout(r.Context(), recheck.PingTimeout)
 		ping := recheck.Ping(pingCtx, req.IP)
 		pingCancel()
+		if !ping.OK {
+			detail := fmt.Sprintf("%s error=%s", recheck.ProbeParams(s.cfg.ProbeConfig), ping.Err)
+			log.Printf("scan: probe result: ip=%s ok=false reason=ping detail=%s", req.IP, detail)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(probeResponse{
+				OK:     false,
+				Reason: "ping",
+				Detail: detail,
+			})
+			return
+		}
 		probeCtx, cancel := context.WithTimeout(r.Context(), s.cfg.ProbeTimeout)
 		result := recheck.CheckSNI(probeCtx, req.IP, s.cfg.ProbeConfig)
 		cancel()
-		if !ping.OK && !result.OK && result.Detail != "" {
-			result.Detail = fmt.Sprintf("ping %s; %s", ping.Err, result.Detail)
-		}
 		log.Printf("scan: probe result: ip=%s ok=%t rtt=%dms reason=%s detail=%s",
 			req.IP, result.OK, result.RTTMs, result.Reason, result.Detail)
 		w.Header().Set("Content-Type", "application/json")

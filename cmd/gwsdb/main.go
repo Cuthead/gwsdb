@@ -259,21 +259,22 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count 
 	}
 }
 
-// probeOnce runs the non-fatal ping gate plus CheckSNI, mirroring the
-// recheck worker's and probe server's probe sequence.
+// probeOnce runs the ping gate plus CheckSNI, mirroring the recheck
+// worker's and probe server's probe sequence. With PingCount=3
+// any-reply semantics, a gate failure means genuinely ICMP-dead.
 func probeOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig, timeout time.Duration) recheck.Result {
-	// Ping gate, non-fatal: a ping timeout under ICMP throttling must not
-	// flunk an otherwise reachable IP, so CheckSNI always decides; the
-	// ping error only annotates a failing result.
 	pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
 	ping := recheck.Ping(pingCtx, ip)
 	pingCancel()
+	if !ping.OK {
+		return recheck.Result{
+			Reason: "ping",
+			Detail: fmt.Sprintf("%s error=%s", recheck.ProbeParams(cfg), ping.Err),
+		}
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	result := recheck.CheckSNI(probeCtx, ip, cfg)
 	cancel()
-	if !ping.OK && !result.OK && result.Detail != "" {
-		result.Detail = fmt.Sprintf("ping %s; %s", ping.Err, result.Detail)
-	}
 	return result
 }
 

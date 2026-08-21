@@ -102,13 +102,12 @@ func feedRecheckJobs(ctx context.Context, jobs chan<- ingest.PoolTarget, targets
 }
 
 // runRecheckWorker consumes IPs from jobs (fed by runRecheckFeeder),
-// runs a non-fatal ping gate followed by the CheckSNI probe, and records
-// the result for the flusher to submit. The SNI verdict decides the
-// check's outcome; a failed ping only annotates a failing result, since
-// ICMP toward Google is frequently throttled under the scanner's own
-// sustained ping volume and would otherwise mark reachable pool IPs as
-// down. Stops on ctx cancellation. Same Interval sleep between probes as
-// scan workers, so the two populations share the probe-rate budget.
+// runs the ping gate + CheckSNI probe, and records the result for the
+// flusher to submit. With PingCount=3 any-reply semantics the gate
+// fails only on genuinely ICMP-dead targets, saving the TCP dial
+// timeout those would otherwise burn. Stops on ctx cancellation. Same
+// Interval sleep between probes as scan workers, so the two
+// populations share the probe-rate budget.
 func (s *Scanner) runRecheckWorker(ctx context.Context, jobs <-chan ingest.PoolTarget) {
 	for {
 		select {
@@ -128,21 +127,24 @@ func (s *Scanner) runRecheckWorker(ctx context.Context, jobs <-chan ingest.PoolT
 		case <-ctx.Done():
 			return
 		case target := <-jobs:
-			// Ping gate, non-fatal: unlike the random-scan worker, these
-			// targets are known-reachable pool IPs, and ICMP toward Google
-			// is often throttled under the scanner's own sustained ping
-			// volume — a ping timeout there says nothing about the SNI
-			// path. Fall through to CheckSNI and let TCP decide; keep the
-			// ping error in the failure detail for diagnosis.
+			// Ping gate: PingCount=3 with any-reply-passes cuts the
+			// per-datagram ~25% GFW path loss to ~1.6%, so a gate failure
+			// now means the target is genuinely ICMP-dead — skip the TCP
+			// probe and record reason=ping. (The old single-shot gate
+			// misfired a quarter of the time on healthy pool IPs.)
 			pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
 			ping := recheck.Ping(pingCtx, target.IP)
 			pingCancel()
+			if !ping.OK {
+				s.recordRecheck(target, recheck.Result{
+					Reason: "ping",
+					Detail: fmt.Sprintf("%s error=%s", recheck.ProbeParams(s.cfg.ProbeConfig), ping.Err),
+				})
+				continue
+			}
 			probeCtx, cancel := context.WithTimeout(ctx, s.cfg.ProbeTimeout)
 			result := recheck.CheckSNI(probeCtx, target.IP, s.cfg.ProbeConfig)
 			cancel()
-			if !ping.OK && !result.OK && result.Detail != "" {
-				result.Detail = fmt.Sprintf("ping %s; %s", ping.Err, result.Detail)
-			}
 			s.recordRecheck(target, result)
 		}
 	}

@@ -14,11 +14,15 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
-// PingCount is the number of ICMP echo requests sent per Ping call.
-// One attempt keeps the scanner's aggregate ICMP volume low — gscan_quic
-// runs with ScanCountPerIP=1, and sustained ping volume toward Google
-// ranges invites ICMP throttling that starves every worker at once.
-const PingCount = 1
+// PingCount is the number of ICMP echo requests sent per Ping call,
+// any one reply counting as success (fail only when every attempt
+// fails). ICMP has no kernel retransmit — one lost datagram fails a
+// single-attempt ping outright, and measured GFW path loss toward
+// Google ranges is ~25% per datagram. Three application-level retries
+// cut the false-failure rate to ~1.6% while staying far below the
+// volume that invites ICMP throttling (reply RTT is stable at
+// ~250ms when unthrottled, so a lost reply never arrives late).
+const PingCount = 3
 
 // IANA protocol numbers used by icmp.ParseMessage.
 const (
