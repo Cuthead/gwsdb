@@ -164,16 +164,16 @@ func Ping(ctx context.Context, ip string) PingResult {
 			continue
 		}
 		payload := buf[:n]
-		if network == rawNetwork {
-			// Raw sockets deliver the whole IP packet; skip the IP header
-			// (IHL is the low 4 bits of byte 0, in 32-bit words) before
-			// handing the ICMP bytes to ParseMessage. Datagram sockets
-			// (udp4/udp6) have already stripped it in the kernel.
-			if len(payload) < 20 {
-				lastErr = fmt.Errorf("short raw packet (%d bytes)", len(payload))
-				continue
+		if network == rawNetwork && addr.Is4() {
+			// Linux raw v4 sockets deliver the whole IP packet; macOS/BSD
+			// strip the header in the kernel. Detect by the IPv4 version
+			// nibble instead of trusting the platform: an IP header starts
+			// 0x4x, bare ICMP starts with the type byte (echo reply = 0).
+			// Raw v6 sockets never include the IPv6 header (RFC 3542), so
+			// no stripping there.
+			if len(payload) >= 20 && payload[0]>>4 == 4 {
+				payload = payload[payload[0]&0x0f*4:]
 			}
-			payload = payload[payload[0]&0x0f*4:]
 		}
 		// Raw sockets see every ICMP packet on the wire (not just ours),
 		// so match the reply against both the expected type and the
