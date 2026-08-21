@@ -49,50 +49,67 @@ type PingResult struct {
 	Err   string
 }
 
-// Ping sends ICMP echo requests to ip and waits for a reply. It uses
-// unprivileged ICMP (SOCK_DGRAM) via "udp4"/"udp6" so it does NOT need
-// root — on Linux the process just needs its gid in
-// /proc/sys/net/ipv4/ping_group_range (default 0 2147483647, i.e. all
-// groups). If unprivileged sockets fail, it falls back to raw sockets
-// ("ip4:icmp"/"ip6:ipv6-icmp") if running as root. If both fail, Ping
-// returns OK=true so the caller proceeds to the TCP probe rather than
-// treating a local socket configuration issue as "host unreachable".
+// Ping sends ICMP echo requests to ip and waits for a reply. It prefers
+// raw sockets ("ip4:icmp"/"ip6:ipv6-icmp", root/CAP_NET_RAW) and falls
+// back to unprivileged datagram ICMP ("udp4"/"udp6", gid within
+// /proc/sys/net/ipv4/ping_group_range) when raw is unavailable — the
+// GWSDB_PING_RAW=0 env var forces the datagram path for A/B testing.
+// If both fail, Ping returns OK=true so the caller proceeds to the TCP
+// probe rather than treating a local socket configuration issue as
+// "host unreachable".
 func Ping(ctx context.Context, ip string) PingResult {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return PingResult{Err: fmt.Sprintf("parse ip: %v", err)}
 	}
 
-	var network, bindAddr string
+	var bindAddr string
 	var reqType, replyType icmp.Type
 	var proto int
 	if addr.Is4() {
-		network = "udp4"
 		bindAddr = "0.0.0.0"
 		reqType = ipv4.ICMPTypeEcho
 		replyType = ipv4.ICMPTypeEchoReply
 		proto = protocolICMP
 	} else {
-		network = "udp6"
 		bindAddr = "::"
 		reqType = ipv6.ICMPTypeEchoRequest
 		replyType = ipv6.ICMPTypeEchoReply
 		proto = protocolICMPv6
 	}
 
-	conn, err := icmp.ListenPacket(network, bindAddr)
-	if err != nil {
-		// Fallback to raw socket if running with root / CAP_NET_RAW.
-		if addr.Is4() {
-			network = "ip4:icmp"
-		} else {
-			network = "ip6:ipv6-icmp"
-		}
+	rawFirst := os.Getenv("GWSDB_PING_RAW") != "0"
+
+	datagramNetwork := "udp4"
+	rawNetwork := "ip4:icmp"
+	if !addr.Is4() {
+		datagramNetwork = "udp6"
+		rawNetwork = "ip6:ipv6-icmp"
+	}
+
+	var conn *icmp.PacketConn
+	network := rawNetwork
+	tryDial := func() error {
+		var err error
 		conn, err = icmp.ListenPacket(network, bindAddr)
-		if err != nil {
-			// Can't open either ICMP socket type — treat as "ping unavailable,
-			// don't gate" rather than marking the remote IP unreachable.
-			return PingResult{OK: true, Err: fmt.Sprintf("socket: %v", err)}
+		return err
+	}
+	if rawFirst {
+		if err := tryDial(); err != nil {
+			network = datagramNetwork
+			err = tryDial()
+			if err != nil {
+				return PingResult{OK: true, Err: fmt.Sprintf("socket: %v", err)}
+			}
+		}
+	} else {
+		network = datagramNetwork
+		if err := tryDial(); err != nil {
+			network = rawNetwork
+			err = tryDial()
+			if err != nil {
+				return PingResult{OK: true, Err: fmt.Sprintf("socket: %v", err)}
+			}
 		}
 	}
 	defer conn.Close()
@@ -141,12 +158,30 @@ func Ping(ctx context.Context, ip string) PingResult {
 		}
 		_ = conn.SetReadDeadline(readDeadline)
 		buf := make([]byte, 1500)
-		n, _, err := conn.ReadFrom(buf)
+		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		rm, err := icmp.ParseMessage(proto, buf[:n])
+		payload := buf[:n]
+		if network == rawNetwork {
+			// Raw sockets deliver the whole IP packet; skip the IP header
+			// (IHL is the low 4 bits of byte 0, in 32-bit words) before
+			// handing the ICMP bytes to ParseMessage. Datagram sockets
+			// (udp4/udp6) have already stripped it in the kernel.
+			if len(payload) < 20 {
+				lastErr = fmt.Errorf("short raw packet (%d bytes)", len(payload))
+				continue
+			}
+			payload = payload[payload[0]&0x0f*4:]
+		}
+		// Raw sockets see every ICMP packet on the wire (not just ours),
+		// so match the reply against both the expected type and the
+		// probed address to avoid crediting someone else's echo.
+		if fromAddr, ok := from.(*net.IPAddr); ok && network == rawNetwork && !fromAddr.IP.Equal(net.ParseIP(addr.String())) {
+			continue
+		}
+		rm, err := icmp.ParseMessage(proto, payload)
 		if err != nil {
 			lastErr = err
 			continue
