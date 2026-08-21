@@ -155,6 +155,7 @@ func runRecheck(args []string) {
 	ip := fs.String("ip", "", "IP address to re-test once, printing OK/FAIL and submitting the result -- no queue involved")
 	scannerConfigPath := fs.String("scanner-config", "", "path to the local gscan_quic config.json/config.user.json to probe with")
 	timeout := fs.Duration("timeout", 10*time.Second, "probe timeout")
+	count := fs.Int("count", 1, "probe this many times and report the success rate; >1 is diagnostic-only and does not submit")
 	fs.Parse(args)
 
 	if *ip == "" {
@@ -162,13 +163,18 @@ func runRecheck(args []string) {
 		fs.Usage()
 		os.Exit(2)
 	}
-	runRecheckAdHoc(*ip, *scannerConfigPath, *timeout)
+	if *count < 1 {
+		log.Fatal("recheck: -count must be >= 1")
+	}
+	runRecheckAdHoc(*ip, *scannerConfigPath, *timeout, *count)
 }
 
 // runRecheckAdHoc is a manual ops diagnostic: probe one IP with the scan
 // config gscan_quic already has on disk, print the result, and submit it to
-// Cloudflare (POST /recheck/result with id 0 -- no queue involved).
-func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
+// Cloudflare (POST /recheck/result with id 0 -- no queue involved). With
+// count > 1 it probes repeatedly, prints each attempt plus the success rate,
+// and submits nothing.
+func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count int) {
 	if net.ParseIP(ip) == nil {
 		log.Fatalf("recheck: invalid ip %q", ip)
 	}
@@ -189,27 +195,51 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 		log.Fatalf("recheck: scanner config has no %s block", recheck.DefaultScanMode)
 	}
 
+	ctx := context.Background()
+
+	if count > 1 {
+		okCount := 0
+		var rtts []int
+		for i := 1; i <= count; i++ {
+			result := probeOnce(ctx, ip, cfg, timeout)
+			status := "FAIL"
+			if result.OK {
+				status = "OK"
+				okCount++
+				rtts = append(rtts, result.RTTMs)
+			}
+			fmt.Printf("[%d/%d] %s ip=%s reason=%s rtt=%dms detail=%s\n",
+				i, count, status, ip, result.Reason, result.RTTMs, result.Detail)
+			if i < count {
+				time.Sleep(time.Second)
+			}
+		}
+		fmt.Printf("summary: %d/%d OK (%.0f%%)", okCount, count, 100*float64(okCount)/float64(count))
+		if len(rtts) > 0 {
+			min, max := rtts[0], rtts[0]
+			sum := 0
+			for _, r := range rtts {
+				if r < min {
+					min = r
+				}
+				if r > max {
+					max = r
+				}
+				sum += r
+			}
+			fmt.Printf(", rtt min/avg/max = %d/%d/%dms", min, sum/len(rtts), max)
+		}
+		fmt.Println()
+		return
+	}
+
 	apiBase := requireEnv("GWSDB_API")
 	token := requireEnv("GWSDB_INGEST_TOKEN")
 
 	// timeout bounds only the probe (matching -timeout's documented meaning
 	// and PullAndRun's shape) -- Submit gets its own budget below so a slow
 	// probe can't starve the HTTP call that reports its result.
-	ctx := context.Background()
-	pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
-	ping := recheck.Ping(pingCtx, ip)
-	pingCancel()
-	var result recheck.Result
-	if !ping.OK {
-		result = recheck.Result{
-			Reason: "ping",
-			Detail: fmt.Sprintf("%s error=%s", recheck.ProbeParams(cfg), ping.Err),
-		}
-	} else {
-		probeCtx, cancel := context.WithTimeout(ctx, timeout)
-		result = recheck.CheckSNI(probeCtx, ip, cfg)
-		cancel()
-	}
+	result := probeOnce(ctx, ip, cfg, timeout)
 	if result.OK {
 		fmt.Printf("OK ip=%s rtt=%dms\n", ip, result.RTTMs)
 	} else {
@@ -227,6 +257,24 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration) {
 	}); err != nil {
 		log.Fatalf("recheck: submit: %v", err)
 	}
+}
+
+// probeOnce runs the non-fatal ping gate plus CheckSNI, mirroring the
+// recheck worker's and probe server's probe sequence.
+func probeOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig, timeout time.Duration) recheck.Result {
+	// Ping gate, non-fatal: a ping timeout under ICMP throttling must not
+	// flunk an otherwise reachable IP, so CheckSNI always decides; the
+	// ping error only annotates a failing result.
+	pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
+	ping := recheck.Ping(pingCtx, ip)
+	pingCancel()
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	result := recheck.CheckSNI(probeCtx, ip, cfg)
+	cancel()
+	if !ping.OK && !result.OK && result.Detail != "" {
+		result.Detail = fmt.Sprintf("ping %s; %s", ping.Err, result.Detail)
+	}
+	return result
 }
 
 // stringSliceFlag is a flag.Value that accumulates repeated -flag values
