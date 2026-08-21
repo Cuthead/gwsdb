@@ -185,46 +185,52 @@ func Ping(ctx context.Context, ip string, cfg PingConfig) PingResult {
 			readDeadline = deadline
 		}
 		_ = conn.SetReadDeadline(readDeadline)
-		buf := make([]byte, 1500)
-		n, from, err := conn.ReadFrom(buf)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		payload := buf[:n]
-		if network == rawNetwork && addr.Is4() {
-			// Linux raw v4 sockets deliver the whole IP packet; macOS/BSD
-			// strip the header in the kernel. Detect by the IPv4 version
-			// nibble instead of trusting the platform: an IP header starts
-			// 0x4x, bare ICMP starts with the type byte (echo reply = 0).
-			// Raw v6 sockets never include the IPv6 header (RFC 3542), so
-			// no stripping there.
-			if len(payload) >= 20 && payload[0]>>4 == 4 {
-				payload = payload[payload[0]&0x0f*4:]
+		// Raw sockets see every ICMP packet on the wire — on a scanner
+		// box that's other workers' ping replies too, arriving
+		// constantly. Reads are a filter, not an attempt: keep reading
+		// within the window and only count OUR reply (matching source
+		// address and type); a stray packet must not consume one of the
+		// PingCount attempts. Datagram sockets are kernel-filtered and
+		// take the same loop trivially (every packet is ours).
+		for {
+			buf := make([]byte, 1500)
+			n, from, err := conn.ReadFrom(buf)
+			if err != nil {
+				lastErr = err
+				break // window expired — next echo attempt
 			}
-		}
-		// Raw sockets see every ICMP packet on the wire (not just ours),
-		// so match the reply against both the expected type and the
-		// probed address to avoid crediting someone else's echo.
-		if fromAddr, ok := from.(*net.IPAddr); ok && network == rawNetwork && !fromAddr.IP.Equal(net.ParseIP(addr.String())) {
-			continue
-		}
-		rm, err := icmp.ParseMessage(proto, payload)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if rm.Type == replyType {
-			rtt := time.Since(start)
-			// gscan_quic's ScanMinPingRTT gate: a reply faster than
-			// physically possible is treated as a forged/injected one —
-			// keep waiting instead of crediting it.
-			if cfg.MinRTT > 0 && rtt < cfg.MinRTT {
+			payload := buf[:n]
+			if network == rawNetwork && addr.Is4() {
+				// Linux raw v4 sockets deliver the whole IP packet; macOS/BSD
+				// strip the header in the kernel. Detect by the IPv4 version
+				// nibble instead of trusting the platform: an IP header starts
+				// 0x4x, bare ICMP starts with the type byte (echo reply = 0).
+				// Raw v6 sockets never include the IPv6 header (RFC 3542), so
+				// no stripping there.
+				if len(payload) >= 20 && payload[0]>>4 == 4 {
+					payload = payload[payload[0]&0x0f*4:]
+				}
+			}
+			if fromAddr, ok := from.(*net.IPAddr); ok && network == rawNetwork && !fromAddr.IP.Equal(net.ParseIP(addr.String())) {
+				continue // someone else's reply — keep waiting
+			}
+			rm, err := icmp.ParseMessage(proto, payload)
+			if err != nil {
+				lastErr = err
 				continue
 			}
-			return PingResult{OK: true, RTTMs: int(rtt.Milliseconds())}
+			if rm.Type == replyType {
+				rtt := time.Since(start)
+				// gscan_quic's ScanMinPingRTT gate: a reply faster than
+				// physically possible is treated as a forged/injected one —
+				// keep waiting instead of crediting it.
+				if cfg.MinRTT > 0 && rtt < cfg.MinRTT {
+					continue
+				}
+				return PingResult{OK: true, RTTMs: int(rtt.Milliseconds())}
+			}
+			lastType = rm.Type
 		}
-		lastType = rm.Type
 	}
 	if lastErr != nil {
 		return PingResult{Err: ingest.SanitizeNetErr(lastErr.Error())}
