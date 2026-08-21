@@ -43,7 +43,7 @@ func CheckSNI(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
 	var totalRTT time.Duration
 	var lastDetail string
 	for range count {
-		res := checkSNIOnce(ctx, ip, cfg)
+		res := checkSNIOnce(ctx, ip, "443", cfg)
 		if !res.OK {
 			return res
 		}
@@ -95,9 +95,11 @@ func probeParams(serverName, host, method string, cfg *ingest.ScanConfig) string
 }
 
 // checkSNIOnce mirrors gscan_quic's testSni for a single pass over
-// cfg.ServerName, summing RTT across every server name tested.
-func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
+// cfg.ServerName, summing RTT across every server name tested. port is
+// always 443 in production; tests pass their listener's port.
+func checkSNIOnce(ctx context.Context, ip, port string, cfg *ingest.ScanConfig) Result {
 	handshakeTimeout := time.Duration(cfg.HandshakeTimeout) * time.Millisecond
+	scanMinRTT := time.Duration(cfg.ScanMinRTT) * time.Millisecond
 	scanMaxRTT := time.Duration(cfg.ScanMaxRTT) * time.Millisecond
 
 	tlscfg := &tls.Config{InsecureSkipVerify: true}
@@ -118,7 +120,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		start := time.Now()
 
 		dialCtx, cancel := context.WithTimeout(ctx, scanMaxRTT)
-		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(ip, "443"))
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(ip, port))
 		cancel()
 		if err != nil {
 			return Result{Reason: "dial", Detail: fmt.Sprintf("%s error=%s", params, ingest.SanitizeNetErr(err.Error()))}
@@ -145,7 +147,7 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 		}
 
 		if cfg.Level > 2 {
-			req, err := http.NewRequest(method, "https://"+net.JoinHostPort(ip, "443")+cfg.HTTPPath, nil)
+			req, err := http.NewRequest(method, "https://"+net.JoinHostPort(ip, port)+cfg.HTTPPath, nil)
 			if err != nil {
 				tlsconn.Close()
 				return Result{Reason: "http", Detail: fmt.Sprintf("%s error=%s", params, err.Error())}
@@ -174,7 +176,16 @@ func checkSNIOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result
 
 		tlsconn.Close()
 
-		totalRTT += time.Since(start)
+		// RTT gate, same as gscan_quic's testSni: a pass slower than
+		// ScanMaxRTT (or suspiciously faster than ScanMinRTT — GFW forged
+		// replies) is a failed probe, never a success with an out-of-range
+		// RTT. Without this, edge-case passes (dial nearly timing out but
+		// succeeding) recorded OK=true with RTT far above ScanMaxRTT.
+		rtt := time.Since(start)
+		if rtt < scanMinRTT || rtt > scanMaxRTT {
+			return Result{Reason: "rtt", Detail: fmt.Sprintf("%s rtt=%dms (want %d-%dms)", params, rtt.Milliseconds(), scanMinRTT.Milliseconds(), scanMaxRTT.Milliseconds())}
+		}
+		totalRTT += rtt
 		details = append(details, params)
 	}
 

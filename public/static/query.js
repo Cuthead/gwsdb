@@ -56,7 +56,8 @@
 		cn: "tls: Certificate CN mismatch",
 		http: "http: HTTP timeout",
 		status: "http: HTTP status code mismatch",
-		ping: "icmp: ICMP ping timeout"
+		ping: "icmp: ICMP ping timeout",
+		rtt: "rtt: RTT out of range"
 	};
 
 	// Checks recorded by the scanner carry a "scan:"/"recheck:" origin prefix
