@@ -39,22 +39,26 @@ const (
 const PingTimeout = 2 * time.Second
 
 // PingConfig carries the top-level gscan_quic ping gate settings:
-// MaxRTT bounds each attempt's wait (and the overall budget,
-// gscan_quic's Ping(ip, gs.ScanMaxPingRTT)), MinRTT flunks
+// MaxRTT bounds the whole Ping call (gscan_quic's Ping(ip,
+// gs.ScanMaxPingRTT) is a single-shot wait), MinRTT flunks
 // suspiciously fast replies as forged (gscan_quic's "rtt_too_low").
+// The PingCount echoes split the MaxRTT budget evenly, so total wait
+// stays bounded by the configured value however many retries run.
 // Zero/negative values disable each check; MaxRTT <= 0 falls back to
-// PingTimeout.
+// PingBudget.
 type PingConfig struct {
 	MaxRTT time.Duration
 	MinRTT time.Duration
 }
 
-// pingWindow returns one attempt's wait bound.
+// pingWindow returns one attempt's wait bound: the overall budget
+// split across PingCount attempts.
 func (c PingConfig) pingWindow() time.Duration {
-	if c.MaxRTT > 0 {
-		return c.MaxRTT
+	total := c.MaxRTT
+	if total <= 0 {
+		total = PingBudget
 	}
-	return PingTimeout
+	return total / PingCount
 }
 
 // PingBudget is the total time a full Ping call (all PingCount attempts)
@@ -66,7 +70,10 @@ const PingBudget = PingTimeout * PingCount
 // PingBudget returns the total time a full Ping call (all PingCount
 // attempts) may take under this config.
 func (c PingConfig) PingBudget() time.Duration {
-	return c.pingWindow() * PingCount
+	if c.MaxRTT > 0 {
+		return c.MaxRTT
+	}
+	return PingBudget
 }
 
 // PingResult is the outcome of an ICMP echo probe.
@@ -142,12 +149,13 @@ func Ping(ctx context.Context, ip string, cfg PingConfig) PingResult {
 	}
 	defer conn.Close()
 
-	// Overall deadline: caller's ctx if it has one, else PingCount windows.
-	// Each attempt below gets its own read deadline so one lost reply
-	// consumes only its window, not the whole budget.
+	// Overall deadline: caller's ctx if it has one, else the configured
+	// budget (MaxRTT bounds the whole call; the PingCount attempts split
+	// it evenly). Each attempt gets its own slice so one lost reply
+	// consumes only its slice, not the whole budget.
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		deadline = time.Now().Add(window * PingCount)
+		deadline = time.Now().Add(cfg.PingBudget())
 	}
 
 	echo := icmp.Echo{ID: os.Getpid() & 0xffff, Seq: 1, Data: []byte("gwsdb-ping")}
