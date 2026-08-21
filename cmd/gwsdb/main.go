@@ -194,6 +194,10 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count 
 	if cfg == nil {
 		log.Fatalf("recheck: scanner config has no %s block", recheck.DefaultScanMode)
 	}
+	pingCfg := recheck.PingConfig{
+		MaxRTT: time.Duration(gcfg.ScanMaxPingRTT) * time.Millisecond,
+		MinRTT: time.Duration(gcfg.ScanMinPingRTT) * time.Millisecond,
+	}
 
 	ctx := context.Background()
 
@@ -201,7 +205,7 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count 
 		okCount := 0
 		var rtts []int
 		for i := 1; i <= count; i++ {
-			result := probeOnce(ctx, ip, cfg, timeout)
+			result := probeOnce(ctx, ip, cfg, pingCfg, timeout)
 			status := "FAIL"
 			if result.OK {
 				status = "OK"
@@ -239,7 +243,7 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count 
 	// timeout bounds only the probe (matching -timeout's documented meaning
 	// and PullAndRun's shape) -- Submit gets its own budget below so a slow
 	// probe can't starve the HTTP call that reports its result.
-	result := probeOnce(ctx, ip, cfg, timeout)
+	result := probeOnce(ctx, ip, cfg, pingCfg, timeout)
 	if result.OK {
 		fmt.Printf("OK ip=%s rtt=%dms\n", ip, result.RTTMs)
 	} else {
@@ -262,9 +266,9 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count 
 // probeOnce runs the ping gate plus CheckSNI, mirroring the recheck
 // worker's and probe server's probe sequence. With PingCount=3
 // any-reply semantics, a gate failure means genuinely ICMP-dead.
-func probeOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig, timeout time.Duration) recheck.Result {
-	pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingBudget)
-	ping := recheck.Ping(pingCtx, ip)
+func probeOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig, pingCfg recheck.PingConfig, timeout time.Duration) recheck.Result {
+	pingCtx, pingCancel := context.WithTimeout(ctx, pingCfg.PingBudget())
+	ping := recheck.Ping(pingCtx, ip, pingCfg)
 	pingCancel()
 	if !ping.OK {
 		return recheck.Result{
@@ -416,10 +420,14 @@ func runScan(args []string) {
 		ProbeTimeout:       *probeTimeout,
 		FlushInterval:      *flushInterval,
 		FlushSize:          *flushSize,
-		ProbeAddr:          *probeAddr,
-		ProbeToken:         probeTokenVal,
-		APIBase:            apiBase,
-		Token:              token,
+		PingConfig: recheck.PingConfig{
+			MaxRTT: time.Duration(gcfg.ScanMaxPingRTT) * time.Millisecond,
+			MinRTT: time.Duration(gcfg.ScanMinPingRTT) * time.Millisecond,
+		},
+		ProbeAddr:  *probeAddr,
+		ProbeToken: probeTokenVal,
+		APIBase:    apiBase,
+		Token:      token,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -29,15 +29,16 @@ type Config struct {
 	// config's InputFile plus any extra -ip-range files, comma-joined).
 	InputFile string
 
-	IPv4Workers        int           // random IPv4 scan goroutines
-	IPv6Workers        int           // random IPv6 scan goroutines
-	IPv4RecheckWorkers int           // known IPv4 recheck goroutines
-	IPv6RecheckWorkers int           // known IPv6 recheck goroutines
-	Interval           time.Duration // per-worker sleep between probes
-	ProbeTimeout       time.Duration // per-probe deadline (bounds CheckSNI)
-	FlushInterval      time.Duration // maximum age before submitting accumulated checks
-	FlushSize          int           // submit early when this many checks are buffered
-	RecheckInterval    time.Duration // delay between completed recheck cycles per address family
+	IPv4Workers        int                // random IPv4 scan goroutines
+	IPv6Workers        int                // random IPv6 scan goroutines
+	IPv4RecheckWorkers int                // known IPv4 recheck goroutines
+	IPv6RecheckWorkers int                // known IPv6 recheck goroutines
+	Interval           time.Duration      // per-worker sleep between probes
+	ProbeTimeout       time.Duration      // per-probe deadline (bounds CheckSNI)
+	FlushInterval      time.Duration      // maximum age before submitting accumulated checks
+	FlushSize          int                // submit early when this many checks are buffered
+	RecheckInterval    time.Duration      // delay between completed recheck cycles per address family
+	PingConfig         recheck.PingConfig // VerifyPing gate settings (top-level config block)
 
 	// ProbeAddr is the address the on-demand probe HTTP server listens
 	// on (e.g. "0.0.0.0:8787"), reached by the gwsdb-probe Worker (worker/)
@@ -267,12 +268,11 @@ func (s *Scanner) runWorker(ctx context.Context, ipv6 bool) {
 			return
 		}
 
-		// Ping gate: skip the TCP/SNI probe entirely if ICMP echo gets
-		// no reply — most unreachable IPs fail ping too, so this saves a
-		// ~10s dial timeout per dead IP and lets workers move on faster.
-		// Ping uses unprivileged ICMP (udp4/udp6 datagram), no root needed.
-		pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingBudget)
-		ping := recheck.Ping(pingCtx, ip)
+		// Ping gate, same as gscan_quic's VerifyPing: skip the TCP/SNI probe
+		// entirely if ICMP echo gets no reply — most unreachable IPs fail
+		// ping too, so this saves a ~10s dial timeout per dead IP.
+		pingCtx, pingCancel := context.WithTimeout(ctx, s.cfg.PingConfig.PingBudget())
+		ping := recheck.Ping(pingCtx, ip, s.cfg.PingConfig)
 		pingCancel()
 		if !ping.OK {
 			s.record(ip, recheck.Result{

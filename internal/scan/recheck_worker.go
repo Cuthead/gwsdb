@@ -132,8 +132,8 @@ func (s *Scanner) runRecheckWorker(ctx context.Context, jobs <-chan ingest.PoolT
 			// now means the target is genuinely ICMP-dead — skip the TCP
 			// probe and record reason=ping. (The old single-shot gate
 			// misfired a quarter of the time on healthy pool IPs.)
-			pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingBudget)
-			ping := recheck.Ping(pingCtx, target.IP)
+			pingCtx, pingCancel := context.WithTimeout(ctx, s.cfg.PingConfig.PingBudget())
+			ping := recheck.Ping(pingCtx, target.IP, s.cfg.PingConfig)
 			pingCancel()
 			if !ping.OK {
 				s.recordRecheck(target, recheck.Result{

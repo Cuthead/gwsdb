@@ -61,8 +61,8 @@ func (s *Scanner) runProbeServer(ctx context.Context, addr, token string) error 
 		// Ping gate: with PingCount=3 any-reply semantics a gate failure
 		// means genuinely ICMP-dead, so record reason=ping without
 		// burning the TCP dial timeout.
-		pingCtx, pingCancel := context.WithTimeout(r.Context(), recheck.PingBudget)
-		ping := recheck.Ping(pingCtx, req.IP)
+		pingCtx, pingCancel := context.WithTimeout(r.Context(), s.cfg.PingConfig.PingBudget())
+		ping := recheck.Ping(pingCtx, req.IP, s.cfg.PingConfig)
 		pingCancel()
 		if !ping.OK {
 			detail := fmt.Sprintf("%s error=%s", recheck.ProbeParams(s.cfg.ProbeConfig), ping.Err)

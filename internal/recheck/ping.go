@@ -34,13 +34,40 @@ const (
 // together). It's deliberately short: this is a reachability gate for
 // the TCP/SNI probe, not a latency measurement — a slow ping means
 // the path is congested enough that the SNI probe would likely time
-// out anyway.
+// out anyway. Used as the fallback window when the config carries no
+// ScanMaxPingRTT.
 const PingTimeout = 2 * time.Second
 
+// PingConfig carries the top-level gscan_quic ping gate settings:
+// MaxRTT bounds each attempt's wait (and the overall budget,
+// gscan_quic's Ping(ip, gs.ScanMaxPingRTT)), MinRTT flunks
+// suspiciously fast replies as forged (gscan_quic's "rtt_too_low").
+// Zero/negative values disable each check; MaxRTT <= 0 falls back to
+// PingTimeout.
+type PingConfig struct {
+	MaxRTT time.Duration
+	MinRTT time.Duration
+}
+
+// pingWindow returns one attempt's wait bound.
+func (c PingConfig) pingWindow() time.Duration {
+	if c.MaxRTT > 0 {
+		return c.MaxRTT
+	}
+	return PingTimeout
+}
+
 // PingBudget is the total time a full Ping call (all PingCount attempts)
-// may take. Callers bounding Ping with a context should use this, not
-// PingTimeout, so every attempt gets its own window.
+// may take with the default window. Callers bounding Ping with a context
+// should use cfg.PingBudget(), not PingTimeout, so every attempt gets
+// its own window.
 const PingBudget = PingTimeout * PingCount
+
+// PingBudget returns the total time a full Ping call (all PingCount
+// attempts) may take under this config.
+func (c PingConfig) PingBudget() time.Duration {
+	return c.pingWindow() * PingCount
+}
 
 // PingResult is the outcome of an ICMP echo probe.
 type PingResult struct {
@@ -57,11 +84,12 @@ type PingResult struct {
 // If both fail, Ping returns OK=true so the caller proceeds to the TCP
 // probe rather than treating a local socket configuration issue as
 // "host unreachable".
-func Ping(ctx context.Context, ip string) PingResult {
+func Ping(ctx context.Context, ip string, cfg PingConfig) PingResult {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return PingResult{Err: fmt.Sprintf("parse ip: %v", err)}
 	}
+	window := cfg.pingWindow()
 
 	var bindAddr string
 	var reqType, replyType icmp.Type
@@ -119,7 +147,7 @@ func Ping(ctx context.Context, ip string) PingResult {
 	// consumes only its window, not the whole budget.
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		deadline = time.Now().Add(PingTimeout * PingCount)
+		deadline = time.Now().Add(window * PingCount)
 	}
 
 	echo := icmp.Echo{ID: os.Getpid() & 0xffff, Seq: 1, Data: []byte("gwsdb-ping")}
@@ -150,9 +178,9 @@ func Ping(ctx context.Context, ip string) PingResult {
 			continue
 		}
 		// Bound this attempt's read to one window, clamped to the overall
-		// deadline; a lost reply costs PingTimeout and moves on to the
+		// deadline; a lost reply costs one window and moves on to the
 		// next echo instead of eating the remaining budget.
-		readDeadline := time.Now().Add(PingTimeout)
+		readDeadline := time.Now().Add(window)
 		if readDeadline.After(deadline) {
 			readDeadline = deadline
 		}
@@ -187,7 +215,14 @@ func Ping(ctx context.Context, ip string) PingResult {
 			continue
 		}
 		if rm.Type == replyType {
-			return PingResult{OK: true, RTTMs: int(time.Since(start).Milliseconds())}
+			rtt := time.Since(start)
+			// gscan_quic's ScanMinPingRTT gate: a reply faster than
+			// physically possible is treated as a forged/injected one —
+			// keep waiting instead of crediting it.
+			if cfg.MinRTT > 0 && rtt < cfg.MinRTT {
+				continue
+			}
+			return PingResult{OK: true, RTTMs: int(rtt.Milliseconds())}
 		}
 		lastType = rm.Type
 	}
