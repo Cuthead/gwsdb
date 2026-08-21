@@ -263,7 +263,7 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count 
 // worker's and probe server's probe sequence. With PingCount=3
 // any-reply semantics, a gate failure means genuinely ICMP-dead.
 func probeOnce(ctx context.Context, ip string, cfg *ingest.ScanConfig, timeout time.Duration) recheck.Result {
-	pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
+	pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingBudget)
 	ping := recheck.Ping(pingCtx, ip)
 	pingCancel()
 	if !ping.OK {

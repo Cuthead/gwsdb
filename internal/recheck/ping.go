@@ -37,6 +37,11 @@ const (
 // out anyway.
 const PingTimeout = 2 * time.Second
 
+// PingBudget is the total time a full Ping call (all PingCount attempts)
+// may take. Callers bounding Ping with a context should use this, not
+// PingTimeout, so every attempt gets its own window.
+const PingBudget = PingTimeout * PingCount
+
 // PingResult is the outcome of an ICMP echo probe.
 type PingResult struct {
 	OK    bool
@@ -92,11 +97,13 @@ func Ping(ctx context.Context, ip string) PingResult {
 	}
 	defer conn.Close()
 
+	// Overall deadline: caller's ctx if it has one, else PingCount windows.
+	// Each attempt below gets its own read deadline so one lost reply
+	// consumes only its window, not the whole budget.
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		deadline = time.Now().Add(PingTimeout)
+		deadline = time.Now().Add(PingTimeout * PingCount)
 	}
-	_ = conn.SetDeadline(deadline)
 
 	echo := icmp.Echo{ID: os.Getpid() & 0xffff, Seq: 1, Data: []byte("gwsdb-ping")}
 	body, err := (&icmp.Message{Type: reqType, Code: 0, Body: &echo}).Marshal(nil)
@@ -114,11 +121,25 @@ func Ping(ctx context.Context, ip string) PingResult {
 	var lastErr error
 	var lastType icmp.Type
 	for range PingCount {
+		if !time.Now().Before(deadline) {
+			// Overall budget exhausted before this attempt could get a
+			// full window — no point sending an echo nobody can wait for.
+			break
+		}
 		start := time.Now()
+		_ = conn.SetDeadline(deadline)
 		if _, err := conn.WriteTo(body, dstAddr); err != nil {
 			lastErr = err
 			continue
 		}
+		// Bound this attempt's read to one window, clamped to the overall
+		// deadline; a lost reply costs PingTimeout and moves on to the
+		// next echo instead of eating the remaining budget.
+		readDeadline := time.Now().Add(PingTimeout)
+		if readDeadline.After(deadline) {
+			readDeadline = deadline
+		}
+		_ = conn.SetReadDeadline(readDeadline)
 		buf := make([]byte, 1500)
 		n, _, err := conn.ReadFrom(buf)
 		if err != nil {

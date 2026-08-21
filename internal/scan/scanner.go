@@ -271,7 +271,7 @@ func (s *Scanner) runWorker(ctx context.Context, ipv6 bool) {
 		// no reply — most unreachable IPs fail ping too, so this saves a
 		// ~10s dial timeout per dead IP and lets workers move on faster.
 		// Ping uses unprivileged ICMP (udp4/udp6 datagram), no root needed.
-		pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingTimeout)
+		pingCtx, pingCancel := context.WithTimeout(ctx, recheck.PingBudget)
 		ping := recheck.Ping(pingCtx, ip)
 		pingCancel()
 		if !ping.OK {
