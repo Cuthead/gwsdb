@@ -14,10 +14,11 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
-// PingCount is the number of ICMP echo requests sent per Ping call
-// (matches gscan_quic's ScanCountPerIP convention — a few attempts so
-// transient packet loss doesn't flunk an otherwise-reachable IP).
-const PingCount = 3
+// PingCount is the number of ICMP echo requests sent per Ping call.
+// One attempt keeps the scanner's aggregate ICMP volume low — gscan_quic
+// runs with ScanCountPerIP=1, and sustained ping volume toward Google
+// ranges invites ICMP throttling that starves every worker at once.
+const PingCount = 1
 
 // IANA protocol numbers used by icmp.ParseMessage.
 const (
