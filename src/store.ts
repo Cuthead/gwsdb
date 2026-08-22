@@ -257,28 +257,64 @@ export async function ipStatusFor(db: D1Database, ip: string): Promise<IPStatus 
 	return row ? rowToIPStatus(row) : null;
 }
 
-// overview returns aggregate stats for the home page — now check-based
-// overview computes the home page's summary stats. All three values come
-// from ip_pool (the maintained table, ~7600 rows) rather than ip_checks
-// (the append-only history, 134k+ rows and growing) — a single full scan
-// of ip_pool is ~18x cheaper than a single COUNT(*) on ip_checks.
+// overview computes the home page's summary stats. totalKnownIPs/totalChecks
+// come from ip_pool (the maintained table, ~7600 rows) rather than ip_checks
+// (the append-only history, 134k+ rows and growing) -- a full ip_pool scan
+// is ~18x cheaper than a single COUNT(*) on ip_checks.
 //
 // totalChecks is SUM(times_seen), i.e. total successful checks across all
-// IPs — semantically "how many times have we confirmed IPs reachable"
+// IPs -- semantically "how many times have we confirmed IPs reachable"
 // rather than "how many probe results exist" (which includes failures).
 // This is more meaningful for visitors and avoids the ip_checks scan.
+//
+// SQLite has no maintained row count, so COUNT(*)+SUM must scan all of
+// ip_pool on every call (~7.8k rows read). overview runs on every /api/pool
+// and /api/pool/changes cache miss, and those endpoints' per-version cache
+// keys move on every scanner flush, so the misses are near-constant -- this
+// was the second-biggest rows-read offender in D1 metrics. The two totals
+// are display-only scoreboard numbers, so they're served from a TTL'd
+// caches.default entry (shared per colo) and allowed to lag an hour.
+// lastCheckAt/scanMode stay live: that query is a 1-row seek on
+// idx_ip_pool_last_checked_at (migration 0012), so freshness where a visitor
+// would actually notice it costs ~nothing.
+const OVERVIEW_AGG_TTL_SECONDS = 3600;
+const OVERVIEW_AGG_CACHE_URL = "https://gwsdb.internal/api/overview-aggregates";
+
+interface OverviewAggregates {
+	totalKnownIPs: number;
+	totalChecks: number;
+}
+
+async function cachedOverviewAggregates(db: D1Database): Promise<OverviewAggregates> {
+	const cache = caches.default;
+	const hit = await cache.match(OVERVIEW_AGG_CACHE_URL);
+	if (hit) return hit.json<OverviewAggregates>();
+	const agg = await db
+		.prepare(`SELECT COUNT(*) AS totalKnownIPs, COALESCE(SUM(times_seen), 0) AS totalChecks FROM ip_pool`)
+		.first<OverviewAggregates>();
+	const out: OverviewAggregates = {
+		totalKnownIPs: agg?.totalKnownIPs ?? 0,
+		totalChecks: agg?.totalChecks ?? 0,
+	};
+	// Fire-and-forget: if the isolate dies mid-put, the next request just
+	// misses and pays one full scan again -- no correctness at stake.
+	void cache.put(
+		OVERVIEW_AGG_CACHE_URL,
+		Response.json(out, { headers: { "Cache-Control": `public, max-age=${OVERVIEW_AGG_TTL_SECONDS}` } }),
+	);
+	return out;
+}
+
 export async function overview(db: D1Database): Promise<Stats> {
 	const [agg, lastCheck] = await Promise.all([
-		db
-			.prepare(`SELECT COUNT(*) AS totalKnownIPs, COALESCE(SUM(times_seen), 0) AS totalChecks FROM ip_pool`)
-			.first<{ totalKnownIPs: number; totalChecks: number }>(),
+		cachedOverviewAggregates(db),
 		db
 			.prepare(`SELECT last_checked_at, scan_mode FROM ip_pool ORDER BY last_checked_at DESC LIMIT 1`)
 			.first<{ last_checked_at: string | null; scan_mode: string | null }>(),
 	]);
 	return {
-		totalKnownIPs: agg?.totalKnownIPs ?? 0,
-		totalChecks: agg?.totalChecks ?? 0,
+		totalKnownIPs: agg.totalKnownIPs,
+		totalChecks: agg.totalChecks,
 		lastCheckAt: lastCheck ? fromSQLiteDateTime(lastCheck.last_checked_at) : null,
 		scanMode: lastCheck?.scan_mode ?? "",
 	};
@@ -475,18 +511,29 @@ export async function savePTRBatch(db: D1Database, entries: PTRCacheEntry[]): Pr
 
 // pendingIPsForPTRRefresh returns up to limit ip_pool IPs due for a PTR
 // refresh: either never checked (ptr_checked_at IS NULL, which sorts first
-// on the index) or checked more than 30 days ago. Seeks on the
-// idx_ip_pool_ptr_checked_at index directly.
+// on the index) or checked more than 30 days ago. Must stay two separate
+// statements, not one `IS NULL OR < cutoff` query: the OR can't become an
+// index range constraint, so SQLite falls back to scanning the whole
+// idx_ip_pool_ptr_checked_at index (~7.8k rows read per call even when
+// nothing is due -- the top rows-read offender in D1 metrics). Split apart,
+// each half is a direct seek (EXPLAIN QUERY PLAN: SEARCH, not SCAN) that
+// reads only matching rows and stops at LIMIT: the NULL half reads only
+// never-checked rows, the range half only rows older than the cutoff.
+// Order matches the old combined ORDER BY ptr_checked_at ASC: NULLs first,
+// then oldest-checked-first.
 export async function pendingIPsForPTRRefresh(db: D1Database, limit: number): Promise<string[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT ip FROM ip_pool
-			WHERE ptr_checked_at IS NULL OR ptr_checked_at < datetime('now', '-30 days')
-			ORDER BY ptr_checked_at ASC LIMIT ?`,
-		)
+	const { results: unchecked } = await db
+		.prepare(`SELECT ip FROM ip_pool WHERE ptr_checked_at IS NULL ORDER BY ptr_checked_at ASC LIMIT ?`)
 		.bind(limit)
 		.all<{ ip: string }>();
-	return results.map((r) => r.ip);
+	if (unchecked.length >= limit) return unchecked.map((r) => r.ip);
+	const { results: stale } = await db
+		.prepare(
+			`SELECT ip FROM ip_pool WHERE ptr_checked_at < datetime('now', '-30 days') ORDER BY ptr_checked_at ASC LIMIT ?`,
+		)
+		.bind(limit - unchecked.length)
+		.all<{ ip: string }>();
+	return [...unchecked, ...stale].map((r) => r.ip);
 }
 
 interface HostCacheRow {
