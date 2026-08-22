@@ -19,12 +19,14 @@ type probeRequest struct {
 }
 
 // probeResponse is what the probe server returns — mirrors
-// recheck.Result's user-facing fields.
+// recheck.Result's user-facing fields. Mixed marks a flapping outcome the
+// caller must not persist (see recheck.Result.Mixed).
 type probeResponse struct {
 	OK     bool   `json:"ok"`
 	RTTMs  int    `json:"rttMs"`
 	Reason string `json:"reason"`
 	Detail string `json:"detail"`
+	Mixed  bool   `json:"mixed,omitempty"`
 }
 
 // runProbeServer serves POST /probe on addr, probing each requested IP
@@ -86,6 +88,7 @@ func (s *Scanner) runProbeServer(ctx context.Context, addr, token string) error 
 			RTTMs:  result.RTTMs,
 			Reason: result.Reason,
 			Detail: result.Detail,
+			Mixed:  result.Mixed,
 		})
 	})
 	srv := &http.Server{Addr: addr, Handler: mux}

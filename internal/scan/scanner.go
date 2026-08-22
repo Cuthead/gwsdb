@@ -296,8 +296,13 @@ const recheckSuccessInterval = 24*time.Hour + time.Second
 
 // record handles random scan results. Every scan result remains eligible for
 // FilterChecks; only repeat successful rechecks are heartbeat-suppressed.
+// Mixed (flapping) results are dropped entirely -- no check, no state update.
 func (s *Scanner) record(ip string, result recheck.Result) {
 	s.scanProbes.Add(1)
+	if result.Mixed {
+		log.Printf("scan: MIXED %s detail=%s (not recorded)", ip, result.Detail)
+		return
+	}
 	if result.OK {
 		s.scanFound.Add(1)
 	}
@@ -379,6 +384,10 @@ func (s *Scanner) mergeSubmittedStates(checks []store.IPCheck) {
 // when the server's last successful check is at least 24 hours old.
 func (s *Scanner) recordRecheck(target ingest.PoolTarget, result recheck.Result) {
 	s.recheckProbes.Add(1)
+	if result.Mixed {
+		log.Printf("scan: recheck MIXED %s detail=%s (not recorded)", target.IP, result.Detail)
+		return
+	}
 	if result.OK {
 		s.recheckFound.Add(1)
 	} else {

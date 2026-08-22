@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -148,5 +149,100 @@ func TestCheckSNIRTTGateFastPassOK(t *testing.T) {
 	}
 	if res.RTTMs <= 0 || res.RTTMs > 2000 {
 		t.Fatalf("rtt = %dms, want within (0, 2000]", res.RTTMs)
+	}
+}
+
+// startTLSServer serves handshakes controlled by allow: each Accept consults
+// allow(attempt) -- true completes the handshake, false closes immediately.
+// It returns the listener's host:port for probing.
+func startTLSServer(t *testing.T, cert tls.Certificate, allow func(attempt int32) bool) (string, string) {
+	t.Helper()
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempt int32
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			n := atomic.AddInt32(&attempt, 1)
+			go func() {
+				defer conn.Close()
+				if !allow(n) {
+					return // drop: client handshake fails
+				}
+				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+				_ = conn.(*tls.Conn).Handshake()
+			}()
+		}
+	}()
+	t.Cleanup(func() { listener.Close() })
+	addr := listener.Addr().(*net.TCPAddr)
+	return addr.IP.String(), fmt.Sprint(addr.Port)
+}
+
+// multiCfg returns a ScanConfig for checkSNIMulti tests: count attempts,
+// generous RTT bounds, Level 0 (TLS handshake only).
+func multiCfg(count int) *ingest.ScanConfig {
+	return &ingest.ScanConfig{
+		ScanCountPerIP:   count,
+		ServerName:       []string{"g.cn"},
+		HandshakeTimeout: 2000,
+		ScanMinRTT:       0,
+		ScanMaxRTT:       2000,
+		Level:            0,
+	}
+}
+
+// TestCheckSNIConsensusAllPassOK: every attempt passes -> OK with averaged RTT.
+func TestCheckSNIConsensusAllPassOK(t *testing.T) {
+	cert := selfSignedCert(t)
+	ip, port := startTLSServer(t, cert, func(int32) bool { return true })
+	res := checkSNIMulti(context.Background(), ip, port, multiCfg(2))
+	if !res.OK {
+		t.Fatalf("all-pass = failure: reason=%s detail=%s", res.Reason, res.Detail)
+	}
+	if res.RTTMs <= 0 || res.RTTMs > 2000 {
+		t.Fatalf("rtt = %dms, want within (0, 2000]", res.RTTMs)
+	}
+}
+
+// TestCheckSNIConsensusAllFailFails: every attempt fails -> failure, no
+// Mixed flag.
+func TestCheckSNIConsensusAllFailFails(t *testing.T) {
+	cert := selfSignedCert(t)
+	ip, port := startTLSServer(t, cert, func(int32) bool { return false })
+	res := checkSNIMulti(context.Background(), ip, port, multiCfg(2))
+	if res.OK {
+		t.Fatal("all-fail = OK, want failure")
+	}
+	if res.Mixed {
+		t.Fatal("all-fail = Mixed, want plain failure")
+	}
+	if res.Reason != "handshake" {
+		t.Fatalf("reason = %q, want %q", res.Reason, "handshake")
+	}
+}
+
+// TestCheckSNIConsensusFlapMixed: attempts disagree (1 pass, 1 fail) ->
+// Mixed=true (caller drops it, nothing recorded), detail explains the split,
+// and both attempts ran (no fail-fast short-circuit).
+func TestCheckSNIConsensusFlapMixed(t *testing.T) {
+	cert := selfSignedCert(t)
+	ip, port := startTLSServer(t, cert, func(n int32) bool { return n%2 == 1 })
+	res := checkSNIMulti(context.Background(), ip, port, multiCfg(2))
+	if res.OK {
+		t.Fatal("flap (1/2 pass) = OK, want failure")
+	}
+	if !res.Mixed {
+		t.Fatal("flap = plain failure, want Mixed=true")
+	}
+	if !strings.Contains(res.Detail, "1/2 attempts failed") {
+		t.Fatalf("detail missing split summary: %s", res.Detail)
 	}
 }

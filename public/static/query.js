@@ -18,6 +18,9 @@
 			if (data.error) {
 				status.textContent = data.error;
 				status.style.color = "#CC0000";
+			} else if (data.mixed) {
+				status.textContent = "多次探测结果不一致，未记录";
+				status.style.color = "#666666";
 			} else if (data.ok) {
 				status.innerHTML = '<font color="#008000">&#x2713; 可达 (' + (data.rttMs || 0) + " ms)</font>";
 			} else {

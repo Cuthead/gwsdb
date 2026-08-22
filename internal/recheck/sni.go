@@ -31,6 +31,11 @@ type Result struct {
 	RTTMs  int
 	Reason string // e.g. "dial", "handshake", "cn", "http", "status"; empty on success
 	Detail string
+	// Mixed marks a split outcome across ScanCountPerIP attempts: some
+	// passed, some failed. Callers must not record mixed results
+	// (ip_checks, pool state) -- the IP is flapping and neither verdict
+	// would be trustworthy.
+	Mixed bool
 }
 
 // CheckSNI re-tests ip against cfg, repeating cfg.ScanCountPerIP times and
@@ -38,19 +43,56 @@ type Result struct {
 // around testSni. cfg is typically parsed from the most recent SNI scan's
 // stored config, so the recheck uses the same target server names, TLS CN,
 // and HTTP verification the last real scan used.
+//
+// Unlike gscan_quic (which fails fast on the first failed attempt), every
+// attempt runs and the outcome requires consensus: OK only when all attempts
+// pass, fail only when all attempts fail. A split outcome (e.g. 1 of 2 OK --
+// typical GFW flapping) returns Mixed=true, which callers treat as
+// "record nothing": neither a transient success nor a transient failure is
+// allowed to become the IP's recorded state.
 func CheckSNI(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
+	return checkSNIMulti(ctx, ip, "443", cfg)
+}
+
+// checkSNIMulti is CheckSNI with an explicit port so tests can target a
+// local listener; production always passes 443.
+func checkSNIMulti(ctx context.Context, ip, port string, cfg *ingest.ScanConfig) Result {
 	count := max(cfg.ScanCountPerIP, 1)
 	var totalRTT time.Duration
 	var lastDetail string
+	var failures []Result
 	for range count {
-		res := checkSNIOnce(ctx, ip, "443", cfg)
+		res := checkSNIOnce(ctx, ip, port, cfg)
 		if !res.OK {
-			return res
+			failures = append(failures, res)
+			continue
 		}
 		totalRTT += time.Duration(res.RTTMs) * time.Millisecond
 		lastDetail = res.Detail
 	}
+	if len(failures) > 0 {
+		return mergeFailures(failures, count)
+	}
 	return Result{OK: true, RTTMs: int((totalRTT / time.Duration(count)).Milliseconds()), Detail: lastDetail}
+}
+
+// mergeFailures folds the failed attempts into one Result: reason from the
+// first failure (or "mixed" when they disagree), details joined. Split
+// outcomes also set Result.Mixed so callers know to drop the result.
+func mergeFailures(failures []Result, total int) Result {
+	reason := failures[0].Reason
+	details := make([]string, 0, len(failures))
+	for _, f := range failures {
+		if f.Reason != reason {
+			reason = "mixed"
+		}
+		details = append(details, f.Detail)
+	}
+	detail := strings.Join(details, "; ")
+	if len(failures) < total {
+		detail = fmt.Sprintf("%d/%d attempts failed: %s", len(failures), total, detail)
+	}
+	return Result{Reason: reason, Detail: detail, Mixed: len(failures) < total}
 }
 
 // ProbeParams returns a string summarizing cfg's target request and

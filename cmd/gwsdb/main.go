@@ -244,6 +244,10 @@ func runRecheckAdHoc(ip, scannerConfigPath string, timeout time.Duration, count 
 	// and PullAndRun's shape) -- Submit gets its own budget below so a slow
 	// probe can't starve the HTTP call that reports its result.
 	result := probeOnce(ctx, ip, cfg, pingCfg, timeout)
+	if result.Mixed {
+		fmt.Printf("MIXED ip=%s detail=%s (not recorded)\n", ip, result.Detail)
+		return
+	}
 	if result.OK {
 		fmt.Printf("OK ip=%s rtt=%dms\n", ip, result.RTTMs)
 	} else {

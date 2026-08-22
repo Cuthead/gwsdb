@@ -23,6 +23,9 @@ interface ProbeResponse {
 	rttMs: number;
 	reason: string;
 	detail: string;
+	// Mixed marks a flapping probe (attempts disagreed). Nothing is
+	// persisted; the flag is relayed so the UI can say why.
+	mixed?: boolean;
 }
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
@@ -82,6 +85,13 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	} catch (err) {
 		console.warn(`check: probe call:`, err);
 		return Response.json({ error: "could not reach the probe server" }, { status: 504 });
+	}
+
+	// Flapping probe: attempts disagreed, so the result is not trustworthy
+	// in either direction. Record nothing -- no ip_checks row, no pool
+	// update, no publish -- and tell the UI why.
+	if (result.mixed) {
+		return Response.json(result);
 	}
 
 	const checkedAt = new Date();
