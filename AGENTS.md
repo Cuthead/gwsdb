@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex, Cursor, etc
 
 ## What this is
 
-gwsdb ("GWS Database") tracks which Google Web Server IPs are reachable from China. An always-on Go scanner (`gwsdb scan`, see `internal/scan/` + `scripts/run_scanner.sh`) continuously probes candidate Google IPs from real China-based network infrastructure and flushes results to Cloudflare D1 every few minutes; a web UI serves browsing/querying of known IPs and their reachability history.
+gwsdb ("GWS Database") tracks which Google Web Server IPs are reachable from China. An always-on Go scanner (`gwsdb scan`, see `internal/scan/`) continuously probes candidate Google IPs from real China-based network infrastructure and flushes results to Cloudflare D1 every few minutes; a web UI serves browsing/querying of known IPs and their reachability history.
 
 "GWS" is Google's own server identifier (the `Server: gws` response header), not "Google Web Search" — these are not crawler/spider IPs. China's GFW blocks most Google IPs; this project exists to find and track the ones still reachable, so don't describe the tracked IPs as a "search crawler" or "web search crawler" anywhere (UI copy, meta tags, comments).
 
@@ -46,7 +46,7 @@ gwsdb recheck     -ip IP -scanner-config PATH [-timeout 10s]   (ad-hoc: probe on
 
 `GWSDB_API`/`GWSDB_INGEST_TOKEN` can come from the environment or a `KEY=VALUE` file (`~/.config/gwsdb/env` by default, or `$GWSDB_ENV_FILE`); chmod 600 it, it holds a bearer token.
 
-`scripts/run_scanner.sh` is the production entrypoint: starts `gwsdb scan` as a long-running process (under systemd or tmux — restart on exit). The scanner continuously probes random IPs from CIDR range files (`~/gscan_quic/iprange/`), flushes accumulated results after 10 seconds or 100 checks (whichever comes first), and serves on-demand probes from the query page via a VPC proxy Worker (`worker/`). `scripts/scan_and_ingest.sh` and `scripts/recheck_and_submit.sh` are gone (superseded by the single scanner process).
+`gwsdb scan` runs as a long-lived process in production (under systemd or tmux — restart on exit). It continuously probes random IPs from CIDR range files (`~/gscan_quic/iprange/`), flushes accumulated results after 10 seconds or 100 checks (whichever comes first), and serves on-demand probes from the query page via a VPC proxy Worker (`worker/`). The old wrapper scripts (`run_scanner.sh`, `scan_and_ingest.sh`, `recheck_and_submit.sh`) are gone (superseded by the single scanner process).
 
 ## Architecture
 

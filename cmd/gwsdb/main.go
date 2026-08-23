@@ -3,8 +3,7 @@
 // output and the recheck_queue pull-model worker. None of its subcommands
 // touch a local database anymore -- ingest/delete-scan/recheck all talk to
 // the Cloudflare-hosted API (Pages Functions + D1) over HTTP. Serving the
-// web UI and DNS publish live on Cloudflare too -- see AGENTS.md and
-// scripts/scan_and_ingest.sh.
+// web UI and DNS publish live on Cloudflare too -- see AGENTS.md.
 package main
 
 import (
