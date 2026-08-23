@@ -45,11 +45,12 @@ type Result struct {
 // and HTTP verification the last real scan used.
 //
 // Unlike gscan_quic (which fails fast on the first failed attempt), every
-// attempt runs and the outcome requires consensus: OK only when all attempts
-// pass, fail only when all attempts fail. A split outcome (e.g. 1 of 2 OK --
-// typical GFW flapping) returns Mixed=true, which callers treat as
-// "record nothing": neither a transient success nor a transient failure is
-// allowed to become the IP's recorded state.
+// attempt runs and the outcome requires consensus: OK only when all
+// attempts pass, fail only when all attempts fail with the same reason.
+// Any other outcome (some attempts passed, or failures disagree on the
+// reason -- both typical GFW random packet loss) returns Mixed=true,
+// which callers treat as "record nothing": neither a transient success
+// nor a transient failure is allowed to become the IP's recorded state.
 func CheckSNI(ctx context.Context, ip string, cfg *ingest.ScanConfig) Result {
 	return checkSNIMulti(ctx, ip, "443", cfg)
 }
@@ -76,15 +77,21 @@ func checkSNIMulti(ctx context.Context, ip, port string, cfg *ingest.ScanConfig)
 	return Result{OK: true, RTTMs: int((totalRTT / time.Duration(count)).Milliseconds()), Detail: lastDetail}
 }
 
-// mergeFailures folds the failed attempts into one Result: reason from the
-// first failure (or "mixed" when they disagree), details joined. Split
-// outcomes also set Result.Mixed so callers know to drop the result.
+// mergeFailures folds the failed attempts into one Result. Consensus
+// requires the failures to agree on a reason: all-fail with the same
+// reason is a trustworthy failure, but disagreeing reasons (e.g. an EOF
+// on one attempt and a dial timeout on the next -- GFW random packet
+// loss throwing a different failure mode each time) means the outcome is
+// not reproducible, so Result.Mixed is set and callers drop the result.
+// Split pass/fail outcomes are Mixed for the same reason.
 func mergeFailures(failures []Result, total int) Result {
 	reason := failures[0].Reason
+	disagree := false
 	details := make([]string, 0, len(failures))
 	for _, f := range failures {
 		if f.Reason != reason {
 			reason = "mixed"
+			disagree = true
 		}
 		details = append(details, f.Detail)
 	}
@@ -92,7 +99,7 @@ func mergeFailures(failures []Result, total int) Result {
 	if len(failures) < total {
 		detail = fmt.Sprintf("%d/%d attempts failed: %s", len(failures), total, detail)
 	}
-	return Result{Reason: reason, Detail: detail, Mixed: len(failures) < total}
+	return Result{Reason: reason, Detail: detail, Mixed: len(failures) < total || disagree}
 }
 
 // ProbeParams returns a string summarizing cfg's target request and

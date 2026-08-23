@@ -212,8 +212,8 @@ func TestCheckSNIConsensusAllPassOK(t *testing.T) {
 	}
 }
 
-// TestCheckSNIConsensusAllFailFails: every attempt fails -> failure, no
-// Mixed flag.
+// TestCheckSNIConsensusAllFailFails: every attempt fails the same way ->
+// failure with no Mixed flag (recorded).
 func TestCheckSNIConsensusAllFailFails(t *testing.T) {
 	cert := selfSignedCert(t)
 	ip, port := startTLSServer(t, cert, func(int32) bool { return false })
@@ -226,6 +226,37 @@ func TestCheckSNIConsensusAllFailFails(t *testing.T) {
 	}
 	if res.Reason != "handshake" {
 		t.Fatalf("reason = %q, want %q", res.Reason, "handshake")
+	}
+}
+
+// TestMergeFailuresDisagreeingReasonsMixed: all attempts fail but with
+// different reasons (EOF on one, dial timeout on the other -- GFW random
+// packet loss) -> Mixed=true, nothing gets recorded.
+func TestMergeFailuresDisagreeingReasonsMixed(t *testing.T) {
+	res := mergeFailures([]Result{
+		{Reason: "http", Detail: "error=EOF"},
+		{Reason: "dial", Detail: "error=i/o timeout"},
+	}, 2)
+	if res.OK || !res.Mixed {
+		t.Fatalf("disagreeing all-fail: ok=%t mixed=%t, want failure with Mixed=true", res.OK, res.Mixed)
+	}
+	if res.Reason != "mixed" {
+		t.Fatalf("reason = %q, want %q", res.Reason, "mixed")
+	}
+}
+
+// TestMergeFailuresSameReasonRecorded: all attempts fail with the same
+// reason -> plain failure (recorded), no Mixed flag.
+func TestMergeFailuresSameReasonRecorded(t *testing.T) {
+	res := mergeFailures([]Result{
+		{Reason: "dial", Detail: "error=i/o timeout"},
+		{Reason: "dial", Detail: "error=i/o timeout"},
+	}, 2)
+	if res.OK || res.Mixed {
+		t.Fatalf("agreeing all-fail: ok=%t mixed=%t, want plain failure", res.OK, res.Mixed)
+	}
+	if res.Reason != "dial" {
+		t.Fatalf("reason = %q, want %q", res.Reason, "dial")
 	}
 }
 
