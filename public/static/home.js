@@ -247,15 +247,9 @@ import { decodeBest, countryCode } from './geo.js';
 
 	// buildRow creates one <tr> for an IP entry via the DOM API (never
 	// innerHTML) since PTR hostnames and the decoded country are derived from
-	// live DNS data, not trusted input. country/countryCode are decoded here
-	// (lazily, only for the current page's rows) and cached on the data
-	// object so subsequent renders/sorts/filters don't re-run decodeBest.
+	// live DNS data, not trusted input. country/countryCode were already
+	// decoded (and cached on the data object) by renderData.
 	function buildRow(ip) {
-		if (ip.country === undefined) {
-			var loc = decodeBest(ip.ptrList || []);
-			ip.country = loc.country;
-			ip.countryCode = countryCode(loc.country);
-		}
 		var country = ip.country || '';
 		var code = ip.countryCode || '';
 
@@ -320,14 +314,18 @@ import { decodeBest, countryCode } from './geo.js';
 		document.getElementById('totalChecks').textContent = data.totalChecks;
 		document.getElementById('lastCheck').textContent = data.lastCheckAt + (data.scanMode ? ' (' + data.scanMode + ')' : '');
 
-		// allRows holds the raw API data; country/countryCode are decoded
-		// lazily in buildRow (only for the current page's ~100 rows) rather
-		// than precomputed for all ~7600 here — decodeBest's 4 regex passes
-		// per hostname dominated first-paint time (~3.5s for 7600 IPs).
-		// filter() still works because it reads r.country which buildRow
-		// fills in on first render; until then country is undefined and
-		// matches any search query (same as IPs with no PTR).
+		// allRows holds the raw API data. country/countryCode are decoded
+		// eagerly for every row (~15ms for 7600 IPs — decodeBest is cheap;
+		// an earlier lazy-decode-per-visible-row variant broke country
+		// search, since filter() reads r.country and rows never rendered
+		// had none) so the search haystack covers the full data set, not
+		// just pages the visitor has already paged through.
 		allRows = (data.ips || []).map(function (ip) {
+			if (ip.country === undefined) {
+				var loc = decodeBest(ip.ptrList || []);
+				ip.country = loc.country;
+				ip.countryCode = countryCode(loc.country);
+			}
 			return ip;
 		});
 
