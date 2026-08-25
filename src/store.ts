@@ -162,12 +162,11 @@ export async function pruneCheckHistory(db: D1Database, ips: string[]): Promise<
 	}
 }
 
-// isKnownGood reports whether ip has ever had a successful check recorded --
-// mirrors Go's live "EXISTS(SELECT 1 FROM ip_checks WHERE ip = ? AND ok = 1)"
-// query in SaveScan. Callers should memoize per ingest run (see
-// index.ts's makeKnownGoodChecker) rather than re-querying per log line.
+// isKnownGood reports whether ip belongs to the maintained known-good pool.
+// The primary-key lookup avoids retaining a write-amplifying ip_checks index
+// solely for failed ad-hoc rechecks.
 export async function isKnownGood(db: D1Database, ip: string): Promise<boolean> {
-	const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM ip_checks WHERE ip = ? AND ok = 1) AS e`).bind(ip).first<{ e: number }>();
+	const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM ip_pool WHERE ip = ?) AS e`).bind(ip).first<{ e: number }>();
 	return row?.e === 1;
 }
 
