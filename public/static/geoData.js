@@ -454,6 +454,7 @@ export const airportCodes = {
 	"auz": { city: "Aurora, IL", country: "United States" },
 	"bos": { city: "Boston, MA", country: "United States" },
 	"cbf": { city: "Council Bluffs, IA", country: "United States" },
+	"chs": { city: "Charleston, SC", country: "United States"},
 	"ckv": { city: "Clarksville, TN", country: "United States"},
 	"clt": { city: "Charlotte, NC", country: "United States" },
 	"cmh" :{ city: "Columbus, OH", country: "United States"},
