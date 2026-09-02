@@ -7,7 +7,7 @@
 import { checkBearerAuth } from "../../src/auth";
 import { normalizeIPAddress } from "../../src/ipAddr";
 import { syncPublish } from "../../src/publish";
-import { saveRecheckResult, updatePoolForCheck } from "../../src/store";
+import { pruneCheckHistory, saveRecheckResult, updatePoolForCheck } from "../../src/store";
 import type { Env } from "../../src/env";
 
 interface ResultBody {
@@ -53,6 +53,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		scanMode: body.scanMode,
 	});
 	await updatePoolForCheck(env.DB, ip, body.ok, body.rttMs ?? null, checkedAt, body.scanMode);
+	await pruneCheckHistory(env.DB, [ip]);
 
 	// A recheck just changed this IP's status, so the top set may have
 	// shifted. Reconcile after responding so a slow Cloudflare API call

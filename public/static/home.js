@@ -21,7 +21,7 @@ import { decodeBest, countryCode } from './geo.js';
 
 (function () {
 	var DB_NAME = 'gwsdb';
-	var DB_VERSION = 2;
+	var DB_VERSION = 3;
 	var ROW_STORE = 'pool';
 	var META_STORE = 'meta';
 	var META_KEY = 'snapshot';

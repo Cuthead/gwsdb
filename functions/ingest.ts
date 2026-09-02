@@ -9,7 +9,14 @@ import { checkBearerAuth } from "../src/auth";
 import { normalizeIPAddress } from "../src/ipAddr";
 import { runPTRRefresh } from "../src/ptrRefresh";
 import { syncPublish } from "../src/publish";
-import { allKnownGoodIPs, type CheckRow, insertCheckRows, pruneCheckHistory, updatePoolBatch } from "../src/store";
+import {
+	allKnownGoodIPs,
+	type CheckRow,
+	coalesceCheckRows,
+	insertCheckRows,
+	pruneCheckHistory,
+	updatePoolBatch,
+} from "../src/store";
 import type { Env } from "../src/env";
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -82,7 +89,7 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 		return new Response("pruneIPs contain an invalid IP", { status: 400 });
 	}
 
-	const rows: CheckRow[] = body.checks.map((c) => ({
+	const rows = coalesceCheckRows(body.checks.map((c): CheckRow => ({
 		ip: normalizeIPAddress(c.IP)!,
 		ok: c.OK,
 		rttMs: c.OK ? c.RTTMs || null : null,
@@ -90,7 +97,7 @@ async function handleIngest(request: Request, env: Env, waitUntil: (promise: Pro
 		detail: c.Detail || null,
 		checkedAt: new Date(c.CheckedAt),
 		scanMode: c.ScanMode,
-	}));
+	})));
 	await insertCheckRows(env.DB, rows);
 	await updatePoolBatch(env.DB, rows);
 

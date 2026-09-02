@@ -8,6 +8,7 @@
 // would have, rather than Go's all-or-nothing guarantee -- acceptable so
 // far, revisit if it bites in practice.
 import { ipToHex, prefixToRange } from "./ipAddr";
+import { type CheckRow, coalesceCheckRows } from "./checkRows";
 import type {
 	ASNCacheEntry,
 	HostCacheEntry,
@@ -34,21 +35,16 @@ function toSQLiteDateTime(d: Date | null): string | null {
 	return d ? d.toISOString() : null;
 }
 
-export interface CheckRow {
-	ip: string;
-	ok: boolean;
-	rttMs: number | null;
-	reason: string | null;
-	detail: string | null;
-	checkedAt: Date;
-	scanMode: string;
-}
+export { type CheckRow, coalesceCheckRows };
 
-const insertCheckSQL = `INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+const insertCheckSQL = `INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+	SELECT ?, ?, ?, ?, ?, ?, ?
+	WHERE ? = 1 OR EXISTS (SELECT 1 FROM ip_pool WHERE ip = ?)`;
 
 // insertCheckRows writes rows in chunks of MAX_BATCH, each chunk atomic via
 // db.batch() but not atomic across chunks -- see the module comment.
 export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise<void> {
+	const successfulIPs = new Set(rows.filter((row) => row.ok).map((row) => row.ip));
 	for (let i = 0; i < rows.length; i += MAX_BATCH) {
 		const chunk = rows.slice(i, i + MAX_BATCH);
 		await db.batch(
@@ -63,6 +59,8 @@ export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise
 						row.detail,
 						toSQLiteDateTime(row.checkedAt),
 						row.scanMode,
+						row.ok || successfulIPs.has(row.ip) ? 1 : 0,
+						row.ip,
 					),
 			),
 		);
@@ -80,50 +78,66 @@ const POOL_UPSERT_CHUNK = 400;
 // direct PK upserts/updates on ip_pool using db.batch():
 // - ok = 1 checks: INSERT INTO ip_pool ... ON CONFLICT(ip) DO UPDATE
 // - ok = 0 checks: UPDATE ip_pool SET last_checked_at=?, last_check_ok=0 WHERE ip=?
-// Total queries per ingest drops from ~700 to ~19, reading 0 rows from ip_checks!
+// Total queries per ingest stays near the number of distinct touched IPs;
+// history_count uses an indexed per-IP count to recover cleanly from retries
+// and overlapping writers.
 export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise<void> {
-	// Deduplicate per IP within this batch, keeping the latest check.
-	const latestByIP = new Map<string, CheckRow>();
-	for (const r of rows) {
-		const existing = latestByIP.get(r.ip);
-		if (!existing || r.checkedAt >= existing.checkedAt) {
-			latestByIP.set(r.ip, r);
+	const byIP = new Map<string, { latest: CheckRow; success: CheckRow | null }>();
+	for (const row of coalesceCheckRows(rows)) {
+		const state = byIP.get(row.ip);
+		if (!state) byIP.set(row.ip, { latest: row, success: row.ok ? row : null });
+		else {
+			state.latest = row;
+			if (row.ok) state.success = row;
 		}
 	}
-
-	const uniqueRows = Array.from(latestByIP.values());
+	const uniqueRows = [...byIP.values()];
 	if (uniqueRows.length === 0) return;
 
 	for (let i = 0; i < uniqueRows.length; i += POOL_UPSERT_CHUNK) {
 		const chunk = uniqueRows.slice(i, i + POOL_UPSERT_CHUNK);
-		const statements = chunk.map((r) => {
-			const isIPv6 = r.ip.includes(":") ? 1 : 0;
-			const ts = toSQLiteDateTime(r.checkedAt);
-			if (r.ok) {
+		const statements = chunk.map(({ latest, success }) => {
+			const isIPv6 = latest.ip.includes(":") ? 1 : 0;
+			const latestTS = toSQLiteDateTime(latest.checkedAt);
+			if (success) {
+				const successTS = toSQLiteDateTime(success.checkedAt);
 				return db
 					.prepare(
-						`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, revision)
-						 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, (SELECT version FROM pool_revision WHERE singleton = 1))
+						`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, revision, history_count)
+						 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, (SELECT version FROM pool_revision WHERE singleton = 1),
+							(SELECT COUNT(*) FROM ip_checks WHERE ip = ?))
 						 ON CONFLICT(ip) DO UPDATE SET
 							scan_mode = excluded.scan_mode,
 							last_seen = excluded.last_seen,
 							last_rtt_ms = excluded.last_rtt_ms,
 							times_seen = ip_pool.times_seen + 1,
 							last_checked_at = excluded.last_checked_at,
-							last_check_ok = 1,
-							revision = excluded.revision`,
+							last_check_ok = excluded.last_check_ok,
+							revision = excluded.revision,
+							history_count = (SELECT COUNT(*) FROM ip_checks WHERE ip = excluded.ip)`,
 					)
-					.bind(r.ip, isIPv6, r.scanMode, ts, ts, r.rttMs ?? 0, ts);
+					.bind(
+						latest.ip,
+						isIPv6,
+						success.scanMode,
+						successTS,
+						successTS,
+						success.rttMs ?? 0,
+						latestTS,
+						latest.ok ? 1 : 0,
+						latest.ip,
+					);
 			}
 			return db
 				.prepare(
 					`UPDATE ip_pool SET
 						last_checked_at = ?,
 						last_check_ok = 0,
-						revision = (SELECT version FROM pool_revision WHERE singleton = 1)
+						revision = (SELECT version FROM pool_revision WHERE singleton = 1),
+						history_count = (SELECT COUNT(*) FROM ip_checks WHERE ip = ip_pool.ip)
 					 WHERE ip = ?`,
 				)
-				.bind(ts, r.ip);
+				.bind(latestTS, latest.ip);
 		});
 		await db.batch([bumpPoolRevision(db), ...statements]);
 	}
@@ -138,27 +152,73 @@ export const CHECK_HISTORY_RETENTION = 300;
 // retention threshold, leaving 99 IP placeholders per DELETE.
 const PRUNE_IP_CHUNK = 99;
 
-// pruneCheckHistory deletes ip_checks rows beyond CHECK_HISTORY_RETENTION
-// per IP (oldest first) for the given ips. Run asynchronously via waitUntil.
+// pruneCheckHistory deletes rows beyond CHECK_HISTORY_RETENTION only for IPs
+// whose maintained count says pruning is necessary. Once an IP's retained
+// window contains no success, it also leaves ip_pool; reset_version tells
+// delta clients to replace snapshots that still contain the deleted row.
 export async function pruneCheckHistory(db: D1Database, ips: string[]): Promise<void> {
 	const unique = [...new Set(ips)];
 	for (let i = 0; i < unique.length; i += PRUNE_IP_CHUNK) {
 		const chunk = unique.slice(i, i + PRUNE_IP_CHUNK);
 		const placeholders = chunk.map(() => "?").join(",");
-		await db
-			.prepare(
-				`DELETE FROM ip_checks
-				 WHERE id IN (
-					SELECT id FROM (
-						SELECT id, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn
-						FROM ip_checks
-						WHERE ip IN (${placeholders})
+		const { results: overLimit } = await db
+			.prepare(`SELECT ip FROM ip_pool WHERE ip IN (${placeholders}) AND history_count > ?`)
+			.bind(...chunk, CHECK_HISTORY_RETENTION)
+			.all<{ ip: string }>();
+		if (overLimit.length > 0) {
+			const prunePlaceholders = overLimit.map(() => "?").join(",");
+			await db.batch([
+				db
+					.prepare(
+						`DELETE FROM ip_checks
+						 WHERE id IN (
+							SELECT id FROM (
+								SELECT id, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY checked_at DESC, id DESC) AS rn
+								FROM ip_checks
+								WHERE ip IN (${prunePlaceholders})
+							)
+							WHERE rn > ?
+						 )`,
 					)
-					WHERE rn > ?
-				 )`,
+					.bind(...overLimit.map((row) => row.ip), CHECK_HISTORY_RETENTION),
+				db
+					.prepare(
+						`UPDATE ip_pool SET history_count = (
+							SELECT COUNT(*) FROM ip_checks WHERE ip_checks.ip = ip_pool.ip
+						) WHERE ip IN (${prunePlaceholders})`,
+					)
+					.bind(...overLimit.map((row) => row.ip)),
+			]);
+		}
+
+		const { results: dead } = await db
+			.prepare(
+				`SELECT ip_pool.ip FROM ip_pool
+				 WHERE ip_pool.ip IN (${placeholders})
+					AND history_count >= ?
+					AND NOT EXISTS (
+						SELECT 1 FROM ip_checks
+						WHERE ip_checks.ip = ip_pool.ip AND ip_checks.ok = 1
+					)`,
 			)
 			.bind(...chunk, CHECK_HISTORY_RETENTION)
-			.run();
+			.all<{ ip: string }>();
+		if (dead.length === 0) continue;
+		const deadPlaceholders = dead.map(() => "?").join(",");
+		await db.batch([
+			bumpPoolRevision(db),
+			db.prepare(`UPDATE pool_revision SET reset_version = version WHERE singleton = 1`),
+			db
+				.prepare(
+					`DELETE FROM ip_pool
+					 WHERE ip IN (${deadPlaceholders})
+						AND NOT EXISTS (
+							SELECT 1 FROM ip_checks
+							WHERE ip_checks.ip = ip_pool.ip AND ip_checks.ok = 1
+						)`,
+				)
+				.bind(...dead.map((row) => row.ip)),
+		]);
 	}
 }
 
@@ -324,6 +384,13 @@ export async function overview(db: D1Database): Promise<Stats> {
 // rows changed after a prior snapshot.
 export async function poolVersion(db: D1Database): Promise<number> {
 	const row = await db.prepare(`SELECT version AS v FROM pool_revision WHERE singleton = 1`).first<{ v: number }>();
+	return row?.v ?? 0;
+}
+
+export async function poolResetVersion(db: D1Database): Promise<number> {
+	const row = await db
+		.prepare(`SELECT reset_version AS v FROM pool_revision WHERE singleton = 1`)
+		.first<{ v: number }>();
 	return row?.v ?? 0;
 }
 
@@ -798,9 +865,8 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 // caller (saveRecheckResult) already skipped the ip_checks insert, so
 // there's nothing to update.
 //
-// pruneCheckHistory is intentionally NOT called here — a single probe adds
-// 1 row, which can't push an IP past CHECK_HISTORY_RETENTION (300) unless
-// it already has 299, and the next batch ingest flush will prune it anyway.
+// Callers prune after this update so history_count remains exact and a pool
+// row can be evicted as soon as its retained history becomes all failures.
 export async function updatePoolForCheck(
 	db: D1Database,
 	ip: string,
@@ -823,6 +889,7 @@ export async function updatePoolForCheck(
 				last_rtt_ms = CASE WHEN ? THEN ? ELSE last_rtt_ms END,
 				last_seen = CASE WHEN ? THEN ? ELSE last_seen END,
 				times_seen = CASE WHEN ? THEN times_seen + 1 ELSE times_seen END,
+				history_count = (SELECT COUNT(*) FROM ip_checks WHERE ip = ip_pool.ip),
 				revision = (SELECT version FROM pool_revision WHERE singleton = 1)
 			 WHERE ip = ?`,
 		)
@@ -838,8 +905,9 @@ export async function updatePoolForCheck(
 			bumpPoolRevision(db),
 			db
 				.prepare(
-				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, revision)
-				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, (SELECT version FROM pool_revision WHERE singleton = 1))
+				`INSERT INTO ip_pool (ip, is_ipv6, scan_mode, first_seen, last_seen, last_rtt_ms, times_seen, last_checked_at, last_check_ok, revision, history_count)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, (SELECT version FROM pool_revision WHERE singleton = 1),
+					(SELECT COUNT(*) FROM ip_checks WHERE ip = ?))
 				 ON CONFLICT(ip) DO UPDATE SET
 					scan_mode = excluded.scan_mode,
 					last_seen = excluded.last_seen,
@@ -847,9 +915,10 @@ export async function updatePoolForCheck(
 					times_seen = ip_pool.times_seen + 1,
 					last_checked_at = excluded.last_checked_at,
 					last_check_ok = 1,
-					revision = excluded.revision`,
+					revision = excluded.revision,
+					history_count = (SELECT COUNT(*) FROM ip_checks WHERE ip = excluded.ip)`,
 			)
-				.bind(ip, isIPv6, scanMode, ts, ts, rttMs ?? 0, ts),
+				.bind(ip, isIPv6, scanMode, ts, ts, rttMs ?? 0, ts, ip),
 		]);
 	}
 }

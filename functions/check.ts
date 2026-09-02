@@ -8,7 +8,7 @@
 import { isGoogleASN, lookupGoogleASN } from "../src/dnsCache";
 import { normalizeIPAddress } from "../src/ipAddr";
 import { clientCountry } from "../src/request";
-import { checkRateLimit, saveRecheckResult, updatePoolForCheck } from "../src/store";
+import { checkRateLimit, pruneCheckHistory, saveRecheckResult, updatePoolForCheck } from "../src/store";
 import { syncPublish } from "../src/publish";
 import type { ASNInfo } from "../src/asn";
 import type { Env } from "../src/env";
@@ -105,6 +105,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 		scanMode: DEFAULT_SCAN_MODE,
 	});
 	await updatePoolForCheck(env.DB, ip, result.ok, result.rttMs ?? null, checkedAt, DEFAULT_SCAN_MODE);
+	await pruneCheckHistory(env.DB, [ip]);
 
 	// A probe just changed this IP's status, so the top set may have
 	// shifted. Reconcile after responding so a slow publish doesn't add

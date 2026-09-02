@@ -1,6 +1,6 @@
 import { formatTime } from "../../../src/html";
 import { loadPoolChanges } from "../../../src/pool";
-import { poolVersion } from "../../../src/store";
+import { poolResetVersion, poolVersion } from "../../../src/store";
 import type { Env } from "../../../src/env";
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
@@ -12,6 +12,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
 	const version = await poolVersion(context.env.DB);
 	if (since > version) {
+		return Response.json({ reset: true, version }, { headers: { "Cache-Control": "no-store" } });
+	}
+	if (since < (await poolResetVersion(context.env.DB))) {
 		return Response.json({ reset: true, version }, { headers: { "Cache-Control": "no-store" } });
 	}
 	if (since === version) {
