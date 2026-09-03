@@ -37,9 +37,14 @@ function toSQLiteDateTime(d: Date | null): string | null {
 
 export { type CheckRow, coalesceCheckRows };
 
+// ON CONFLICT(ip, checked_at) DO NOTHING makes scanner retries idempotent:
+// a flush whose checks already committed (insert succeeded, later stage
+// failed) re-inserts nothing on retry. The SELECT's WHERE clause is also
+// required by SQLite to parse an upsert after INSERT ... SELECT.
 const insertCheckSQL = `INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
 	SELECT ?, ?, ?, ?, ?, ?, ?
-	WHERE ? = 1 OR EXISTS (SELECT 1 FROM ip_pool WHERE ip = ?)`;
+	WHERE ? = 1 OR EXISTS (SELECT 1 FROM ip_pool WHERE ip = ?)
+	ON CONFLICT(ip, checked_at) DO NOTHING`;
 
 // insertCheckRows writes rows in chunks of MAX_BATCH, each chunk atomic via
 // db.batch() but not atomic across chunks -- see the module comment.
@@ -831,7 +836,8 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 		await db
 			.prepare(
 				`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
-				VALUES (?, 1, ?, 'recheck:ok', ?, ?, ?)`,
+				VALUES (?, 1, ?, 'recheck:ok', ?, ?, ?)
+				ON CONFLICT(ip, checked_at) DO NOTHING`,
 			)
 			.bind(r.ip, r.rttMs, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 			.run();
@@ -846,10 +852,11 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 			: `recheck:${r.reason}`
 		: "recheck:unknown";
 	await db
-		.prepare(
-			`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
-			VALUES (?, 0, NULL, ?, ?, ?, ?)`,
-		)
+			.prepare(
+				`INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
+				VALUES (?, 0, NULL, ?, ?, ?, ?)
+				ON CONFLICT(ip, checked_at) DO NOTHING`,
+			)
 		.bind(r.ip, reason, r.detail, toSQLiteDateTime(r.checkedAt), r.scanMode)
 		.run();
 }
