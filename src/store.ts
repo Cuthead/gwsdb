@@ -41,15 +41,31 @@ export { type CheckRow, coalesceCheckRows };
 // a flush whose checks already committed (insert succeeded, later stage
 // failed) re-inserts nothing on retry. The SELECT's WHERE clause is also
 // required by SQLite to parse an upsert after INSERT ... SELECT.
+//
+// Failures additionally dedupe against the pool row: a repeated failure only
+// records once FAILURE_DEDUP_WINDOW_MS has passed since the pool row's last
+// check, or immediately when the last check was ok (state transitions always
+// record). Dead-but-pooled IPs are rechecked continuously by the recheck
+// worker loops, and without this gate each pass wrote a check row + pool
+// update + revision bump.
 const insertCheckSQL = `INSERT INTO ip_checks (ip, ok, rtt_ms, reason, detail, checked_at, scan_mode)
 	SELECT ?, ?, ?, ?, ?, ?, ?
-	WHERE ? = 1 OR EXISTS (SELECT 1 FROM ip_pool WHERE ip = ?)
+	WHERE ? = 1 OR EXISTS (
+		SELECT 1 FROM ip_pool WHERE ip = ? AND (last_check_ok != 0 OR last_checked_at < ?)
+	)
 	ON CONFLICT(ip, checked_at) DO NOTHING`;
+
+// FAILURE_DEDUP_WINDOW_MS is how long a pool row stays "recently failed"
+// after a recorded failure before another failure for the same IP records
+// again. 6h keeps a dead IP's failure timeline at ~4 rows/day instead of one
+// per recheck pass.
+const FAILURE_DEDUP_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 // insertCheckRows writes rows in chunks of MAX_BATCH, each chunk atomic via
 // db.batch() but not atomic across chunks -- see the module comment.
 export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise<void> {
 	const successfulIPs = new Set(rows.filter((row) => row.ok).map((row) => row.ip));
+	const dedupCutoff = toSQLiteDateTime(new Date(Date.now() - FAILURE_DEDUP_WINDOW_MS));
 	for (let i = 0; i < rows.length; i += MAX_BATCH) {
 		const chunk = rows.slice(i, i + MAX_BATCH);
 		await db.batch(
@@ -66,6 +82,7 @@ export async function insertCheckRows(db: D1Database, rows: CheckRow[]): Promise
 						row.scanMode,
 						row.ok || successfulIPs.has(row.ip) ? 1 : 0,
 						row.ip,
+						dedupCutoff,
 					),
 			),
 		);
@@ -83,11 +100,24 @@ const POOL_UPSERT_CHUNK = 400;
 // direct PK upserts/updates on ip_pool using db.batch():
 // - ok = 1 checks: INSERT INTO ip_pool ... ON CONFLICT(ip) DO UPDATE
 // - ok = 0 checks: UPDATE ip_pool SET last_checked_at=?, last_check_ok=0 WHERE ip=?
-// Total queries per ingest stays near the number of distinct touched IPs;
-// history_count uses an indexed per-IP count to recover cleanly from retries
-// and overlapping writers.
+// Total queries per ingest stays near the number of distinct touched IPs.
+// history_count is maintained incrementally -- incremented by the number of
+// rows newer than the pool row's previous last_checked_at, an indexed range
+// that per-IP-per-flush is 1-2 rows, instead of recounting the IP's whole
+// history (~106 rows read per upsert, ~1M/day). Over-counts (retry flushes
+// whose inserts were ON CONFLICT no-ops) only ever trigger pruning early,
+// and pruneCheckHistory's recompute snaps the count back to exact.
+//
+// The failure UPDATE carries the same dedup gate as insertCheckSQL so a gated
+// insert never has a dangling pool update: it only fires on an ok->fail
+// transition or once FAILURE_DEDUP_WINDOW_MS has elapsed.
+const failureGateSQL = `(last_check_ok != 0 OR last_checked_at < ?)`;
+const historyCountIncrSQL = `ip_pool.history_count + (
+	SELECT COUNT(*) FROM ip_checks WHERE ip = ip_pool.ip AND checked_at > ip_pool.last_checked_at
+)`;
 export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise<void> {
 	const byIP = new Map<string, { latest: CheckRow; success: CheckRow | null }>();
+	const dedupCutoff = toSQLiteDateTime(new Date(Date.now() - FAILURE_DEDUP_WINDOW_MS));
 	for (const row of coalesceCheckRows(rows)) {
 		const state = byIP.get(row.ip);
 		if (!state) byIP.set(row.ip, { latest: row, success: row.ok ? row : null });
@@ -119,7 +149,7 @@ export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise
 							last_checked_at = excluded.last_checked_at,
 							last_check_ok = excluded.last_check_ok,
 							revision = excluded.revision,
-							history_count = (SELECT COUNT(*) FROM ip_checks WHERE ip = excluded.ip)`,
+							history_count = ${historyCountIncrSQL}`,
 					)
 					.bind(
 						latest.ip,
@@ -139,10 +169,10 @@ export async function updatePoolBatch(db: D1Database, rows: CheckRow[]): Promise
 						last_checked_at = ?,
 						last_check_ok = 0,
 						revision = (SELECT version FROM pool_revision WHERE singleton = 1),
-						history_count = (SELECT COUNT(*) FROM ip_checks WHERE ip = ip_pool.ip)
-					 WHERE ip = ?`,
+						history_count = ${historyCountIncrSQL}
+					 WHERE ip = ? AND ${failureGateSQL}`,
 				)
-				.bind(latestTS, latest.ip);
+				.bind(latestTS, latest.ip, dedupCutoff);
 		});
 		await db.batch([bumpPoolRevision(db), ...statements]);
 	}
@@ -338,9 +368,10 @@ export async function ipStatusFor(db: D1Database, ip: string): Promise<IPStatus 
 // was the second-biggest rows-read offender in D1 metrics. The two totals
 // are display-only scoreboard numbers, so they're served from a TTL'd
 // caches.default entry (shared per colo) and allowed to lag an hour.
-// lastCheckAt/scanMode stay live: that query is a 1-row seek on
-// idx_ip_pool_last_checked_at (migration 0012), so freshness where a visitor
-// would actually notice it costs ~nothing.
+// lastCheckAt/scanMode stay live: reading the newest ip_checks row by rowid
+// tail is a 1-row seek, so freshness where a visitor would actually notice
+// it costs ~nothing (and saves maintaining idx_ip_pool_last_checked_at,
+// which every pool mutation had to rewrite -- see migration 0017).
 const OVERVIEW_AGG_TTL_SECONDS = 3600;
 const OVERVIEW_AGG_CACHE_URL = "https://gwsdb.internal/api/overview-aggregates";
 
@@ -373,13 +404,13 @@ export async function overview(db: D1Database): Promise<Stats> {
 	const [agg, lastCheck] = await Promise.all([
 		cachedOverviewAggregates(db),
 		db
-			.prepare(`SELECT last_checked_at, scan_mode FROM ip_pool ORDER BY last_checked_at DESC LIMIT 1`)
-			.first<{ last_checked_at: string | null; scan_mode: string | null }>(),
+			.prepare(`SELECT checked_at, scan_mode FROM ip_checks ORDER BY id DESC LIMIT 1`)
+			.first<{ checked_at: string | null; scan_mode: string | null }>(),
 	]);
 	return {
 		totalKnownIPs: agg.totalKnownIPs,
 		totalChecks: agg.totalChecks,
-		lastCheckAt: lastCheck ? fromSQLiteDateTime(lastCheck.last_checked_at) : null,
+		lastCheckAt: lastCheck ? fromSQLiteDateTime(lastCheck.checked_at) : null,
 		scanMode: lastCheck?.scan_mode ?? "",
 	};
 }
@@ -872,8 +903,11 @@ export async function saveRecheckResult(db: D1Database, r: RecheckResult): Promi
 // caller (saveRecheckResult) already skipped the ip_checks insert, so
 // there's nothing to update.
 //
-// Callers prune after this update so history_count remains exact and a pool
-// row can be evicted as soon as its retained history becomes all failures.
+// Callers prune after this update so history_count stays exact enough for
+// retention/eviction decisions and a pool row can be evicted as soon as its
+// retained history becomes all failures. No FAILURE_DEDUP_WINDOW gate here
+// unlike updatePoolBatch: on-demand probes are user-initiated and always
+// worth recording.
 export async function updatePoolForCheck(
 	db: D1Database,
 	ip: string,
@@ -896,7 +930,9 @@ export async function updatePoolForCheck(
 				last_rtt_ms = CASE WHEN ? THEN ? ELSE last_rtt_ms END,
 				last_seen = CASE WHEN ? THEN ? ELSE last_seen END,
 				times_seen = CASE WHEN ? THEN times_seen + 1 ELSE times_seen END,
-				history_count = (SELECT COUNT(*) FROM ip_checks WHERE ip = ip_pool.ip),
+				history_count = ip_pool.history_count + (
+					SELECT COUNT(*) FROM ip_checks WHERE ip = ip_pool.ip AND checked_at > ip_pool.last_checked_at
+				),
 				revision = (SELECT version FROM pool_revision WHERE singleton = 1)
 			 WHERE ip = ?`,
 		)
