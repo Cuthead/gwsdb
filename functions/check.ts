@@ -46,7 +46,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 	if (!cip) {
 		return Response.json({ error: "could not determine client ip" }, { status: 400 });
 	}
-	const allowed = await checkRateLimit(env.DB, cip, RATE_LIMIT_PER_MINUTE);
+	const allowed = await checkRateLimit(env.DB, "probe", cip, RATE_LIMIT_PER_MINUTE, 60_000);
 	if (!allowed) {
 		return Response.json({ error: "rate limit exceeded, try again later" }, { status: 429 });
 	}

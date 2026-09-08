@@ -2,6 +2,7 @@
 // handleQuery/lookup/lookupHostname/resolveHostnameForm/statusForIP/
 // reachabilityStatus/reasonLabel/describeProbe + templates/query.tmpl.
 import { lookupGoogleASN, resolveAndCacheHost, resolveAndCachePTR, isGoogleASN } from "../src/dnsCache";
+import { checkRateLimit } from "../src/store";
 import { decode, decodeBest, isHostname, siblingHostname } from "../src/geo";
 import { buildInfoFromEnv, escapeHTML, formatTime, pageShell } from "../src/html";
 import { isIPAddress, normalizeIPAddress } from "../src/ipAddr";
@@ -13,6 +14,8 @@ import type { IPStatus } from "../src/types";
 
 const PTR_TIMEOUT_MS = 3000;
 const ASN_TIMEOUT_MS = 3000;
+const QUERY_RATE_LIMIT_PER_HOUR = 100;
+const QUERY_RATE_LIMIT_MESSAGE = "Too many queries from your network; please try again later";
 
 function reachabilityStatus(st: IPStatus | null): string {
 	if (!st || !st.hasCheck) return "-";
@@ -367,35 +370,62 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 	data.canProbe = clientCountry(context.request) === "CN";
 	const dohUrl = context.env.DOH_JSON_URL;
 
+	// Hourly rate limit on submitted lookups. The live DNS lookups behind
+	// each query rewrite ptr_cache/host_cache/ip_pool rows (cache refills
+	// only write when someone reads, but nothing bounded the readers -- one
+	// enumeration crawl over the known pool rewrote ~25k rows in four hours;
+	// see migration 0019). 100/hour is invisible to a human and caps a
+	// crawler at ~2.4k lookups/day. Fails open on a D1 error: a limiter
+	// outage shouldn't take the page down, and the worst case is a cache
+	// refill burst. Garbage input isn't counted -- it never reaches DNS.
+	const underQueryRateLimit = async (): Promise<boolean> => {
+		const cip = context.request.headers.get("CF-Connecting-IP") ?? "";
+		if (!cip) return true;
+		try {
+			return await checkRateLimit(context.env.DB, "query", cip, QUERY_RATE_LIMIT_PER_HOUR, 3_600_000);
+		} catch (err) {
+			console.warn("query: rate limit check:", err);
+			return true;
+		}
+	};
+
 	if (q === "") {
 		// not submitted; render the empty form
 	} else if (isIPAddress(q)) {
 		data.submitted = true;
-		// The ASN check is this page's gate, not a display field, so a failed
-		// lookup can't fail open (it would show scan history for arbitrary
-		// non-Google IPs) and shouldn't fail closed under the flat "not a
-		// Google ASN" message either -- that asserts something we didn't
-		// establish. Report the transient failure as itself instead.
-		let asn: { info: ASNInfo; ok: boolean } | null = null;
-		try {
-			asn = await lookupGoogleASN(context.env.DB, q, ASN_TIMEOUT_MS, dohUrl);
-		} catch (err) {
-			console.warn(`query: ASN lookup ${q}:`, err);
-			data.error = "Could not verify this IP's ASN right now (the lookup failed); please try again";
-		}
-		if (asn) {
-			if (!asn.ok || !isGoogleASN(asn.info)) {
-				data.error = "This IP does not belong to a Google ASN";
-			} else {
-				await lookupIPQuery(context.env.DB, q, dohUrl, data);
+		if (!(await underQueryRateLimit())) {
+			data.error = QUERY_RATE_LIMIT_MESSAGE;
+		} else {
+			// The ASN check is this page's gate, not a display field, so a failed
+			// lookup can't fail open (it would show scan history for arbitrary
+			// non-Google IPs) and shouldn't fail closed under the flat "not a
+			// Google ASN" message either -- that asserts something we didn't
+			// establish. Report the transient failure as itself instead.
+			let asn: { info: ASNInfo; ok: boolean } | null = null;
+			try {
+				asn = await lookupGoogleASN(context.env.DB, q, ASN_TIMEOUT_MS, dohUrl);
+			} catch (err) {
+				console.warn(`query: ASN lookup ${q}:`, err);
+				data.error = "Could not verify this IP's ASN right now (the lookup failed); please try again";
+			}
+			if (asn) {
+				if (!asn.ok || !isGoogleASN(asn.info)) {
+					data.error = "This IP does not belong to a Google ASN";
+				} else {
+					await lookupIPQuery(context.env.DB, q, dohUrl, data);
+				}
 			}
 		}
 	} else if (isHostname(q)) {
 		data.submitted = true;
 		data.queryIsHostname = true;
-		// No catch needed here: resolveHostnameForm absorbs each hostname's
-		// own lookup failure, and nothing else on this path does DNS.
-		await lookupHostnameQuery(context.env.DB, q, dohUrl, data);
+		if (!(await underQueryRateLimit())) {
+			data.error = QUERY_RATE_LIMIT_MESSAGE;
+		} else {
+			// No catch needed here: resolveHostnameForm absorbs each hostname's
+			// own lookup failure, and nothing else on this path does DNS.
+			await lookupHostnameQuery(context.env.DB, q, dohUrl, data);
+		}
 	} else {
 		data.submitted = true;
 		data.error = "Not a valid IP address or 1e100.net hostname";

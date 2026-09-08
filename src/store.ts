@@ -817,31 +817,46 @@ export async function ipHistory(db: D1Database, ip: string, limit: number, offse
 	}));
 }
 
-// checkRateLimit enforces a per-client-IP probe-request cap for the
-// on-demand probe button (functions/check.ts). One row per (client_ip, UTC
-// minute); the count is incremented and compared against limit. Returns
-// true if the request is allowed, false if over the limit. Old windows are
-// pruned lazily so the table stays bounded. There's a benign race between
-// the SELECT and INSERT under concurrent requests (two simultaneous clicks
-// could both pass before either increments) -- acceptable for a rate limit
-// whose purpose is abuse prevention, not exact metering.
-export async function checkRateLimit(db: D1Database, clientIP: string, limit: number): Promise<boolean> {
-	const window = new Date().toISOString().slice(0, 16); // 'YYYY-MM-DDTHH:MM' (UTC minute)
+// Rate limit kinds: "probe" for the on-demand probe button (functions/
+// check.ts, per-UTC-minute) and "query" for the query page's live DNS
+// lookups (functions/query.ts, per-UTC-hour).
+export type RateLimitKind = "probe" | "query";
+
+// checkRateLimit enforces a per-client-IP counter for expensive
+// client-triggered lookups -- see RateLimitKind. One row per
+// (kind, client_ip, window); window is the ISO UTC prefix of the bucket
+// start (minute or hour bucket, derived from windowMs, which must divide
+// evenly into 60s or 3600s so the 16-char prefix is unique per bucket),
+// and lazy pruning by lexicographic comparison keeps working. Returns true
+// if the request is allowed, false if over the limit; over-limit requests
+// don't increment, so a blocked flood costs two reads and zero writes.
+// There's a benign race between the SELECT and INSERT under concurrent
+// requests (two simultaneous clicks could both pass before either
+// increments) -- acceptable for a rate limit whose purpose is abuse
+// prevention, not exact metering.
+export async function checkRateLimit(
+	db: D1Database,
+	kind: RateLimitKind,
+	clientIP: string,
+	limit: number,
+	windowMs: number,
+): Promise<boolean> {
+	const window = new Date(Math.floor(Date.now() / windowMs) * windowMs).toISOString().slice(0, 16); // 'YYYY-MM-DDTHH:MM' (UTC bucket start)
 	await db
-		.prepare(`DELETE FROM check_rate_limit WHERE client_ip = ? AND window < ?`)
-		.bind(clientIP, window)
+		.prepare(`DELETE FROM check_rate_limit WHERE kind = ? AND client_ip = ? AND window < ?`)
+		.bind(kind, clientIP, window)
 		.run();
 	const row = await db
-		.prepare(`SELECT count FROM check_rate_limit WHERE client_ip = ? AND window = ?`)
-		.bind(clientIP, window)
+		.prepare(`SELECT count FROM check_rate_limit WHERE kind = ? AND client_ip = ? AND window = ?`)
+		.bind(kind, clientIP, window)
 		.first<{ count: number }>();
 	if ((row?.count ?? 0) >= limit) return false;
 	await db
 		.prepare(
-			`INSERT INTO check_rate_limit (client_ip, window, count) VALUES (?, ?, 1)
-			ON CONFLICT(client_ip, window) DO UPDATE SET count = count + 1`,
+			`INSERT INTO check_rate_limit (kind, client_ip, window, count) VALUES (?, ?, ?, 1)
+			ON CONFLICT(kind, client_ip, window) DO UPDATE SET count = count + 1`,
 		)
-		.bind(clientIP, window)
+		.bind(kind, clientIP, window)
 		.run();
 	return true;
 }
