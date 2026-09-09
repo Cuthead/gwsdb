@@ -367,12 +367,12 @@ export async function ipStatusFor(db: D1Database, ip: string): Promise<IPStatus 
 // keys move on every scanner flush, so the misses are near-constant -- this
 // was the second-biggest rows-read offender in D1 metrics. The two totals
 // are display-only scoreboard numbers, so they're served from a TTL'd
-// caches.default entry (shared per colo) and allowed to lag an hour.
+// caches.default entry (shared per colo) and allowed to lag a day.
 // lastCheckAt/scanMode stay live: reading the newest ip_checks row by rowid
 // tail is a 1-row seek, so freshness where a visitor would actually notice
 // it costs ~nothing (and saves maintaining idx_ip_pool_last_checked_at,
 // which every pool mutation had to rewrite -- see migration 0017).
-const OVERVIEW_AGG_TTL_SECONDS = 3600;
+const OVERVIEW_AGG_TTL_SECONDS = 24 * 60 * 60;
 const OVERVIEW_AGG_CACHE_URL = "https://gwsdb.internal/api/overview-aggregates";
 
 interface OverviewAggregates {
