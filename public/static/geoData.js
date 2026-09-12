@@ -506,6 +506,7 @@ export const airportCodes = {
 	"fco": { city: "Rome", country: "Italy" },
 	"fra": { city: "Frankfurt", country: "Germany" },
 	"gro": { city: "Girona/Barcelona", country: "Spain" },
+	"grq": { city: "Groningen", country: "Netherlands" },
 	"ham": { city: "Hamburg", country: "Germany" },
 	"hel": { city: "Hamina/Helsinki", country: "Finland" },
 	"lcy": { city: "London", country: "United Kingdom" },
