@@ -28,7 +28,10 @@ import { decodeBest, countryCode } from './geo.js';
 	var OLD_CACHE_KEY = 'gwsdb_pool_v1';
 	var PAGE_SIZE = 1000;
 
-	var sortState = {col: null, desc: false};
+	var sortState = {col: null, dir: -1};
+	// naturalOrder snapshots matched's post-filter order (the /api/pool
+	// sequence) so three-state sorting can restore it on the third click.
+	var naturalOrder = [];
 	var page = 1;
 	// allRows is the full data set from /api/pool, kept in memory but never
 	// attached to the DOM. matched is the subset passing the current filter,
@@ -85,6 +88,7 @@ import { decodeBest, countryCode } from './geo.js';
 			}
 		}
 		document.getElementById('familyCount').textContent = familyTotal;
+		naturalOrder = matched.slice();
 		page = 1;
 		renderPage();
 	}
@@ -95,41 +99,53 @@ import { decodeBest, countryCode } from './geo.js';
 	// DOM nodes and re-appending them, which forced a layout pass per
 	// row. After sort, stay on the same page so re-sorting a long list
 	// doesn't lose the reader's place.
+	// sort cycles three states per column (like bgp.he.net's tables):
+	// first click sorts by the column's default direction, the second
+	// flips it, and the third restores the natural /api/pool order.
 	function sort(col, defaultDesc) {
-		var desc = sortState.col === col ? !sortState.desc : defaultDesc;
-		sortState = {col: col, desc: desc};
+		var cycle = defaultDesc ? [1, 0, 2] : [0, 1, 2];
+		if (sortState.col === col) {
+			sortState.dir = cycle[(cycle.indexOf(sortState.dir) + 1) % 3];
+		} else {
+			sortState = {col: col, dir: cycle[0]};
+		}
+		var desc = sortState.dir === 1;
 
-		matched.sort(function (a, b) {
-			var av, bv;
-			if (col === 'rtt') {
-				av = a.lastRttMs || 0;
-				bv = b.lastRttMs || 0;
-				return desc ? bv - av : av - bv;
-			}
-			if (col === 'ip') {
-				return desc ? (a.ip < b.ip ? 1 : -1) : (a.ip < b.ip ? -1 : 1);
-			}
-			if (col === 'ptr') {
-				av = (a.ptrList || []).join(' ');
-				bv = (b.ptrList || []).join(' ');
-			} else if (col === 'country') {
-				av = a.country || '';
-				bv = b.country || '';
-			} else {
-				av = (a[col] || '').toString();
-				bv = (b[col] || '').toString();
-			}
-			av = av.toLowerCase();
-			bv = bv.toLowerCase();
-			if (av < bv) return desc ? 1 : -1;
-			if (av > bv) return desc ? -1 : 1;
-			return 0;
-		});
+		if (sortState.dir === 2) {
+			matched = naturalOrder.slice();
+		} else {
+			matched.sort(function (a, b) {
+				var av, bv;
+				if (col === 'rtt') {
+					av = a.lastRttMs || 0;
+					bv = b.lastRttMs || 0;
+					return desc ? bv - av : av - bv;
+				}
+				if (col === 'ip') {
+					return desc ? (a.ip < b.ip ? 1 : -1) : (a.ip < b.ip ? -1 : 1);
+				}
+				if (col === 'ptr') {
+					av = (a.ptrList || []).join(' ');
+					bv = (b.ptrList || []).join(' ');
+				} else if (col === 'country') {
+					av = a.country || '';
+					bv = b.country || '';
+				} else {
+					av = (a[col] || '').toString();
+					bv = (b[col] || '').toString();
+				}
+				av = av.toLowerCase();
+				bv = bv.toLowerCase();
+				if (av < bv) return desc ? 1 : -1;
+				if (av > bv) return desc ? -1 : 1;
+				return 0;
+			});
+		}
 
 		var arrows = document.getElementsByClassName('arrow');
 		for (var i = 0; i < arrows.length; i++) {
 			arrows[i].textContent = arrows[i].dataset.col === col
-				? '\u00a0\u00a0' + (desc ? '\u2193' : '\u2191')
+				? (sortState.dir === 2 ? '\u00a0\u00a0\u00a0' : '\u00a0\u00a0' + (desc ? '\u2193' : '\u2191'))
 				: '\u00a0\u00a0\u00a0';
 		}
 

@@ -76,9 +76,10 @@ function familyFilterHTML(url: URL, family: number | undefined): string {
 }
 
 // sortHeaderHTML renders the table's header row as plain links -- clicking
-// a column re-requests the page with ?sort=<col>&desc=<0|1>, toggling
-// direction on a repeat click of the same column. No JS involved, so this
-// is the no-JS equivalent of home.js's data-sort click handlers.
+// a column cycles three states like bgp.he.net: default direction, flipped
+// direction, then back to natural (pool) order by dropping the sort param.
+// No JS involved, so this is the no-JS equivalent of home.js's data-sort
+// click handlers.
 function sortHeaderHTML(url: URL, activeSort: string | undefined, activeDesc: boolean): string {
 	const cells = sortColumnOrder
 		.map((param) => {
@@ -86,8 +87,14 @@ function sortHeaderHTML(url: URL, activeSort: string | undefined, activeDesc: bo
 			// definition just above), so this lookup always hits.
 			const col = sortColumns[param]!;
 			const isActive = activeSort === param;
-			const nextDesc = isActive ? !activeDesc : col.defaultDesc;
-			const href = withParams(url, { sort: param, desc: nextDesc ? "1" : "0" });
+			let href: string;
+			if (!isActive) {
+				href = withParams(url, { sort: param, desc: col.defaultDesc ? "1" : "0" });
+			} else if (activeDesc === col.defaultDesc) {
+				href = withParams(url, { sort: param, desc: activeDesc ? "0" : "1" });
+			} else {
+				href = withParams(url, { sort: null });
+			}
 			const arrow = isActive ? (activeDesc ? "&nbsp;&nbsp;&#8595;" : "&nbsp;&nbsp;&#8593;") : "&nbsp;&nbsp;&nbsp;";
 			return `<th scope="col"><a href="${escapeHTML(href)}">${escapeHTML(col.label)}<span class="arrow">${arrow}</span></a></th>`;
 		})
