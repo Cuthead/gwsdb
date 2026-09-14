@@ -287,7 +287,9 @@ import { decodeBest, countryCode } from './geo.js';
 		if (ip.status === 'Reachable' || ip.status === 'Unreachable') {
 			var font = document.createElement('font');
 			font.color = ip.status === 'Reachable' ? '#008000' : '#CC0000';
-			font.textContent = (ip.status === 'Reachable' ? '✓ ' : '✗ ') + ip.status;
+			font.title = ip.status;
+			font.setAttribute('aria-label', ip.status);
+			font.textContent = ip.status === 'Reachable' ? '✓' : '✗';
 			statusTd.appendChild(font);
 		} else {
 			statusTd.textContent = '-';

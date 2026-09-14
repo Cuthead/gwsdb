@@ -47,8 +47,8 @@ function withParams(url: URL, overrides: Record<string, string | null>): string 
 }
 
 function statusHTML(status: string): string {
-	if (status === "Reachable") return `<font color="#008000">&#x2713; Reachable</font>`;
-	if (status === "Unreachable") return `<font color="#CC0000">&#x2717; Unreachable</font>`;
+	if (status === "Reachable") return `<font color="#008000" title="Reachable" aria-label="Reachable">&#x2713;</font>`;
+	if (status === "Unreachable") return `<font color="#CC0000" title="Unreachable" aria-label="Unreachable">&#x2717;</font>`;
 	return "-";
 }
 
