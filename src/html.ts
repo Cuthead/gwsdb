@@ -73,14 +73,14 @@ function footerHTML(build: BuildInfo): string {
 	return `<a href="${repoURL}">gwsdb</a>`;
 }
 
-// NAV_EN/NAV_ZH are the two nav-bar variants used across the site.
+// NAV_EN/NAV_ZH are the two Quick Links variants used across the site.
 // report_confirm.tmpl is Chinese (<html lang="zh">, "首页/查询/扫描记录") while
 // every other page is English -- documented as intentional per-page i18n in
 // AGENTS.md, not a bug to normalize away.
 const NAV_EN = { home: "Home", query: "Query" };
 const NAV_ZH = { home: "首页", query: "查询" };
 
-// pageShell wraps body in the same table-based chrome (title bar, nav,
+// pageShell wraps body in the same flex-based chrome (title bar, sidebar,
 // footer) shared by home.tmpl/scans.tmpl/query.tmpl. extraHead is injected
 // verbatim into <head> (e.g. home.tmpl's <noscript> refresh meta tag).
 // lang defaults to "en" (NAV_EN); pass "zh" for report_confirm's Chinese
@@ -106,35 +106,26 @@ ${opts.extraHead ?? ""}
 <link rel="stylesheet" href="/static/gwsdb.css">
 </head>
 <body bgcolor="#FFFFFF" text="#000000" link="#0000EE" vlink="#551A8B">
-<center>
-<table border="0" cellpadding="4" cellspacing="0" class="gwsdb-wrap">
-<tr bgcolor="#000080">
-<td><font color="#FFFFFF" face="Arial,Helvetica,sans-serif" size="+1"><b>GWS Database</b></font></td>
-</tr>
-<tr bgcolor="#DDDDDD">
-<td>
-<font face="Arial,Helvetica,sans-serif" size="-1">
-<a href="/">${nav.home}</a> |
-<a href="/query">${nav.query}</a>
-</font>
-</td>
-</tr>
-<tr>
-<td>
+<div class="gwsdb-wrap">
+<header class="gwsdb-title"><b>GWS Database</b></header>
+<div class="gwsdb-main">
+<nav class="gwsdb-sidebar" aria-label="Quick Links">
+<div class="gwsdb-menu-header">Quick Links</div>
+<ul>
+<li><a href="/">${nav.home}</a></li>
+<li><a href="/query">${nav.query}</a></li>
+</ul>
+</nav>
+<main class="gwsdb-content">
 <font face="Arial,Helvetica,sans-serif" size="-1">
 ${opts.body}
 </font>
-</td>
-</tr>
-<tr bgcolor="#DDDDDD">
-<td align="center">
-<font face="Arial,Helvetica,sans-serif" size="-2" color="#666666">
+</main>
+</div>
+<footer class="gwsdb-footer">
 ${footerHTML(opts.build)}
-</font>
-</td>
-</tr>
-</table>
-</center>
+</footer>
+</div>
 </body>
 </html>
 `;

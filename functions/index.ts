@@ -22,14 +22,12 @@ const DEFAULT_HOME_DESCRIPTION = "Live-updated list of known Google Web Server (
 
 const sortColumns: Record<string, { dbKey: string; label: string; defaultDesc: boolean }> = {
 	ip: { dbKey: "ip", label: "IP Address", defaultDesc: false },
-	ptr: { dbKey: "ptr", label: "PTR", defaultDesc: false },
-	country: { dbKey: "country", label: "Country", defaultDesc: false },
-	status: { dbKey: "status", label: "Status", defaultDesc: true },
+	ptr: { dbKey: "ptr", label: "PTR / Location", defaultDesc: false },
 	firstSeen: { dbKey: "first_seen", label: "First Seen", defaultDesc: true },
 	lastSeen: { dbKey: "last_seen", label: "Last Reachable", defaultDesc: true },
 	rtt: { dbKey: "rtt", label: "Last RTT", defaultDesc: true },
 };
-const sortColumnOrder: (keyof typeof sortColumns)[] = ["ip", "ptr", "country", "status", "firstSeen", "lastSeen", "rtt"];
+const sortColumnOrder: (keyof typeof sortColumns)[] = ["ip", "ptr", "firstSeen", "lastSeen", "rtt"];
 
 // withParams clones url with the given query params set (nojs=1 always
 // forced on, so a no-JS reader's sort/filter clicks stay on the
@@ -49,7 +47,7 @@ function withParams(url: URL, overrides: Record<string, string | null>): string 
 function statusHTML(status: string): string {
 	if (status === "Reachable") return `<font color="#008000" title="Reachable" aria-label="Reachable">&#x2713;</font>`;
 	if (status === "Unreachable") return `<font color="#CC0000" title="Unreachable" aria-label="Unreachable">&#x2717;</font>`;
-	return "-";
+	return "";
 }
 
 function ptrCellHTML(ptrList: string[]): string {
@@ -61,10 +59,11 @@ function ptrCellHTML(ptrList: string[]): string {
 }
 
 function countryCellHTML(row: IPRow): string {
+	if (!row.country) return "";
 	const img = row.countryCode
 		? `<img src="/static/flags/${encodeURIComponent(row.countryCode)}.gif" alt="${escapeHTML(row.countryCode)}" title="${escapeHTML(row.country)}" height="11"> `
 		: "";
-	return `${img}${escapeHTML(row.country) || "-"}`;
+	return `${img}${escapeHTML(row.country)}`;
 }
 
 // familyFilterHTML renders the "All | IPv4 only | IPv6 only" links above the
@@ -107,11 +106,9 @@ function renderFullTable(
 ): string {
 	const rows = ips
 		.map(
-			(row) => `<tr>
-<td><tt><a href="/query?ip=${encodeURIComponent(row.ip)}">${escapeHTML(row.ip)}</a></tt></td>
-<td>${ptrCellHTML(row.ptrList)}</td>
-<td>${countryCellHTML(row)}</td>
-<td>${statusHTML(row.status)}</td>
+			(row) => `<tr${row.status === "Unreachable" ? ` class="gwsdb-unreachable"` : ""}>
+<td>${row.status === "Reachable" || row.status === "Unreachable" ? `<span class="gwsdb-row-status">${statusHTML(row.status)}</span>` : ""}<tt><a href="/query?ip=${encodeURIComponent(row.ip)}">${escapeHTML(row.ip)}</a></tt></td>
+<td><span class="gwsdb-row-country">${countryCellHTML(row)}</span>${ptrCellHTML(row.ptrList)}</td>
 <td>${escapeHTML(row.firstSeen)}</td>
 <td>${escapeHTML(row.lastSeen)}</td>
 <td>${row.lastRttMs ? `${row.lastRttMs} ms` : "-"}</td>
@@ -163,23 +160,23 @@ function jsShellBody(buildRevision: string): string {
 <input type="text" id="searchInput" placeholder="Search IP, PTR or country" size="30">
 <input type="button" id="clearButton" value="Clear">
 </span>
-<span class="gwsdb-filter-group">Family:
-<label><input type="radio" name="family" value="4" checked> IPv4</label>
-<label><input type="radio" name="family" value="6"> IPv6</label>
-</span>
 <span class="gwsdb-filter-group">Status:
 <label><input type="radio" name="status" value="all"> All</label>
 <label><input type="radio" name="status" value="up" checked> Reachable only</label>
 </span>
 </p>
 
-<div class="gwsdb-scroll gwsdb-hidden" id="ipTableWrap">
+<div class="gwsdb-family-tabs" role="group" aria-label="IP address family">
+<input type="radio" id="family4" name="family" value="4" checked>
+<label for="family4">IPv4</label>
+<input type="radio" id="family6" name="family" value="6">
+<label for="family6">IPv6</label>
+</div>
+<div class="gwsdb-scroll gwsdb-tab-panel gwsdb-hidden" id="ipTableWrap">
 <table class="gwsdb-data" id="ipTable">
 <thead><tr>
 <th scope="col"><a href="#" data-sort="ip" data-sort-desc="0">IP Address<span class="arrow" data-col="ip">&nbsp;&nbsp;&nbsp;</span></a></th>
-<th scope="col"><a href="#" data-sort="ptr" data-sort-desc="0">PTR<span class="arrow" data-col="ptr">&nbsp;&nbsp;&nbsp;</span></a></th>
-<th scope="col"><a href="#" data-sort="country" data-sort-desc="0">Country<span class="arrow" data-col="country">&nbsp;&nbsp;&nbsp;</span></a></th>
-<th scope="col"><a href="#" data-sort="status" data-sort-desc="1">Status<span class="arrow" data-col="status">&nbsp;&nbsp;&nbsp;</span></a></th>
+<th scope="col"><a href="#" data-sort="ptr" data-sort-desc="0">PTR / Location<span class="arrow" data-col="ptr">&nbsp;&nbsp;&nbsp;</span></a></th>
 <th scope="col"><a href="#" data-sort="firstSeen" data-sort-desc="1">First Seen<span class="arrow" data-col="firstSeen">&nbsp;&nbsp;&nbsp;</span></a></th>
 <th scope="col"><a href="#" data-sort="lastSeen" data-sort-desc="1">Last Reachable<span class="arrow" data-col="lastSeen">&nbsp;&nbsp;&nbsp;</span></a></th>
 <th scope="col"><a href="#" data-sort="rtt" data-sort-desc="1">Last RTT<span class="arrow" data-col="rtt">&nbsp;&nbsp;&nbsp;</span></a></th>
@@ -188,17 +185,10 @@ function jsShellBody(buildRevision: string): string {
 </tbody>
 </table>
 </div>
-<p align="center" id="pagerWrap" class="gwsdb-hidden">
-<input type="button" id="prevButton" value="&lt; Prev">
+<p align="center" id="pagerWrap" class="gwsdb-pager gwsdb-hidden">
+<button type="button" id="prevButton" class="gwsdb-pager-arrow">&lt;-</button>
 <span id="pageInfo"></span>
-<input type="button" id="nextButton" value="Next &gt;">
-&nbsp;&nbsp;
-<select id="pageSizeInput">
-<option value="100">100 / page</option>
-<option value="250">250 / page</option>
-<option value="500">500 / page</option>
-<option value="all">All</option>
-</select>
+<button type="button" id="nextButton" class="gwsdb-pager-arrow">-&gt;</button>
 </p>
 <script type="module" src="/static/home.js${buildRevision ? `?v=${buildRevision}` : ""}"></script>
 

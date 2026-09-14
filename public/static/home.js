@@ -26,9 +26,9 @@ import { decodeBest, countryCode } from './geo.js';
 	var META_STORE = 'meta';
 	var META_KEY = 'snapshot';
 	var OLD_CACHE_KEY = 'gwsdb_pool_v1';
+	var PAGE_SIZE = 100;
 
 	var sortState = {col: null, desc: false};
-	var statusRank = {"Reachable": 2, "Unreachable": 1, "-": 0};
 	var page = 1;
 	// allRows is the full data set from /api/pool, kept in memory but never
 	// attached to the DOM. matched is the subset passing the current filter,
@@ -41,23 +41,17 @@ import { decodeBest, countryCode } from './geo.js';
 	var allRows = [];
 	var matched = [];
 
-	function pageSize() {
-		var v = document.getElementById('pageSizeInput').value;
-		return v === 'all' ? Infinity : parseInt(v, 10);
-	}
-
 	// renderPage rebuilds the current page's slice of matched from data
 	// (not DOM) — the old approach built all 7600 rows up front and hid
 	// 7500, wasting ~1.5s on first paint. This virtualizes by clearing the
 	// tbody and rebuilding only the visible page's rows each time, which
 	// is ~10ms for 100 rows vs ~1.5s for the full set.
 	function renderPage() {
-		var size = pageSize();
-		var totalPages = size === Infinity ? 1 : Math.max(1, Math.ceil(matched.length / size));
+		var totalPages = Math.max(1, Math.ceil(matched.length / PAGE_SIZE));
 		if (page > totalPages) page = totalPages;
 		if (page < 1) page = 1;
-		var start = size === Infinity ? 0 : (page - 1) * size;
-		var end = size === Infinity ? matched.length : start + size;
+		var start = (page - 1) * PAGE_SIZE;
+		var end = Math.min(start + PAGE_SIZE, matched.length);
 
 		var tbody = document.getElementById('ipTableBody');
 		tbody.textContent = '';
@@ -66,7 +60,7 @@ import { decodeBest, countryCode } from './geo.js';
 		}
 
 		document.getElementById('visibleCount').textContent = matched.length;
-		document.getElementById('pageInfo').textContent = 'Page ' + page + ' of ' + totalPages;
+		document.getElementById('pageInfo').textContent = 'Showing ' + (matched.length ? start + 1 : 0) + '-' + end + ' of ' + matched.length;
 		document.getElementById('prevButton').disabled = page <= 1;
 		document.getElementById('nextButton').disabled = page >= totalPages;
 	}
@@ -115,20 +109,12 @@ import { decodeBest, countryCode } from './geo.js';
 				bv = b.lastRttMs || 0;
 				return desc ? bv - av : av - bv;
 			}
-			if (col === 'status') {
-				av = statusRank[a.status] || 0;
-				bv = statusRank[b.status] || 0;
-				return desc ? bv - av : av - bv;
-			}
 			if (col === 'ip') {
 				return desc ? (a.ip < b.ip ? 1 : -1) : (a.ip < b.ip ? -1 : 1);
 			}
 			if (col === 'ptr') {
 				av = (a.ptrList || []).join(' ');
 				bv = (b.ptrList || []).join(' ');
-			} else if (col === 'country') {
-				av = a.country || '';
-				bv = b.country || '';
 			} else {
 				av = (a[col] || '').toString();
 				bv = (b[col] || '').toString();
@@ -159,10 +145,6 @@ import { decodeBest, countryCode } from './geo.js';
 		});
 		var filters = document.querySelectorAll('input[name="family"], input[name="status"]');
 		for (var i = 0; i < filters.length; i++) filters[i].addEventListener('change', filter);
-		document.getElementById('pageSizeInput').addEventListener('change', function () {
-			page = 1;
-			renderPage();
-		});
 		document.getElementById('prevButton').addEventListener('click', function () {
 			page--;
 			renderPage();
@@ -214,7 +196,7 @@ import { decodeBest, countryCode } from './geo.js';
 			td.appendChild(img);
 			td.appendChild(document.createTextNode(' '));
 		}
-		td.appendChild(document.createTextNode(country || '-'));
+		if (country) td.appendChild(document.createTextNode(country));
 	}
 
 	// scheduleRefilter coalesces bursts of resolveClientPTR updates (a fresh
@@ -256,6 +238,7 @@ import { decodeBest, countryCode } from './geo.js';
 		var code = ip.countryCode || '';
 
 		var tr = document.createElement('tr');
+		if (ip.status === 'Unreachable') tr.className = 'gwsdb-unreachable';
 
 		var ipTd = document.createElement('td');
 		var ipTt = document.createElement('tt');
@@ -263,16 +246,27 @@ import { decodeBest, countryCode } from './geo.js';
 		ipA.href = '/query?ip=' + encodeURIComponent(ip.ip);
 		ipA.textContent = ip.ip;
 		ipTt.appendChild(ipA);
+		if (ip.status === 'Reachable' || ip.status === 'Unreachable') {
+			var font = document.createElement('font');
+			font.className = 'gwsdb-row-status';
+			font.color = ip.status === 'Reachable' ? '#008000' : '#CC0000';
+			font.title = ip.status;
+			font.setAttribute('aria-label', ip.status);
+			font.textContent = ip.status === 'Reachable' ? '✓' : '✗';
+			ipTd.appendChild(font);
+		}
 		ipTd.appendChild(ipTt);
 		tr.appendChild(ipTd);
 
 		var ptrTd = document.createElement('td');
-		fillPtrCell(ptrTd, ip.ptrList);
+		var ptrText = document.createElement('span');
+		var countrySpan = document.createElement('span');
+		countrySpan.className = 'gwsdb-row-country';
+		fillCountryCell(countrySpan, country, code);
+		fillPtrCell(ptrText, ip.ptrList);
+		ptrTd.appendChild(countrySpan);
+		ptrTd.appendChild(ptrText);
 		tr.appendChild(ptrTd);
-
-		var countryTd = document.createElement('td');
-		fillCountryCell(countryTd, country, code);
-		tr.appendChild(countryTd);
 
 		// Client-side PTR resolution disabled -- see the import comment above.
 		// Deferred, not fired here: a fresh ingest can leave hundreds of rows
@@ -284,19 +278,6 @@ import { decodeBest, countryCode } from './geo.js';
 		// 	tr._ptrTd = ptrTd;
 		// 	tr._countryTd = countryTd;
 		// }
-
-		var statusTd = document.createElement('td');
-		if (ip.status === 'Reachable' || ip.status === 'Unreachable') {
-			var font = document.createElement('font');
-			font.color = ip.status === 'Reachable' ? '#008000' : '#CC0000';
-			font.title = ip.status;
-			font.setAttribute('aria-label', ip.status);
-			font.textContent = ip.status === 'Reachable' ? '✓' : '✗';
-			statusTd.appendChild(font);
-		} else {
-			statusTd.textContent = '-';
-		}
-		tr.appendChild(statusTd);
 
 		var firstTd = document.createElement('td');
 		firstTd.textContent = ip.firstSeen;
