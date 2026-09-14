@@ -89,11 +89,11 @@ function sortHeaderHTML(url: URL, activeSort: string | undefined, activeDesc: bo
 			const isActive = activeSort === param;
 			const nextDesc = isActive ? !activeDesc : col.defaultDesc;
 			const href = withParams(url, { sort: param, desc: nextDesc ? "1" : "0" });
-			const arrow = isActive ? (activeDesc ? " ▼" : " ▲") : "";
-			return `<td><b><a href="${escapeHTML(href)}">${escapeHTML(col.label)}</a>${arrow}</b></td>`;
+			const arrow = isActive ? (activeDesc ? "&nbsp;&nbsp;&#8595;" : "&nbsp;&nbsp;&#8593;") : "&nbsp;&nbsp;&nbsp;";
+			return `<th scope="col"><a href="${escapeHTML(href)}">${escapeHTML(col.label)}<span class="arrow">${arrow}</span></a></th>`;
 		})
 		.join("\n");
-	return `<tr bgcolor="#EEEEEE">\n${cells}\n</tr>`;
+	return `<thead><tr>\n${cells}\n</tr></thead>`;
 }
 
 function renderFullTable(
@@ -121,9 +121,11 @@ function renderFullTable(
 
 	const table = ips.length
 		? `<div class="gwsdb-scroll">
-<table border="1" cellpadding="4" cellspacing="0" width="100%">
+<table class="gwsdb-data">
 ${sortHeaderHTML(url, activeSort, activeDesc)}
+<tbody>
 ${rows}
+</tbody>
 </table>
 </div>`
 		: `<p><i>No data yet. Please run a scan and import the results first.</i></p>`;
@@ -172,16 +174,16 @@ function jsShellBody(buildRevision: string): string {
 </p>
 
 <div class="gwsdb-scroll gwsdb-hidden" id="ipTableWrap">
-<table border="1" cellpadding="4" cellspacing="0" width="100%" id="ipTable">
-<tr bgcolor="#EEEEEE">
-<td><b><a href="#" data-sort="ip" data-sort-desc="0">IP Address</a> <span class="arrow" data-col="ip"></span></b></td>
-<td><b><a href="#" data-sort="ptr" data-sort-desc="0">PTR</a> <span class="arrow" data-col="ptr"></span></b></td>
-<td><b><a href="#" data-sort="country" data-sort-desc="0">Country</a> <span class="arrow" data-col="country"></span></b></td>
-<td><b><a href="#" data-sort="status" data-sort-desc="1">Status</a> <span class="arrow" data-col="status"></span></b></td>
-<td><b><a href="#" data-sort="firstSeen" data-sort-desc="1">First Seen</a> <span class="arrow" data-col="firstSeen"></span></b></td>
-<td><b><a href="#" data-sort="lastSeen" data-sort-desc="1">Last Reachable</a> <span class="arrow" data-col="lastSeen"></span></b></td>
-<td><b><a href="#" data-sort="rtt" data-sort-desc="1">Last RTT</a> <span class="arrow" data-col="rtt"></span></b></td>
-</tr>
+<table class="gwsdb-data" id="ipTable">
+<thead><tr>
+<th scope="col"><a href="#" data-sort="ip" data-sort-desc="0">IP Address<span class="arrow" data-col="ip">&nbsp;&nbsp;&nbsp;</span></a></th>
+<th scope="col"><a href="#" data-sort="ptr" data-sort-desc="0">PTR<span class="arrow" data-col="ptr">&nbsp;&nbsp;&nbsp;</span></a></th>
+<th scope="col"><a href="#" data-sort="country" data-sort-desc="0">Country<span class="arrow" data-col="country">&nbsp;&nbsp;&nbsp;</span></a></th>
+<th scope="col"><a href="#" data-sort="status" data-sort-desc="1">Status<span class="arrow" data-col="status">&nbsp;&nbsp;&nbsp;</span></a></th>
+<th scope="col"><a href="#" data-sort="firstSeen" data-sort-desc="1">First Seen<span class="arrow" data-col="firstSeen">&nbsp;&nbsp;&nbsp;</span></a></th>
+<th scope="col"><a href="#" data-sort="lastSeen" data-sort-desc="1">Last Reachable<span class="arrow" data-col="lastSeen">&nbsp;&nbsp;&nbsp;</span></a></th>
+<th scope="col"><a href="#" data-sort="rtt" data-sort-desc="1">Last RTT<span class="arrow" data-col="rtt">&nbsp;&nbsp;&nbsp;</span></a></th>
+</tr></thead>
 <tbody id="ipTableBody">
 </tbody>
 </table>

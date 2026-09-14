@@ -142,7 +142,9 @@ import { decodeBest, countryCode } from './geo.js';
 
 		var arrows = document.getElementsByClassName('arrow');
 		for (var i = 0; i < arrows.length; i++) {
-			arrows[i].textContent = arrows[i].dataset.col === col ? (desc ? '▼' : '▲') : '';
+			arrows[i].textContent = arrows[i].dataset.col === col
+				? '\u00a0\u00a0' + (desc ? '\u2193' : '\u2191')
+				: '\u00a0\u00a0\u00a0';
 		}
 
 		renderPage();
