@@ -159,16 +159,22 @@ function jsShellBody(buildRevision: string): string {
 <p>
 <input type="text" id="searchInput" placeholder="Search IP, PTR or country" size="30">
 <input type="button" id="clearButton" value="Clear">
-&nbsp;&nbsp;
-<select id="familyInput">
-<option value="4">IPv4</option>
-<option value="6">IPv6</option>
-</select>
-&nbsp;&nbsp;
-<select id="statusInput">
-<option value="up">Reachable only</option>
-<option value="all">All (including history)</option>
-</select>
+<span class="gwsdb-filter">
+<span>IPv4</span>
+<label class="gwsdb-switch">
+<input type="checkbox" id="familyInput" role="switch" aria-label="Use IPv6 instead of IPv4">
+<span class="gwsdb-slider" aria-hidden="true"></span>
+</label>
+<span>IPv6</span>
+</span>
+<span class="gwsdb-filter">
+<span>All</span>
+<label class="gwsdb-switch">
+<input type="checkbox" id="statusInput" role="switch" aria-label="Show reachable IPs only" checked>
+<span class="gwsdb-slider" aria-hidden="true"></span>
+</label>
+<span>Reachable only</span>
+</span>
 </p>
 
 <div class="gwsdb-scroll gwsdb-hidden" id="ipTableWrap">

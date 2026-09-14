@@ -78,16 +78,16 @@ import { decodeBest, countryCode } from './geo.js';
 	// exists in the DOM at any time).
 	function filter() {
 		var q = document.getElementById('searchInput').value.trim().toLowerCase();
-		var family = document.getElementById('familyInput').value;
-		var status = document.getElementById('statusInput').value;
+		var showIPv6 = document.getElementById('familyInput').checked;
+		var reachableOnly = document.getElementById('statusInput').checked;
 		var familyTotal = 0;
 		matched = [];
 		for (var i = 0; i < allRows.length; i++) {
 			var r = allRows[i];
 			var isIPv6 = r.ip.indexOf(':') !== -1;
-			var familyMatch = family === '6' ? isIPv6 : !isIPv6;
+			var familyMatch = showIPv6 === isIPv6;
 			if (familyMatch) familyTotal++;
-			var statusMatch = status === 'all' || r.status === 'Reachable';
+			var statusMatch = !reachableOnly || r.status === 'Reachable';
 			var hay = (r.ip + ' ' + (r.ptrList || []).join(' ') + ' ' + r.country).toLowerCase();
 			if (familyMatch && statusMatch && hay.indexOf(q) !== -1) {
 				matched.push(r);
