@@ -72,7 +72,6 @@ import { decodeBest, countryCode } from './geo.js';
 	function filter() {
 		var q = document.getElementById('searchInput').value.trim().toLowerCase();
 		var family = document.querySelector('input[name="family"]:checked').value;
-		var status = document.querySelector('input[name="status"]:checked').value;
 		var familyTotal = 0;
 		matched = [];
 		for (var i = 0; i < allRows.length; i++) {
@@ -80,9 +79,8 @@ import { decodeBest, countryCode } from './geo.js';
 			var isIPv6 = r.ip.indexOf(':') !== -1;
 			var familyMatch = family === '6' ? isIPv6 : !isIPv6;
 			if (familyMatch) familyTotal++;
-			var statusMatch = status === 'all' || r.status === 'Reachable';
 			var hay = (r.ip + ' ' + (r.ptrList || []).join(' ') + ' ' + r.country).toLowerCase();
-			if (familyMatch && statusMatch && hay.indexOf(q) !== -1) {
+			if (familyMatch && hay.indexOf(q) !== -1) {
 				matched.push(r);
 			}
 		}
@@ -145,7 +143,7 @@ import { decodeBest, countryCode } from './geo.js';
 			search.value = '';
 			filter();
 		});
-		var filters = document.querySelectorAll('input[name="family"], input[name="status"]');
+		var filters = document.querySelectorAll('input[name="family"]');
 		for (var i = 0; i < filters.length; i++) filters[i].addEventListener('change', filter);
 		document.getElementById('prevButton').addEventListener('click', function () {
 			page--;

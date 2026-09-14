@@ -161,10 +161,6 @@ function jsShellBody(buildRevision: string): string {
 <input type="text" id="searchInput" placeholder="Search IP, PTR or country" size="30">
 <input type="button" id="clearButton" value="Clear">
 </span>
-<span class="gwsdb-filter-group">Status:
-<label><input type="radio" name="status" value="all"> All</label>
-<label><input type="radio" name="status" value="up" checked> Reachable only</label>
-</span>
 </p>
 
 <div class="gwsdb-family-tabs" role="group" aria-label="IP address family">
