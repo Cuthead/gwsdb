@@ -126,7 +126,7 @@ function renderFullTable(
 
 	const table = ips.length
 		? `<div class="gwsdb-scroll">
-<table class="gwsdb-data">
+<table class="gwsdb-data gwsdb-pool">
 ${sortHeaderHTML(url, activeSort, activeDesc)}
 <tbody>
 ${rows}
@@ -177,7 +177,7 @@ function jsShellBody(buildRevision: string): string {
 <label for="family6">IPv6</label>
 </div>
 <div class="gwsdb-scroll gwsdb-tab-panel gwsdb-hidden" id="ipTableWrap">
-<table class="gwsdb-data" id="ipTable">
+<table class="gwsdb-data gwsdb-pool" id="ipTable">
 <thead><tr>
 <th scope="col"><a href="#" data-sort="ip" data-sort-desc="0">IP Address<span class="arrow" data-col="ip">&nbsp;&nbsp;&nbsp;</span></a></th>
 <th scope="col"><a href="#" data-sort="ptr" data-sort-desc="0">PTR<span class="arrow" data-col="ptr">&nbsp;&nbsp;&nbsp;</span></a></th>

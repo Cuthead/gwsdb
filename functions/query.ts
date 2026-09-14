@@ -221,11 +221,15 @@ function renderHostnameBranch(data: QueryData): string {
 </tr>`;
 
 	return `<div class="gwsdb-scroll">
-<table border="1" cellpadding="6" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="3"><b>Query Result: ${escapeHTML(data.query)}</b></td></tr>
-<tr bgcolor="#EEEEEE"><td><b>Hostname</b></td><td><b>A (IPv4)</b></td><td><b>AAAA (IPv6)</b></td></tr>
+<table class="gwsdb-data">
+<thead>
+<tr><th colspan="3">Query Result: ${escapeHTML(data.query)}</th></tr>
+<tr><th scope="col">Hostname</th><th scope="col">A (IPv4)</th><th scope="col">AAAA (IPv6)</th></tr>
+</thead>
+<tbody>
 ${rows}
 ${locationRows}
+</tbody>
 </table>
 </div>`;
 }
@@ -254,7 +258,7 @@ function renderIPBranch(data: QueryData, buildRevision: string): string {
 			: "";
 
 	const overview = data.hasHistory
-		? `<tr bgcolor="#EEEEEE"><td colspan="2"><b>Reachability Overview</b></td></tr>
+		? `<tr><th colspan="2">Reachability Overview</th></tr>
 <tr><td>Current Status</td><td>${statusHTML(data.status, "Reachable", "Unreachable")}</td></tr>
 <tr><td>First Seen</td><td>${escapeHTML(data.firstSeen)}</td></tr>
 <tr><td>Last Reachable</td><td>${escapeHTML(data.lastSeen)}</td></tr>
@@ -271,22 +275,18 @@ function renderIPBranch(data: QueryData, buildRevision: string): string {
 <noscript><p><i>JavaScript is required to load check history.</i></p></noscript>
 <p id="historyStatus">Loading check history&hellip;</p>
 <div class="gwsdb-scroll gwsdb-hidden" id="historyTableWrap">
-<table border="1" cellpadding="4" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="4"><b>Check History</b> (<span id="historyCount">0</span> checks, newest first)</td></tr>
-<tr bgcolor="#EEEEEE"><td><b>Time</b></td><td><b>Result</b></td><td><b>Reason</b></td><td><b>RTT</b></td></tr>
+<table class="gwsdb-data" id="historyTable">
+<thead>
+<tr><th colspan="4">Check History (<span id="historyCount">0</span> checks, newest first)</th></tr>
+<tr><th scope="col">Time</th><th scope="col">Result</th><th scope="col">Reason</th><th scope="col">RTT</th></tr>
+</thead>
 <tbody id="historyTableBody"></tbody>
 </table>
 </div>
-<p align="center" id="historyPager" class="gwsdb-hidden">
-<input type="button" id="historyPrev" value="&lt; Prev">
+<p align="center" id="historyPager" class="gwsdb-pager gwsdb-hidden">
+<button type="button" id="historyPrev" class="gwsdb-pager-arrow">&lt;-</button>
 <span id="historyPageInfo"></span>
-<input type="button" id="historyNext" value="Next &gt;">
-&nbsp;&nbsp;
-<select id="historyPageSize">
-<option value="30">30 / page</option>
-<option value="100">100 / page</option>
-<option value="all">All</option>
-</select>
+<button type="button" id="historyNext" class="gwsdb-pager-arrow">-&gt;</button>
 </p>
 </div>`
 		: "";
@@ -296,27 +296,31 @@ function renderIPBranch(data: QueryData, buildRevision: string): string {
 		: `<font color="#666666">仅中国大陆IP可即时检测</font>`;
 
 	return `<div class="gwsdb-scroll">
-<table border="1" cellpadding="6" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="2"><b>Query Result: ${escapeHTML(data.query)}</b></td></tr>
+<table class="gwsdb-data">
+<thead><tr><th colspan="2">Query Result: ${escapeHTML(data.query)}</th></tr></thead>
+<tbody>
 <tr>
 <td width="30%">PTR Record</td>
 <td>${ptrCell}</td>
 </tr>
 ${locationRows}
 ${overview}
+</tbody>
 </table>
 </div>
 ${checksTable}
 
 <p></p>
 <div class="gwsdb-scroll">
-<table border="1" cellpadding="6" cellspacing="0" width="100%">
-<tr bgcolor="#EEEEEE"><td colspan="2"><b>即时检测</b></td></tr>
+<table class="gwsdb-data">
+<thead><tr><th>即时检测</th></tr></thead>
+<tbody>
 <tr>
-<td colspan="2">
+<td>
 ${probeCell}
 </td>
 </tr>
+</tbody>
 </table>
 </div>
 <script src="/static/query.js${buildRevision ? `?v=${buildRevision}` : ""}"></script>`;

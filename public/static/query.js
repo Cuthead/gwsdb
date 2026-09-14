@@ -50,6 +50,7 @@
 	var ip = section.dataset.ip;
 	var checks = [];
 	var page = 1;
+	var PAGE_SIZE = 100;
 	var db = null;
 	var cache = null;
 
@@ -89,13 +90,9 @@
 			pad(date.getUTCHours()) + ":" + pad(date.getUTCMinutes()) + ":" + pad(date.getUTCSeconds());
 	}
 
-	function pageSize() {
-		var value = document.getElementById("historyPageSize").value;
-		return value === "all" ? Infinity : parseInt(value, 10);
-	}
-
 	function buildRow(check) {
 		var tr = document.createElement("tr");
+		if (!check.ok) tr.className = "gwsdb-unreachable";
 
 		var time = document.createElement("td");
 		time.textContent = formatTime(check.checkedAt);
@@ -104,7 +101,9 @@
 		var result = document.createElement("td");
 		var resultFont = document.createElement("font");
 		resultFont.color = check.ok ? "#008000" : "#CC0000";
-		resultFont.textContent = (check.ok ? "✓ " : "✗ ") + (check.ok ? "Reachable" : "Unreachable");
+		resultFont.title = check.ok ? "Reachable" : "Unreachable";
+		resultFont.setAttribute("aria-label", resultFont.title);
+		resultFont.textContent = check.ok ? "✓" : "✗";
 		result.appendChild(resultFont);
 		tr.appendChild(result);
 
@@ -139,18 +138,17 @@
 			return;
 		}
 
-		var size = pageSize();
-		var totalPages = size === Infinity ? 1 : Math.ceil(checks.length / size);
+		var totalPages = Math.max(1, Math.ceil(checks.length / PAGE_SIZE));
 		if (page > totalPages) page = totalPages;
 		if (page < 1) page = 1;
-		var start = size === Infinity ? 0 : (page - 1) * size;
-		var end = size === Infinity ? checks.length : Math.min(checks.length, start + size);
+		var start = (page - 1) * PAGE_SIZE;
+		var end = Math.min(checks.length, start + PAGE_SIZE);
 		var tbody = document.getElementById("historyTableBody");
 		tbody.textContent = "";
 		for (var i = start; i < end; i++) tbody.appendChild(buildRow(checks[i]));
 
 		document.getElementById("historyCount").textContent = checks.length;
-		document.getElementById("historyPageInfo").textContent = "Page " + page + " of " + totalPages;
+		document.getElementById("historyPageInfo").textContent = "Showing " + (start + 1) + "-" + end + " of " + checks.length;
 		document.getElementById("historyPrev").disabled = page <= 1;
 		document.getElementById("historyNext").disabled = page >= totalPages;
 		status.classList.add("gwsdb-hidden");
@@ -237,7 +235,6 @@
 
 	document.getElementById("historyPrev").addEventListener("click", function () { page--; render(); });
 	document.getElementById("historyNext").addEventListener("click", function () { page++; render(); });
-	document.getElementById("historyPageSize").addEventListener("change", function () { page = 1; render(); });
 	document.addEventListener("gwsdb:history-refresh", function () { sync().catch(showLoadError); });
 
 	openCache().then(function (database) {
