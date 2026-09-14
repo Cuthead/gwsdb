@@ -26,7 +26,7 @@ import { decodeBest, countryCode } from './geo.js';
 	var META_STORE = 'meta';
 	var META_KEY = 'snapshot';
 	var OLD_CACHE_KEY = 'gwsdb_pool_v1';
-	var PAGE_SIZE = 100;
+	var PAGE_SIZE = 1000;
 
 	var sortState = {col: null, desc: false};
 	var page = 1;
@@ -35,8 +35,8 @@ import { decodeBest, countryCode } from './geo.js';
 	// derived from allRows. renderPage builds only the current page's slice
 	// of matched into the DOM and clears it on every page/sort/filter change
 	// (virtualization): with ~7600 IPs, building all rows once on load took
-	// ~1.5s and dominated time-to-table; building 100 per page is ~10ms and
-	// keeps first paint fast. The matched array stays in display order —
+	// ~1.5s and dominated time-to-table; paging at 1000 rows follows HE's
+	// prefix table while avoiding a full-list render. Matched stays in display order —
 	// sort/filter mutate it and call renderPage.
 	var allRows = [];
 	var matched = [];
@@ -44,8 +44,7 @@ import { decodeBest, countryCode } from './geo.js';
 	// renderPage rebuilds the current page's slice of matched from data
 	// (not DOM) — the old approach built all 7600 rows up front and hid
 	// 7500, wasting ~1.5s on first paint. This virtualizes by clearing the
-	// tbody and rebuilding only the visible page's rows each time, which
-	// is ~10ms for 100 rows vs ~1.5s for the full set.
+	// tbody and rebuilding only the visible page's rows each time.
 	function renderPage() {
 		var totalPages = Math.max(1, Math.ceil(matched.length / PAGE_SIZE));
 		if (page > totalPages) page = totalPages;
@@ -115,6 +114,9 @@ import { decodeBest, countryCode } from './geo.js';
 			if (col === 'ptr') {
 				av = (a.ptrList || []).join(' ');
 				bv = (b.ptrList || []).join(' ');
+			} else if (col === 'country') {
+				av = a.country || '';
+				bv = b.country || '';
 			} else {
 				av = (a[col] || '').toString();
 				bv = (b[col] || '').toString();
@@ -196,7 +198,7 @@ import { decodeBest, countryCode } from './geo.js';
 			td.appendChild(img);
 			td.appendChild(document.createTextNode(' '));
 		}
-		if (country) td.appendChild(document.createTextNode(country));
+		td.appendChild(document.createTextNode(country || '-'));
 	}
 
 	// scheduleRefilter coalesces bursts of resolveClientPTR updates (a fresh
@@ -259,14 +261,12 @@ import { decodeBest, countryCode } from './geo.js';
 		tr.appendChild(ipTd);
 
 		var ptrTd = document.createElement('td');
-		var ptrText = document.createElement('span');
-		var countrySpan = document.createElement('span');
-		countrySpan.className = 'gwsdb-row-country';
-		fillCountryCell(countrySpan, country, code);
-		fillPtrCell(ptrText, ip.ptrList);
-		ptrTd.appendChild(countrySpan);
-		ptrTd.appendChild(ptrText);
+		fillPtrCell(ptrTd, ip.ptrList);
 		tr.appendChild(ptrTd);
+
+		var countryTd = document.createElement('td');
+		fillCountryCell(countryTd, country, code);
+		tr.appendChild(countryTd);
 
 		// Client-side PTR resolution disabled -- see the import comment above.
 		// Deferred, not fired here: a fresh ingest can leave hundreds of rows
