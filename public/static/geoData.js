@@ -492,6 +492,7 @@ export const airportCodes = {
 	"uos": { city: "Franklin County, TN", country: "United States" },
 
 	// Canada
+	"yul": { city: "Montreal", country: "Canada" },
 	"yyz": { city: "Toronto", country: "Canada" },
 
 	// Europe
