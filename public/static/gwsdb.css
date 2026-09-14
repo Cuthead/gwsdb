@@ -1,7 +1,11 @@
 body { margin: 0; }
 .gwsdb-wrap { width: 760px; max-width: 100%; }
 .gwsdb-hidden { display: none; }
+.gwsdb-search-filter, .gwsdb-filter-group { white-space: nowrap; }
+.gwsdb-filter-group { margin-left: 1em; }
 @media (max-width: 780px) {
-	input#searchInput { width: 60%; box-sizing: border-box; }
+	.gwsdb-search-filter { display: flex; width: 100%; }
+	input#searchInput { flex: 1; min-width: 0; box-sizing: border-box; }
+	.gwsdb-filter-group { display: block; margin: 0.5em 0 0; }
 	.gwsdb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
