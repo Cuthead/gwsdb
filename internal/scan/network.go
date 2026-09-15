@@ -13,9 +13,11 @@ import (
 // (gae_proxy/local/check_local_network.py). When the network is down,
 // probe workers sleep instead of burning through dial attempts that will
 // all fail — a GFW-induced outage shouldn't generate a flood of failure
-// checks or wasted probe work. Uses bing.com as the reachability target
-// (XX-Net's choice), which is reliably reachable from China when the
-// network is up and doesn't touch Google infrastructure.
+// checks or wasted probe work. Uses Google's China-side connectivity
+// check endpoint (connectivitycheck.gstatic.cn/generate_204 — the same
+// one Android devices in China hit) as the reachability target: served
+// from Google's China CDN, reliably reachable when the network is up,
+// and answers 204 with no body, so a HEAD is cheap.
 type networkMonitor struct {
 	ok   atomic.Bool
 	prev atomic.Bool
@@ -52,11 +54,12 @@ func (n *networkMonitor) Run(ctx context.Context, interval time.Duration) {
 // OK reports whether the last probe succeeded.
 func (n *networkMonitor) OK() bool { return n.ok.Load() }
 
-// checkReachable returns true if a HEAD request to bing.com completes
-// without transport error — any HTTP response (even 4xx/5xx) means the
-// network path is up; a transport error means it's down.
+// checkReachable returns true if a HEAD request to Google's China
+// connectivity-check endpoint completes without transport error — any
+// HTTP response (even 4xx/5xx) means the network path is up; a
+// transport error means it's down.
 func checkReachable(ctx context.Context, client *http.Client) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://www.bing.com/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "http://connectivitycheck.gstatic.cn/generate_204", nil)
 	if err != nil {
 		return false
 	}
