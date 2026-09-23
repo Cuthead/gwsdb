@@ -513,6 +513,7 @@ export const airportCodes = {
 	"lcy": { city: "London", country: "United Kingdom" },
 	"lhr": { city: "London", country: "United Kingdom" },
 	"lis": { city: "Lisbon", country: "Portugal" },
+	"lpp": { city: "Lappeenranta", "country": "Finland" },
 	"mad": { city: "Madrid", country: "Spain" },
 	"man": { city: "Manchester", country: "United Kingdom" },
 	"mil": { city: "Milan", country: "Italy" },
