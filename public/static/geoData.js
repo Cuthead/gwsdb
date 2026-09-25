@@ -471,6 +471,7 @@ export const airportCodes = {
 	"lax": { city: "Los Angeles, CA", country: "United States" },
 	"lga": { city: "New York, NY", country: "United States" },
 	"lhm": { city: "Council Bluffs, IA", country: "United States" },
+	"lnk": { city: "Lincoln, NE", country: "United States" },
 	"mci": { city: "Kansas City, MO", country: "United States" },
 	"mia": { city: "Miami, FL", country: "United States" },
 	"mrn": { city: "Morganton, NC", country: "United States"},
