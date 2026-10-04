@@ -490,6 +490,7 @@ export const airportCodes = {
 	"sjc": { city: "San Jose, CA", country: "United States" },
 	"slc": { city: "Salt Lake City, UT", country: "United States" },
 	"stl": { city: "St. Louis, MO", country: "United States" },
+	"tul": { city: "Tulsa, OK", country: "United States" },
 	"uos": { city: "Franklin County, TN", country: "United States" },
 
 	// Canada
