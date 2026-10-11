@@ -501,6 +501,7 @@ export const airportCodes = {
 	"ams": { city: "Amsterdam/Eemshaven", country: "Netherlands" },
 	"arn": { city: "Stockholm", country: "Sweden" },
 	"ber": { city: "Berlin", country: "Germany" },
+	"bru": { city: "Brussels", country: "Belgium" },
 	"bud": { city: "Budapest", country: "Hungary" },
 	"buh": { city: "Bucharest", country: "Romania" },
 	"cdg": { city: "Paris", country: "France" },
