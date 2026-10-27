@@ -450,8 +450,8 @@ export const regionalCodes = {
 // naming convention associates them with.
 export const airportCodes = {
 	// United States
-	"act": { city: "Waco, TX", county: "United States" },
-	"ama": { city: "Amarillo, TX", county: "United States" },
+	"act": { city: "Waco, TX", country: "United States" },
+	"ama": { city: "Amarillo, TX", country: "United States" },
 	"atl": { city: "Atlanta, GA", country: "United States" },
 	"auz": { city: "Aurora, IL", country: "United States" },
 	"bos": { city: "Boston, MA", country: "United States" },
@@ -492,7 +492,7 @@ export const airportCodes = {
 	"sjc": { city: "San Jose, CA", country: "United States" },
 	"slc": { city: "Salt Lake City, UT", country: "United States" },
 	"stl": { city: "St. Louis, MO", country: "United States" },
-	"swo": { city: "Stillwater, OK", county: "United States" },
+	"swo": { city: "Stillwater, OK", country: "United States" },
 	"tul": { city: "Tulsa, OK", country: "United States" },
 	"uos": { city: "Franklin County, TN", country: "United States" },
 
