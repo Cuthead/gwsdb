@@ -453,6 +453,7 @@ export const airportCodes = {
 	"act": { city: "Waco, TX", country: "United States" },
 	"ama": { city: "Amarillo, TX", country: "United States" },
 	"atl": { city: "Atlanta, GA", country: "United States" },
+	"aus": { city: "Austin, TX", country: "United States" },
 	"auz": { city: "Aurora, IL", country: "United States" },
 	"bos": { city: "Boston, MA", country: "United States" },
 	"cbf": { city: "Council Bluffs, IA", country: "United States" },
